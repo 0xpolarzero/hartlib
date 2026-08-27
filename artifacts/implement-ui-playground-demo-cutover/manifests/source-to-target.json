@@ -1,0 +1,887 @@
+{
+  "schemaVersion": "1.0.0",
+  "waveId": "W0_AUDIT",
+  "workItemId": "P1_AUDIT",
+  "capturedAt": "2026-08-27T02:53:10.367Z",
+  "repositoryPath": "/Users/polarzero/code/projects/brief",
+  "kind": "source-to-target-manifest",
+  "authority": [
+    "EVIDENCE-005",
+    "DEP-002",
+    "DEP-003",
+    "DEP-004",
+    "DEP-005",
+    "DEP-010"
+  ],
+  "rows": [
+    {
+      "id": "R1",
+      "label": "Root, locale, 404",
+      "source": "ui-playground/src/router.tsx + ui-playground/src/main.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/router.tsx",
+        "ui-playground/src/main.tsx"
+      ],
+      "target": "apps/demo/src/routing.ts + apps/demo/src/client-app.tsx",
+      "targetPaths": [
+        "apps/demo/src/routing.ts",
+        "apps/demo/src/client-app.tsx"
+      ],
+      "owner": "apps/demo",
+      "productionReachability": "client allowlist; unknown/publisher/gallery branded 404",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "route/controller ownership",
+      "contractIds": [
+        "ROUTE-001",
+        "ROUTE-002"
+      ]
+    },
+    {
+      "id": "R2",
+      "label": "Sticky shell, skip link, wordmark, workspace and publisher subnav",
+      "source": "ui-playground/src/components/product/app-shell.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/app-shell.tsx"
+      ],
+      "target": "packages/ui/src/components/layout/app-shell.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/layout/app-shell.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable client shell; publisher subnav is dormant-only",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "shared shell and focus primitives",
+      "contractIds": [
+        "UI-001",
+        "DESIGN-001"
+      ]
+    },
+    {
+      "id": "R3",
+      "label": "Command palette",
+      "source": "ui-playground/src/components/product/command-palette.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/command-palette.tsx"
+      ],
+      "target": "packages/ui/src/components/navigation/command-palette.tsx + apps/demo/src/session-controller.ts",
+      "targetPaths": [
+        "packages/ui/src/components/navigation/command-palette.tsx",
+        "apps/demo/src/session-controller.ts"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable palette with confirmed reset only",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "UI intent plus app reset orchestration",
+      "contractIds": [
+        "RESET-004",
+        "RESET-005"
+      ]
+    },
+    {
+      "id": "R4",
+      "label": "Publisher notification bell/menu",
+      "source": "ui-playground/src/components/product/notification-bell.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/notification-bell.tsx"
+      ],
+      "target": "packages/ui/src/components/navigation/notification-bell.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/navigation/notification-bell.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "unreachable production; direct dormant publisher fixture",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "prop-only publisher composition",
+      "contractIds": [
+        "UI-002",
+        "DEP-010"
+      ]
+    },
+    {
+      "id": "R5",
+      "label": "Client chat frame",
+      "source": "ui-playground/src/pages/client-chat.tsx#ClientChatPage,#ChatSurface",
+      "sourceSymbols": [
+        "ui-playground/src/pages/client-chat.tsx#ClientChatPage",
+        "ui-playground/src/pages/client-chat.tsx#ChatSurface"
+      ],
+      "target": "packages/ui/src/components/client/client-chat.tsx + apps/demo/src/client-app.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/client/client-chat.tsx",
+        "apps/demo/src/client-app.tsx"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable singular client chat",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "presentation package; route/data/SSE demo",
+      "contractIds": [
+        "CHAT-001",
+        "CHAT-002",
+        "DEP-005"
+      ]
+    },
+    {
+      "id": "R6",
+      "label": "Responsive panels",
+      "source": "ui-playground/src/pages/client-chat.tsx#SidePanel,#SidebarResizeHandle",
+      "sourceSymbols": [
+        "ui-playground/src/pages/client-chat.tsx#SidePanel",
+        "ui-playground/src/pages/client-chat.tsx#SidebarResizeHandle"
+      ],
+      "target": "packages/ui/src/components/client/client-chat.tsx#SidePanel,#SidebarResizeHandle + apps/demo/src/client-app.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/client/client-chat.tsx",
+        "apps/demo/src/client-app.tsx"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable compact/wide panels with registered layout persistence",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "client chat panel presentation and app-owned layout state",
+      "contractIds": [
+        "UI-001",
+        "DEP-005",
+        "DEP-016"
+      ]
+    },
+    {
+      "id": "R7",
+      "label": "Virtual transcript/suggestions",
+      "source": "ui-playground/src/components/product/chat/transcript.tsx#VirtualizedChatTranscript",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/transcript.tsx#VirtualizedChatTranscript"
+      ],
+      "target": "packages/ui/src/components/chat/virtualized-chat-transcript.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/virtualized-chat-transcript.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable transcript and success-only suggestions",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "virtualized reusable UI",
+      "contractIds": [
+        "FEATURE-003",
+        "UI-001"
+      ]
+    },
+    {
+      "id": "R8",
+      "label": "Messages/failure/actions",
+      "source": "ui-playground/src/components/product/chat/message.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/message.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/message.tsx + apps/demo/src/chat-controller.ts",
+      "targetPaths": [
+        "packages/ui/src/components/chat/message.tsx",
+        "apps/demo/src/chat-controller.ts"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable Stop/delete/edit actions",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "UI intent and app-owned message mutations",
+      "contractIds": [
+        "MESSAGE-001",
+        "MESSAGE-003",
+        "STOP-001"
+      ]
+    },
+    {
+      "id": "R9",
+      "label": "Markdown answer",
+      "source": "ui-playground/src/components/product/chat/markdown.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/markdown.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/markdown.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/markdown.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable strict chat markdown",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "strict parser and rendering",
+      "contractIds": [
+        "CITATION-001"
+      ]
+    },
+    {
+      "id": "R10",
+      "label": "Five-stage rail",
+      "source": "ui-playground/src/components/product/chat/run-rail.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/run-rail.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/run-rail.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/run-rail.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable queued/running/succeeded/failed/stopped rail",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "shared run-status presentation",
+      "contractIds": [
+        "CHAT-004",
+        "STOP-005"
+      ]
+    },
+    {
+      "id": "R11",
+      "label": "Citation chips/claims/cards",
+      "source": "ui-playground/src/components/product/chat/citations.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/citations.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/citations.tsx + packages/ui/src/components/chat/citation-tags.ts",
+      "targetPaths": [
+        "packages/ui/src/components/chat/citations.tsx",
+        "packages/ui/src/components/chat/citation-tags.ts"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable canonical citations only",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "one strict citation shape",
+      "contractIds": [
+        "CITATION-001"
+      ]
+    },
+    {
+      "id": "R12",
+      "label": "Sources-read disclosure",
+      "source": "ui-playground/src/components/product/chat/sources-disclosure.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/sources-disclosure.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/sources-disclosure.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/sources-disclosure.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable source disclosures",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "props-only source presentation",
+      "contractIds": [
+        "SOURCE-001",
+        "SOURCE-003"
+      ]
+    },
+    {
+      "id": "R13",
+      "label": "Composer",
+      "source": "ui-playground/src/components/product/chat/composer.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/composer.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/composer.tsx + apps/demo/src/chat-controller.ts",
+      "targetPaths": [
+        "packages/ui/src/components/chat/composer.tsx",
+        "apps/demo/src/chat-controller.ts"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable web preference, dictation, Stop; no attachments",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "typed intent plus app request and storage control",
+      "contractIds": [
+        "CHAT-003",
+        "FEATURE-001",
+        "FEATURE-002",
+        "WEB-001"
+      ]
+    },
+    {
+      "id": "R14",
+      "label": "Debug drawer",
+      "source": "ui-playground/src/components/product/chat/debug-drawer.tsx + ui-playground/src/components/product/chat/debug-sheet.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/debug-drawer.tsx",
+        "ui-playground/src/components/product/chat/debug-sheet.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/debug-drawer.tsx + packages/ui/src/components/chat/debug-sheet.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/debug-drawer.tsx",
+        "packages/ui/src/components/chat/debug-sheet.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable debug presentation",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "canonical run projection",
+      "contractIds": [
+        "CHAT-004",
+        "STOP-005"
+      ]
+    },
+    {
+      "id": "R15",
+      "label": "Memories",
+      "source": "ui-playground/src/components/product/chat/memories-panel.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/memories-panel.tsx"
+      ],
+      "target": "packages/ui/src/components/chat/memories-panel.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/chat/memories-panel.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable real memory list/actions",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "API-backed memory presentation",
+      "contractIds": [
+        "RESET-006"
+      ]
+    },
+    {
+      "id": "R16",
+      "label": "Visualization and versions",
+      "source": "ui-playground/src/components/product/chat/viz-pane.tsx + ui-playground/src/components/product/chat/chat-store.tsx + ui-playground/src/components/product/chat/message.tsx + ui-playground/src/pages/client-chat.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/chat/viz-pane.tsx",
+        "ui-playground/src/components/product/chat/chat-store.tsx",
+        "ui-playground/src/components/product/chat/message.tsx",
+        "ui-playground/src/pages/client-chat.tsx"
+      ],
+      "target": "packages/ui/src/components/visualization/viz-pane.tsx + packages/ui/src/components/visualization/version-controls.tsx + packages/ui/src/components/visualization/sandbox-canvas.tsx + packages/ui/src/components/visualization/message-association.tsx + packages/ui/src/components/visualization/states.tsx + packages/ui/src/components/visualization/types.ts",
+      "targetPaths": [
+        "packages/ui/src/components/visualization/viz-pane.tsx",
+        "packages/ui/src/components/visualization/version-controls.tsx",
+        "packages/ui/src/components/visualization/sandbox-canvas.tsx",
+        "packages/ui/src/components/visualization/message-association.tsx",
+        "packages/ui/src/components/visualization/states.tsx",
+        "packages/ui/src/components/visualization/types.ts"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable complete empty presentation; direct fixtures cover populated states",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "visual presentation accepts zero live versions and never fetches",
+      "contractIds": [
+        "UI-003",
+        "DEP-009",
+        "GATE-025"
+      ]
+    },
+    {
+      "id": "R17",
+      "label": "Subscriptions root",
+      "source": "ui-playground/src/components/product/subscriber-subscriptions.tsx#SubscriberLibrary,#SubscriptionsTable",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/subscriber-subscriptions.tsx#SubscriberLibrary",
+        "ui-playground/src/components/product/subscriber-subscriptions.tsx#SubscriptionsTable"
+      ],
+      "target": "packages/ui/src/components/client/source-subscriptions.tsx#SubscriberLibrary,#SubscriptionsTable + apps/demo/src/source-controller.ts",
+      "targetPaths": [
+        "packages/ui/src/components/client/source-subscriptions.tsx",
+        "apps/demo/src/source-controller.ts"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reachable real authorized sources; disabled rows visible",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "pending and rollback state crosses the app boundary",
+      "contractIds": [
+        "SOURCE-001",
+        "SOURCE-002",
+        "SOURCE-003"
+      ]
+    },
+    {
+      "id": "R18",
+      "label": "Publication drill-down",
+      "source": "ui-playground/src/components/product/subscriber-subscriptions.tsx#SourcePublicationsTable",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/subscriber-subscriptions.tsx#SourcePublicationsTable"
+      ],
+      "target": "packages/ui/src/components/client/source-subscriptions.tsx#SourcePublicationsTable",
+      "targetPaths": [
+        "packages/ui/src/components/client/source-subscriptions.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable nested source publications with breadcrumbs",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "real route data and delivered-only rows",
+      "contractIds": [
+        "SOURCE-001",
+        "SOURCE-003",
+        "ROUTE-001"
+      ]
+    },
+    {
+      "id": "R19",
+      "label": "Issue/documents",
+      "source": "ui-playground/src/components/product/subscriber-subscriptions.tsx#IssueDetail,#useList",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/subscriber-subscriptions.tsx#IssueDetail",
+        "ui-playground/src/components/product/subscriber-subscriptions.tsx#useList"
+      ],
+      "target": "packages/ui/src/components/client/source-subscriptions.tsx#IssueDetail,#useList",
+      "targetPaths": [
+        "packages/ui/src/components/client/source-subscriptions.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable issue detail with distinct document load error and empty states",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "real summary, documents, and secure opener",
+      "contractIds": [
+        "SOURCE-003",
+        "ROUTE-001"
+      ]
+    },
+    {
+      "id": "R20",
+      "label": "DataTable",
+      "source": "ui-playground/src/components/product/data-table.tsx#DataTable",
+      "sourceSymbols": [
+        "ui-playground/src/components/product/data-table.tsx#DataTable"
+      ],
+      "target": "packages/ui/src/components/ui/data-table.tsx#DataTable",
+      "targetPaths": [
+        "packages/ui/src/components/ui/data-table.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable shared table",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "table primitive with no data fetch",
+      "contractIds": [
+        "UI-001",
+        "DESIGN-001"
+      ]
+    },
+    {
+      "id": "R21",
+      "label": "Publisher tables",
+      "source": "ui-playground/src/pages/publisher.tsx + ui-playground/src/components/product/tables.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/pages/publisher.tsx",
+        "ui-playground/src/components/product/tables.tsx"
+      ],
+      "target": "packages/ui/src/components/publisher/publisher-workspace.tsx + packages/ui/src/components/publications/publications-table.tsx + packages/ui/src/components/publications/documents-table.tsx + packages/ui/src/components/subscribers/subscribers-table.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/publisher/publisher-workspace.tsx",
+        "packages/ui/src/components/publications/publications-table.tsx",
+        "packages/ui/src/components/publications/documents-table.tsx",
+        "packages/ui/src/components/subscribers/subscribers-table.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "unreachable production; direct dormant publisher fixture",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "prop-only publisher tables with honest empty defaults",
+      "contractIds": [
+        "UI-002",
+        "DEP-010"
+      ]
+    },
+    {
+      "id": "R22",
+      "label": "Issue wizard",
+      "source": "ui-playground/src/pages/publisher-issue-new.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/pages/publisher-issue-new.tsx"
+      ],
+      "target": "packages/ui/src/components/publisher/publisher-issue-wizard.tsx + apps/demo/tests/visual-fixtures/publisher-states.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/publisher/publisher-issue-wizard.tsx",
+        "apps/demo/tests/visual-fixtures/publisher-states.tsx"
+      ],
+      "owner": "packages/ui + fixture",
+      "productionReachability": "unreachable production; direct dormant publisher fixture",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "prop-driven wizard and static fixture data; no API or route",
+      "contractIds": [
+        "UI-002",
+        "ACCESS-001",
+        "DEP-010"
+      ]
+    },
+    {
+      "id": "R23",
+      "label": "Notification settings",
+      "source": "ui-playground/src/pages/publisher-notifications.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/pages/publisher-notifications.tsx"
+      ],
+      "target": "packages/ui/src/components/publisher/publisher-notifications.tsx + apps/demo/tests/visual-fixtures/publisher-states.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/publisher/publisher-notifications.tsx",
+        "apps/demo/tests/visual-fixtures/publisher-states.tsx"
+      ],
+      "owner": "packages/ui + fixture",
+      "productionReachability": "unreachable production; direct dormant publisher fixture",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "prop-only settings with honest empty defaults",
+      "contractIds": [
+        "UI-002",
+        "I18N-001"
+      ]
+    },
+    {
+      "id": "R24",
+      "label": "Gallery/state switches",
+      "source": "ui-playground/src/pages/gallery.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/pages/gallery.tsx"
+      ],
+      "target": "apps/demo/tests/visual-fixtures/fixture-entry.tsx",
+      "targetPaths": [
+        "apps/demo/tests/visual-fixtures/fixture-entry.tsx"
+      ],
+      "owner": "reference + tests",
+      "productionReachability": "not in production graph",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "permanent reference and direct test entry; no production route",
+      "contractIds": [
+        "RET-001",
+        "DEL-013",
+        "DEP-010"
+      ]
+    },
+    {
+      "id": "R25",
+      "label": "UI primitives",
+      "source": "ui-playground/src/components/ui/*.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/ui/*.tsx"
+      ],
+      "target": "packages/ui/src/components/ui/**",
+      "targetPaths": [
+        "packages/ui/src/components/ui/**"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable shared primitives; direct fixtures may render them",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "sole shipped design-system owner",
+      "contractIds": [
+        "UI-001",
+        "DESIGN-001"
+      ]
+    },
+    {
+      "id": "R26",
+      "label": "Overlays/feedback",
+      "source": "ui-playground/src/components/ui/dialog.tsx + ui-playground/src/components/ui/sheet.tsx + ui-playground/src/components/ui/overlays.tsx + ui-playground/src/components/ui/toast.tsx + ui-playground/src/lib/announce.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/components/ui/dialog.tsx",
+        "ui-playground/src/components/ui/sheet.tsx",
+        "ui-playground/src/components/ui/overlays.tsx",
+        "ui-playground/src/components/ui/toast.tsx",
+        "ui-playground/src/lib/announce.tsx"
+      ],
+      "target": "packages/ui/src/components/ui/dialog.tsx + packages/ui/src/components/ui/sheet.tsx + packages/ui/src/components/ui/overlays.tsx + packages/ui/src/components/ui/toast.tsx + packages/ui/src/lib/announce.tsx",
+      "targetPaths": [
+        "packages/ui/src/components/ui/dialog.tsx",
+        "packages/ui/src/components/ui/sheet.tsx",
+        "packages/ui/src/components/ui/overlays.tsx",
+        "packages/ui/src/components/ui/toast.tsx",
+        "packages/ui/src/lib/announce.tsx"
+      ],
+      "owner": "packages/ui",
+      "productionReachability": "reachable overlays and feedback",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "final imported primitives own dependencies",
+      "contractIds": [
+        "UI-001",
+        "DEP-011",
+        "ACCESS-001"
+      ]
+    },
+    {
+      "id": "R27",
+      "label": "Theme/type/icons/motion",
+      "source": "ui-playground/src/styles/theme.css",
+      "sourceSymbols": [
+        "ui-playground/src/styles/theme.css"
+      ],
+      "target": "packages/ui/src/styles/tokens.css + apps/demo/src/styles.css",
+      "targetPaths": [
+        "packages/ui/src/styles/tokens.css",
+        "apps/demo/src/styles.css"
+      ],
+      "owner": "packages/ui + apps/demo",
+      "productionReachability": "reference hex tokens and 2px radius only",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "no old OKLCH fallback",
+      "contractIds": [
+        "DESIGN-001",
+        "DEL-016"
+      ]
+    },
+    {
+      "id": "R28",
+      "label": "Reference i18n",
+      "source": "ui-playground/src/i18n/en.ts + ui-playground/src/i18n/fr.ts + ui-playground/src/i18n/index.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/i18n/en.ts",
+        "ui-playground/src/i18n/fr.ts",
+        "ui-playground/src/i18n/index.tsx"
+      ],
+      "target": "packages/i18n/src/locales/en-US.json + packages/i18n/src/locales/fr-FR.json",
+      "targetPaths": [
+        "packages/i18n/src/locales/en-US.json",
+        "packages/i18n/src/locales/fr-FR.json"
+      ],
+      "owner": "packages/i18n",
+      "productionReachability": "reachable two schema-checked JSON catalogs",
+      "directFixtureReachability": true,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "reference translator cannot ship",
+      "contractIds": [
+        "I18N-001",
+        "DEP-014"
+      ]
+    },
+    {
+      "id": "R29",
+      "label": "Mocks/scripts/visual generators",
+      "source": "ui-playground/src/services/index.ts + ui-playground/src/services/types.ts + ui-playground/src/services/mock/*.ts + ui-playground/scripts/**",
+      "sourceSymbols": [
+        "ui-playground/src/services/index.ts",
+        "ui-playground/src/services/types.ts",
+        "ui-playground/src/services/mock/*.ts",
+        "ui-playground/scripts/**"
+      ],
+      "target": null,
+      "targetPaths": [],
+      "owner": "ui-playground reference only",
+      "productionReachability": "not in production graph; no product or fixture target",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "reference bytes remain under ui-playground; prop-only test data is authored separately and never imports or copies the mock layer",
+      "contractIds": [
+        "UI-004",
+        "DEP-010",
+        "DEL-014"
+      ]
+    },
+    {
+      "id": "R30",
+      "label": "Local persistence/dev state",
+      "source": "ui-playground/src/lib/storage.ts + ui-playground/src/components/product/chat/chat-store.tsx",
+      "sourceSymbols": [
+        "ui-playground/src/lib/storage.ts",
+        "ui-playground/src/components/product/chat/chat-store.tsx"
+      ],
+      "target": "apps/demo/src/storage-registry.ts + apps/demo/src/reset-controller.ts + apps/demo/src/session-controller.ts + apps/demo/src/stream-registry.ts + apps/demo/src/web-search-preference.ts",
+      "targetPaths": [
+        "apps/demo/src/storage-registry.ts",
+        "apps/demo/src/reset-controller.ts",
+        "apps/demo/src/session-controller.ts",
+        "apps/demo/src/stream-registry.ts",
+        "apps/demo/src/web-search-preference.ts"
+      ],
+      "owner": "apps/demo",
+      "productionReachability": "reachable one registry and clearer",
+      "directFixtureReachability": false,
+      "localeOwnership": "packages/i18n/src/locales/fr-FR.json + packages/i18n/src/locales/en-US.json",
+      "dependencyReason": "browser storage and reset are app-owned",
+      "contractIds": [
+        "DEP-016",
+        "RESET-005"
+      ]
+    }
+  ],
+  "sourceInventory": {
+    "trackedUiPlaygroundAuthoredCount": 69,
+    "referenceManifestEntryCount": 12406,
+    "referenceManifestRootDigest": "f51c404e8f45945e8366062b6dac9bbf2788190a0e209976578fda2be68aa8b0",
+    "trackedReferenceDiffAgainstBaseline": [],
+    "productionSourceReferencesToUiPlayground": [],
+    "generator": "settled R1-R30 register in artifacts/ui-playground-demo-implementation-plan.html",
+    "targetPathsAreOwnedOrExplicitReferenceOnly": true,
+    "r29HasNoProductOrFixtureTarget": true,
+    "localDependencyEdges": [
+      {
+        "id": "LOCAL-001",
+        "sourcePath": "apps/worker/src/e2e/setup-cli.ts",
+        "sourceWorkItemId": "P10_FULL_STACK",
+        "targetPath": "apps/worker/src/e2e/public-source-corpus.ts",
+        "targetWorkItemId": "P7_CLEANUP",
+        "edgeType": "module-import",
+        "replacementTarget": "apps/worker/src/e2e/setup-cli.ts#e2eCorpus",
+        "replacementOwnerWorkItemId": "P10_FULL_STACK",
+        "resolution": "defer-deletion-to-caller-owning-wave",
+        "contractIds": [
+          "RET-013",
+          "EVIDENCE-005"
+        ],
+        "reason": "The full-stack setup imports the corpus; P10 must inline or replace the adapter before the P7 target can be removed."
+      },
+      {
+        "id": "LOCAL-002",
+        "sourcePath": "tests/e2e/global-setup.ts",
+        "sourceWorkItemId": "P10_FULL_STACK",
+        "targetPath": "tests/e2e/s3-fixture-server.ts",
+        "targetWorkItemId": "P7_CLEANUP",
+        "edgeType": "process-spawn",
+        "replacementTarget": "tests/e2e/global-setup.ts#startProcess",
+        "replacementOwnerWorkItemId": "P10_FULL_STACK",
+        "resolution": "defer-deletion-to-caller-owning-wave",
+        "contractIds": [
+          "RET-013",
+          "EVIDENCE-005"
+        ],
+        "reason": "The full-stack global setup spawns the object-store fixture; P10 must own its replacement before P7 removes the script."
+      }
+    ],
+    "localDependencyEdgesRecorded": true
+  },
+  "boundaryFindings": [
+    {
+      "id": "DEP-001",
+      "status": "pass-before-cutover",
+      "finding": "ui-playground is outside root apps/* and packages/* workspaces and owns package-lock.json"
+    },
+    {
+      "id": "DEP-002",
+      "status": "pass-before-cutover",
+      "finding": "no production source is permitted to import reference; the P1 scan found no production import"
+    },
+    {
+      "id": "DEP-003",
+      "status": "fail-before-cutover",
+      "finding": "apps/demo reaches @hartlib/demo-data and old web/product-chat surfaces remain"
+    },
+    {
+      "id": "DEP-010",
+      "status": "pass-reference-only",
+      "finding": "R29 has no product or fixture target; ui-playground mock and generator bytes stay under the permanent reference boundary"
+    }
+  ],
+  "registerCheck": {
+    "planPath": "artifacts/ui-playground-demo-implementation-plan.html",
+    "planSection": "reference",
+    "expectedIds": [
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R9",
+      "R10",
+      "R11",
+      "R12",
+      "R13",
+      "R14",
+      "R15",
+      "R16",
+      "R17",
+      "R18",
+      "R19",
+      "R20",
+      "R21",
+      "R22",
+      "R23",
+      "R24",
+      "R25",
+      "R26",
+      "R27",
+      "R28",
+      "R29",
+      "R30"
+    ],
+    "actualIds": [
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R9",
+      "R10",
+      "R11",
+      "R12",
+      "R13",
+      "R14",
+      "R15",
+      "R16",
+      "R17",
+      "R18",
+      "R19",
+      "R20",
+      "R21",
+      "R22",
+      "R23",
+      "R24",
+      "R25",
+      "R26",
+      "R27",
+      "R28",
+      "R29",
+      "R30"
+    ],
+    "oneToOne": true,
+    "exactSetEquality": true,
+    "missingIds": [],
+    "extraIds": [],
+    "duplicateIds": [],
+    "sourceSymbolsAndOwnedTargetsChecked": true
+  },
+  "localDependencyEdges": [
+    {
+      "id": "LOCAL-001",
+      "sourcePath": "apps/worker/src/e2e/setup-cli.ts",
+      "sourceWorkItemId": "P10_FULL_STACK",
+      "targetPath": "apps/worker/src/e2e/public-source-corpus.ts",
+      "targetWorkItemId": "P7_CLEANUP",
+      "edgeType": "module-import",
+      "replacementTarget": "apps/worker/src/e2e/setup-cli.ts#e2eCorpus",
+      "replacementOwnerWorkItemId": "P10_FULL_STACK",
+      "resolution": "defer-deletion-to-caller-owning-wave",
+      "contractIds": [
+        "RET-013",
+        "EVIDENCE-005"
+      ],
+      "reason": "The full-stack setup imports the corpus; P10 must inline or replace the adapter before the P7 target can be removed."
+    },
+    {
+      "id": "LOCAL-002",
+      "sourcePath": "tests/e2e/global-setup.ts",
+      "sourceWorkItemId": "P10_FULL_STACK",
+      "targetPath": "tests/e2e/s3-fixture-server.ts",
+      "targetWorkItemId": "P7_CLEANUP",
+      "edgeType": "process-spawn",
+      "replacementTarget": "tests/e2e/global-setup.ts#startProcess",
+      "replacementOwnerWorkItemId": "P10_FULL_STACK",
+      "resolution": "defer-deletion-to-caller-owning-wave",
+      "contractIds": [
+        "RET-013",
+        "EVIDENCE-005"
+      ],
+      "reason": "The full-stack global setup spawns the object-store fixture; P10 must own its replacement before P7 removes the script."
+    }
+  ],
+  "localDependencyEdgesCount": 2,
+  "localEdgeCheck": {
+    "exact": true,
+    "allSourcesAndTargetsPresent": true,
+    "callerOwningWaveRecorded": true,
+    "replacementTargetsRecorded": true,
+    "unresolved": []
+  }
+}

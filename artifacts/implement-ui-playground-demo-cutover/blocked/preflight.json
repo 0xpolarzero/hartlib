@@ -1,0 +1,8 @@
+{
+  "kind": "preflight",
+  "blockers": [
+    "HARTLIB_E2E_LIVE_PROVIDER=1 is required",
+    "HARTLIB_E2E_STACK=1 is required"
+  ],
+  "createdAt": "2026-08-26T16:13:17.431Z"
+}

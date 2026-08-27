@@ -1,0 +1,514 @@
+{
+  "schemaVersion": "1.0.0",
+  "waveId": "W0_AUDIT",
+  "workItemId": "P1_AUDIT",
+  "capturedAt": "2026-08-27T00:41:28.383Z",
+  "repositoryPath": "/Users/polarzero/code/projects/brief",
+  "kind": "retention-subset",
+  "subset": "tracked-authored-ui-playground",
+  "comparisonDomain": "git ls-files -z ui-playground only; ignored/generated files excluded",
+  "entries": [
+    {
+      "path": "ui-playground/.gitignore",
+      "entryType": "file",
+      "byteLength": 47,
+      "contentHash": "a4db91911e9905b014b51fd0f7492f6ba94ec04923d0e7854e553724b1f4704a",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/README.md",
+      "entryType": "file",
+      "byteLength": 13589,
+      "contentHash": "72db39ec42d0a9a2fcbf1e013f4581d8ad14ea06dce72592008c766630b93544",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/index.html",
+      "entryType": "file",
+      "byteLength": 986,
+      "contentHash": "1e6bfb9a39e303a594bf2e33bb4aa6ec173e2642200e03b8b54f8956ba643f2a",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/package-lock.json",
+      "entryType": "file",
+      "byteLength": 196620,
+      "contentHash": "249f4e39025f2387a16b41ba77d37364aae3abac34d5225d9ab61fa44ef4a5dc",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/package.json",
+      "entryType": "file",
+      "byteLength": 1649,
+      "contentHash": "a44eb8a6e3466e38286528ca3c7ff6b05b5e16983440dbffae05aad6568b60a0",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/scripts/check-i18n.mjs",
+      "entryType": "file",
+      "byteLength": 2479,
+      "contentHash": "14bfbcf0e69aaf32ef8285bf191ee4d768707b5f84de316ae2058a5d99d1801d",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/app-shell.tsx",
+      "entryType": "file",
+      "byteLength": 7421,
+      "contentHash": "11016244d893bf08e120ee4b368229e664065ab3b8d78a1d9f2e9987f2489789",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/chat-store.tsx",
+      "entryType": "file",
+      "byteLength": 12839,
+      "contentHash": "d2eadde4d79d731792c557e2d9432327ae77a56eac534b96638799e744426025",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/citations.tsx",
+      "entryType": "file",
+      "byteLength": 10316,
+      "contentHash": "ff91960a52f78e8cfccd82c32af81fc308b3e0e63af2e5dab7b40dc38a6e83c5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/composer.tsx",
+      "entryType": "file",
+      "byteLength": 23123,
+      "contentHash": "a1508cb51decb8879df02191c8d36cf3fdc180bb30438a6b2790933695a6d782",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/debug-drawer.tsx",
+      "entryType": "file",
+      "byteLength": 1301,
+      "contentHash": "416d98b4918b68ee7a242ff6f8deb93a62e6536861b949d6aa5058d4d8f3e81b",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/debug-sheet.tsx",
+      "entryType": "file",
+      "byteLength": 5164,
+      "contentHash": "efb7b4807edaa7c12c58a83a1e81883229447e1e142aaed05c88dcfb54438e27",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/markdown.tsx",
+      "entryType": "file",
+      "byteLength": 7515,
+      "contentHash": "44b6a9e7ca143c7aec0749b1f230fe35dbdb9025963343d8863711b86c660624",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/memories-panel.tsx",
+      "entryType": "file",
+      "byteLength": 6638,
+      "contentHash": "d2307b55593086a1fc58be5dbcc87f160f174b412ff6b89f55972485083615d3",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/message.tsx",
+      "entryType": "file",
+      "byteLength": 4839,
+      "contentHash": "23b44fb08e0be1dd40dab1712555c5c140cb56fc6f47041914954aff95265883",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/run-rail.tsx",
+      "entryType": "file",
+      "byteLength": 4183,
+      "contentHash": "684ea7e988c57531aea526dd19003404f19cdfe0ed8550a5bc13837bdad7f748",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/sources-disclosure.tsx",
+      "entryType": "file",
+      "byteLength": 3847,
+      "contentHash": "07dba7576eeb8b085d2dfc3fb38454b61d5d582cebbe34565d9df9013a10bdf9",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/transcript.tsx",
+      "entryType": "file",
+      "byteLength": 7900,
+      "contentHash": "3e5e3c796416cc6e9da614a08c8c60fc9a291c8145585e70a6b45b86f50fc47c",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/chat/viz-pane.tsx",
+      "entryType": "file",
+      "byteLength": 6252,
+      "contentHash": "7458fb9c5fda077c14060d134f74d3ba7fdc171bbabc494fe9d63ea84ea02a02",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/command-palette.tsx",
+      "entryType": "file",
+      "byteLength": 5130,
+      "contentHash": "01d245075ca7a164e82bbb0dff3f5cb1bc82b67a232cec91e858793f33d5b341",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/data-table.tsx",
+      "entryType": "file",
+      "byteLength": 18887,
+      "contentHash": "2ab48cbd74befd8738236726a27edb050e782d99bd8a605e375b26b0565e9ca5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/notification-bell.tsx",
+      "entryType": "file",
+      "byteLength": 3374,
+      "contentHash": "251229c796f731c66743d578ca0a61a20c426afb0c172f96dbd1c948ebfca3c1",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/subscriber-subscriptions.tsx",
+      "entryType": "file",
+      "byteLength": 14446,
+      "contentHash": "cf7e6a5d5e6449844fc98c6a9f7d3b0bfd5eed443ed139d7f2a1b14cb37c5607",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/product/tables.tsx",
+      "entryType": "file",
+      "byteLength": 26812,
+      "contentHash": "7ebadd09db3529f8c9d7f39c1448ce6b13d1c4306f7622ac362dc60aa87d1457",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/atoms.tsx",
+      "entryType": "file",
+      "byteLength": 4150,
+      "contentHash": "412af217940c8790c049de0e224a6cfba3488e8c7e742e1ed6dabb7f7c349968",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/breadcrumbs.tsx",
+      "entryType": "file",
+      "byteLength": 2185,
+      "contentHash": "45bee710f7c2952b9f10d2a49308e102fa077f6c270e38306f83de3b2d12aa20",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/button.tsx",
+      "entryType": "file",
+      "byteLength": 2005,
+      "contentHash": "a89e223e5f99e6af6201ce59ec8ea304d788cf9052f9fdf81be1ca1eab2afe0d",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/combobox.tsx",
+      "entryType": "file",
+      "byteLength": 5560,
+      "contentHash": "dd8e78e1b787b3a7befbbd1c600011b688477bcc1e7d17bdc8200616f26f0c10",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/command.tsx",
+      "entryType": "file",
+      "byteLength": 2992,
+      "contentHash": "4e3b3a390ac022daabe5d26f91836249c7637aebf306daee8c145bca4d7159f1",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/confirming-delete-button.tsx",
+      "entryType": "file",
+      "byteLength": 2707,
+      "contentHash": "5623c8e00ce98561e77b1f5b5e6b8ebdb0a87507c9ea90fc0005bdb930a4adc1",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/controls.tsx",
+      "entryType": "file",
+      "byteLength": 5024,
+      "contentHash": "35604c9d6e985e02a14f202e00d7c81f0935965a31cbecf26500d0dbce8c475a",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/datepicker.tsx",
+      "entryType": "file",
+      "byteLength": 9125,
+      "contentHash": "07204fb5efc25fd5ade20ee494720381e9567b3419737df6dc600fc7155fa5ee",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/dialog.tsx",
+      "entryType": "file",
+      "byteLength": 5293,
+      "contentHash": "868292329a1488ea7c51e09aaa2718fd1f718ae1ebe1d6150bc30c06140512e5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/file-upload.tsx",
+      "entryType": "file",
+      "byteLength": 6733,
+      "contentHash": "d360793fbbc2756475d77a7b04fc2688e65c3bd868d5145f69761ae20fc4642f",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/form-field.tsx",
+      "entryType": "file",
+      "byteLength": 3636,
+      "contentHash": "9c26663c83e30f7c5812a1ed1d8304057659c3af1a421177e4be6269ac957cba",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/index.ts",
+      "entryType": "file",
+      "byteLength": 2250,
+      "contentHash": "91d4837530466dada00461c824f64ed6f70fd201398bd9e14d51c194a848cf25",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/inline-editable-field.tsx",
+      "entryType": "file",
+      "byteLength": 3743,
+      "contentHash": "bbd8dea380172d25bb2a9d38d9ce1efeeebe79bf4d15814311acf1343cbccbca",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/input.tsx",
+      "entryType": "file",
+      "byteLength": 2850,
+      "contentHash": "84055643a10aac2ab0f28f708577f8fdffe11ac8e00993a984573195b0954e41",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/overlays.tsx",
+      "entryType": "file",
+      "byteLength": 8097,
+      "contentHash": "99e3b53a12f4b83c3098a59a492822b5f8b728adfaf39ab18fd29b5e43c6c620",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/select.tsx",
+      "entryType": "file",
+      "byteLength": 3620,
+      "contentHash": "749e3e71f59e37bd4fe2dce7d969a23723073c760ae1c8c2fb6ae5f343378dd6",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/sheet.tsx",
+      "entryType": "file",
+      "byteLength": 2566,
+      "contentHash": "137d58c4550d57b11454ce8aa810ee5d62be5812969a245adfb7adf7b62ba253",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/states.tsx",
+      "entryType": "file",
+      "byteLength": 2902,
+      "contentHash": "36c7176301c76c92ec8c954845ce621e3021c8b7be3e61012ee0cecc1f2013f1",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/table.tsx",
+      "entryType": "file",
+      "byteLength": 4703,
+      "contentHash": "ce7c4144de559f66547c285af00d478367764c4203efb5dd62af57c8ddf77120",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/tabs.tsx",
+      "entryType": "file",
+      "byteLength": 4488,
+      "contentHash": "4635336fae978ff341d4506f2cc04c10bc0dfd313d38cf40492ad9e2e62c246e",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/components/ui/toast.tsx",
+      "entryType": "file",
+      "byteLength": 4438,
+      "contentHash": "0dafb79a7a24300e2c9f58ce943ed02e353bdba6e0173d67ccd42124ad81e811",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/i18n/en.ts",
+      "entryType": "file",
+      "byteLength": 24825,
+      "contentHash": "4beb383ccf0706ab6de15daa20551564a0ead38a6a0eebdd95934b62472d120f",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/i18n/fr.ts",
+      "entryType": "file",
+      "byteLength": 27738,
+      "contentHash": "da64b450be4b276f2c5c2345b2a859b863a065135d1bb569db5a0aec7d393175",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/i18n/index.tsx",
+      "entryType": "file",
+      "byteLength": 2118,
+      "contentHash": "731a5da79d92dae23e6dd2463a5f1f7fd6da5ae55ec01570f4f82dcb5ff5edcd",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/lib/announce.tsx",
+      "entryType": "file",
+      "byteLength": 2021,
+      "contentHash": "3e3806e06a9adfb8c3ca5978de85a082ab2766f15d288a2650a0f97d49cca250",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/lib/format.ts",
+      "entryType": "file",
+      "byteLength": 2053,
+      "contentHash": "2f9a79e50f7fe8fd431d1fcfae4a82c0cfc14ef8a3abe56eb5feacec721c82d7",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/lib/storage.ts",
+      "entryType": "file",
+      "byteLength": 1500,
+      "contentHash": "d4633fc1927002bc071e5f878518841f5f3519c59c51da4c194f546d14d3fefb",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/lib/utils.ts",
+      "entryType": "file",
+      "byteLength": 169,
+      "contentHash": "d1f1e0d62cb8d8d1e04c26e14de842d8a151f75812d81b046c65b5d1fe8e4b27",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/main.tsx",
+      "entryType": "file",
+      "byteLength": 332,
+      "contentHash": "e41555b34958265616e01f06582f6c79a2d92336aa4e2f4dd2f4c7aff21cab2f",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/pages/client-chat.tsx",
+      "entryType": "file",
+      "byteLength": 19415,
+      "contentHash": "3aaf9782209e060ee2a2c6c44667eb0ca74016a2660a0da6bfccd316fd6ad669",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/pages/gallery.tsx",
+      "entryType": "file",
+      "byteLength": 30524,
+      "contentHash": "d02f0cad76b19ff488c37152f7e3eea1997fe2fe2e898b8f2e154dfdd17d9e58",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/pages/publisher-issue-new.tsx",
+      "entryType": "file",
+      "byteLength": 9746,
+      "contentHash": "79e415122287c1a84bc2ba7d2db24836c3f73ef4f117861de66af760afc62427",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/pages/publisher-notifications.tsx",
+      "entryType": "file",
+      "byteLength": 3002,
+      "contentHash": "87f53e9a0b917a8c55488593752d533825e5eaf547dc824c950fcc7ab9666242",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/pages/publisher.tsx",
+      "entryType": "file",
+      "byteLength": 2195,
+      "contentHash": "be4930c56565793cfbd63afa37f4d3b7527426a496dedccbc9e38f9630ef0094",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/router.tsx",
+      "entryType": "file",
+      "byteLength": 5621,
+      "contentHash": "ad67387c38e376bf2848e23b78b59246f931d99ccc9b2daa48864ed85216909e",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/index.ts",
+      "entryType": "file",
+      "byteLength": 355,
+      "contentHash": "95b401560ed62a396b70d8e418dfd4597f120fd0aea4d55588f880de015dfa9b",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/mock/content.ts",
+      "entryType": "file",
+      "byteLength": 23027,
+      "contentHash": "3d4b73dec00d6869a845afdf73c1357e5d6abc86985279183d4a279c8fec77e8",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/mock/data.ts",
+      "entryType": "file",
+      "byteLength": 6770,
+      "contentHash": "921d5f9a8ba69b2f6557550ca740d1f524e8169f0242e7397cbeeb476adb6efd",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/mock/engine.ts",
+      "entryType": "file",
+      "byteLength": 16507,
+      "contentHash": "44a4fd17f03dcdcef3c71a7e3a2212683dff4abc94b7f2ab48f96d4c30c5703a",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/mock/scripts.ts",
+      "entryType": "file",
+      "byteLength": 9656,
+      "contentHash": "ad4928e58783480ca5addecde69056f4864e7b74b2d83ae4f421dbb1b623b299",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/mock/visuals.ts",
+      "entryType": "file",
+      "byteLength": 8876,
+      "contentHash": "4344d9a26e3a1b2a9890cfe00c3e63d41b70e8929b008d392755216e328890a8",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/services/types.ts",
+      "entryType": "file",
+      "byteLength": 8003,
+      "contentHash": "4e52c8384919906b83e0408bdcb8a3446a9b4c3059b8c2bbe220e05011aa3683",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/src/styles/theme.css",
+      "entryType": "file",
+      "byteLength": 12724,
+      "contentHash": "f5fcec327626042a1e912effaec3294a4288617a99ed78a8bf93c1282a864a3b",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/tsconfig.json",
+      "entryType": "file",
+      "byteLength": 588,
+      "contentHash": "aa61ee7c256646a444beae9735968472d5d5aa991d57348f6dfea0427d692a12",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "ui-playground/vite.config.ts",
+      "entryType": "file",
+      "byteLength": 382,
+      "contentHash": "ebc001d7a09d18b6350ed47639e03690933d95229d8124a03613d150235dda08",
+      "symlinkTarget": ""
+    }
+  ],
+  "entryCount": 69,
+  "rootDigest": "e3d72fd4667f51d037416e51881a04b3488279d4f150545a66a7016ec6375c22",
+  "digestFormula": "sha256(path NUL byteLength NUL contentHash NUL symlinkTarget LF for sorted entries)",
+  "gitDiffClean": true,
+  "baselineManifest": {
+    "path": "artifacts/implement-ui-playground-demo-cutover/baseline/ui-playground-manifest.json",
+    "entryCount": 12406,
+    "rootDigest": "f51c404e8f45945e8366062b6dac9bbf2788190a0e209976578fda2be68aa8b0",
+    "trackedAuthoredCount": 69,
+    "coversTrackedSet": true,
+    "warning": "baseline manifest includes ignored/generated entries and is not authored comparison domain"
+  },
+  "contractIds": [
+    "RET-001",
+    "RET-002",
+    "GATE-003",
+    "EVIDENCE-007"
+  ]
+}
+

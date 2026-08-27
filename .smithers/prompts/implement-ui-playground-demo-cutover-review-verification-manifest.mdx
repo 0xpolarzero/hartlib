@@ -1,0 +1,15 @@
+# Review the verification manifest
+
+Read the prepared matrix and prove that every plan-required check has a real
+command, test, credential rule, service setup, isolated port, and evidence
+artifact. Confirm live retrieval, Stop, and reset-during-run cross the UI, API,
+worker, real provider, durable state, and reload. Any missing test, unsafe skip,
+fabricated credential, or warning-only command is a finding or external blocker,
+never a skip.
+
+Manifest:
+
+{JSON.stringify(props.manifest, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

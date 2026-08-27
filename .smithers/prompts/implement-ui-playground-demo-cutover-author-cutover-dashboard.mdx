@@ -1,0 +1,22 @@
+# Author the cutover dashboard
+
+Implement the workflow-owned Gateway dashboard at the requested UI path. Use
+`createGatewayReactRoot`, Gateway hooks, `WorkflowUiShell`, and shipped
+gateway/UI components. Read only Gateway data; never read Smithers internals,
+runtime tables, or a private database. Render every planned panel, every visible
+agent node with `NodeChatStream`, output envelopes through shipped output
+components, distinct failed and skipped states, live approvals, crash-resume
+views, artifacts, diffs, retention proof, and the six visual widths. Keep the
+workflow key and `?runId=` behavior exact. Transpile the UI and report actual
+files and commands.
+
+Frozen contracts:
+
+{JSON.stringify(props.frozenContracts, null, 2)}
+
+Wave plan:
+
+{JSON.stringify(props.wavePlan, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

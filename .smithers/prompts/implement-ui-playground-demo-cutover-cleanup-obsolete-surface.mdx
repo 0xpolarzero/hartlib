@@ -1,0 +1,19 @@
+# Remove the obsolete cutover surface
+
+Apply the frozen deletion map. Remove every obsolete visual, caller, contract,
+route, schema, test, style, export, dependency, and old capability, while
+keeping each retained item unchanged. Check all source imports and reachability
+before deleting. Do not add aliases, fallbacks, compatibility layers, dual
+paths, mocks, or placeholders. Report every removed item and every retained
+item that you checked.
+
+Frozen contracts:
+
+{JSON.stringify(props.frozenContracts, null, 2)}
+
+Baseline:
+
+{JSON.stringify(props.baseline, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

@@ -1,0 +1,18 @@
+# Repair regressions after final review
+
+Diagnose the affected regression commands using their real logs and the
+independent findings. Fix every valid code or test issue, rerun the affected
+commands, and leave no skipped or warning-only result. Keep the frozen
+ownership, live-provider requirements, retained bytes, and no-compatibility
+rules.
+
+Regression result:
+
+{JSON.stringify(props.regression, null, 2)}
+
+Independent findings:
+
+{JSON.stringify(props.findings, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

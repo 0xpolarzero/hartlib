@@ -1,0 +1,18 @@
+# Repair retention and cleanup findings
+
+Fix every valid retention, deletion, reachability, dependency, or byte-manifest
+finding. Keep `ui-playground/` byte-for-byte and remove shipped runtime imports
+and dependencies instead of adding an alias or fallback. Use real source,
+route, tree, bundle, and manifest checks; do not replace a missing check with a
+mock or a skip.
+
+Findings:
+
+{JSON.stringify(props.findings, null, 2)}
+
+Frozen contracts:
+
+{JSON.stringify(props.frozenContracts, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

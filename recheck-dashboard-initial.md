@@ -1,0 +1,2316 @@
+- main [ref=e3] [box=0,0,1028,1146]:
+  - generic [ref=e4] [box=0,0,1028,57]:
+    - generic [ref=e5] [box=18,17,400,23]:
+      - heading "UI Playground Demo Cutover" [level=1] [ref=e6] [box=18,17,227,23]
+      - generic [ref=e7] [box=255,17,87,22]: Running
+      - generic [ref=e9] [box=353,17,65,22]: 2 runs
+    - generic [ref=e10] [box=835,12,175,32]:
+      - generic [ref=e11] [box=835,19,76,18]: Connected
+      - button "Cancel run" [ref=e13] [cursor=pointer] [box=919,12,91,32]
+  - generic [ref=e15] [box=18,-42,981,51153]:
+    - generic [ref=e17] [box=33,-27,951,60]:
+      - generic [ref=e18] [box=33,-27,951,20]: Run
+      - combobox "Run" [ref=e19] [box=33,0,951,32]:
+        - option "Select a run" [box=0,0,0,0]
+        - option "run-17877607 · cancelled" [box=0,0,0,0]
+        - option "run-17877608 · running" [selected] [box=0,0,0,0]
+    - generic [ref=e20] [box=18,59,981,101]:
+      - generic [ref=e21] [box=18,59,188,101]:
+        - generic [ref=e22] [box=33,74,158,17]: Run status
+        - generic [ref=e23] [box=33,95,158,30]: running
+        - generic [ref=e24] [box=33,129,158,17]: run-1787760837339
+      - generic [ref=e25] [box=216,59,188,101]:
+        - generic [ref=e26] [box=231,74,158,17]: Live events
+        - generic [ref=e27] [box=231,95,158,30]: "800"
+        - generic [ref=e28] [box=231,129,158,17]: streaming
+      - generic [ref=e29] [box=414,59,188,101]:
+        - generic [ref=e30] [box=429,74,158,17]: Tree nodes
+        - generic [ref=e31] [box=429,95,158,30]: "103"
+        - generic [ref=e32] [box=429,129,158,17]: crash-resume state loaded
+      - generic [ref=e33] [box=613,59,188,101]:
+        - generic [ref=e34] [box=628,74,158,17]: Retained bytes
+        - generic [ref=e35] [box=628,95,158,30]: f51c404e8f45
+        - generic [ref=e36] [box=628,129,158,17]: digest pending
+      - generic [ref=e37] [box=811,59,188,101]:
+        - generic [ref=e38] [box=826,74,158,17]: Pending approvals
+        - generic [ref=e39] [box=826,95,158,30]: "0"
+        - generic [ref=e40] [box=826,129,158,17]: Gateway approval queue
+    - generic [ref=e41] [box=18,172,981,550]:
+      - heading "Run overview and stage graph" [level=2] [ref=e43] [box=33,187,191,18]
+      - generic [ref=e44] [box=33,215,951,492]:
+        - generic [ref=e46] [box=33,215,951,52]:
+          - generic [ref=e47] [box=33,215,102,22]: initialize run
+          - generic [ref=e49] [box=143,215,154,22]: assert preflight ready
+          - generic [ref=e51] [box=305,215,125,22]: freeze contracts
+          - generic [ref=e53] [box=438,215,159,22]: plan integration waves
+          - generic [ref=e55] [box=605,215,127,22]: checkpoint wave
+          - generic [ref=e57] [box=739,215,161,22]: checkpoint verification
+          - generic [ref=e59] [box=33,245,135,22]: checkpoint review
+          - generic [ref=e61] [box=176,245,234,22]: assert stable review and verification
+          - generic [ref=e63] [box=418,245,143,22]: final readiness gate
+          - generic [ref=e65] [box=569,245,140,22]: validate final result
+        - listbox "Workflow graph" [ref=e68] [box=33,287,951,420]:
+          - application [ref=e69] [box=33,287,951,420]:
+            - generic [ref=e71] [box=33,287,951,420]:
+              - generic [box=-2789,473,285,126]:
+                - generic [box=-2789,473,285,126]:
+                  - group "initialize_run (compute node)" [ref=e72] [cursor=pointer] [box=-2779,482,66,29]:
+                    - option "compute initialize_run initialize_run" [ref=e73] [box=-2779,482,66,22]:
+                      - generic [ref=e74] [box=-2775,486,57,7]:
+                        - generic [ref=e75] [box=-2775,486,24,7]: compute
+                        - generic [ref=e76] [box=-2749,486,25,6]: initialize_run
+                      - generic [ref=e77] [box=-2775,494,57,5]: initialize_run
+                  - group "assert_preflight_ready (compute node)" [ref=e78] [cursor=pointer] [box=-2674,482,66,29]:
+                    - option "compute assert_preflight_ready assert_preflight_ready" [ref=e79] [box=-2674,482,66,22]:
+                      - generic [ref=e80] [box=-2670,486,57,7]:
+                        - generic [ref=e81] [box=-2670,486,24,7]: compute
+                        - generic [ref=e82] [box=-2644,486,31,6]: assert_preflight_ready
+                      - generic [ref=e83] [box=-2670,494,57,5]: assert_preflight_ready
+                  - group "audit_repository_and_plan (agent node)" [ref=e84] [cursor=pointer] [box=-2569,482,66,29]:
+                    - option "agent audit_repository_and_plan audit_repository_and_plan" [ref=e85] [box=-2569,482,66,22]:
+                      - generic [ref=e86] [box=-2565,486,57,7]:
+                        - generic [ref=e87] [box=-2565,486,19,7]: agent
+                        - generic [ref=e88] [box=-2545,486,37,6]: audit_repository_and_plan
+                      - generic [ref=e89] [box=-2565,494,57,5]: audit_repository_and_plan
+                  - group "freeze_contracts (agent node)" [ref=e90] [cursor=pointer] [box=-2464,482,66,29]:
+                    - option "agent freeze_contracts freeze_contracts" [ref=e91] [box=-2464,482,66,22]:
+                      - generic [ref=e92] [box=-2460,486,57,7]:
+                        - generic [ref=e93] [box=-2460,486,19,7]: agent
+                        - generic [ref=e94] [box=-2440,486,33,6]: freeze_contracts
+                      - generic [ref=e95] [box=-2460,494,57,5]: freeze_contracts
+                  - group "plan_integration_waves (agent node)" [ref=e96] [cursor=pointer] [box=-2359,482,66,29]:
+                    - option "agent plan_integration_waves plan_integration_waves" [ref=e97] [box=-2359,482,66,22]:
+                      - generic [ref=e98] [box=-2355,486,57,7]:
+                        - generic [ref=e99] [box=-2355,486,19,7]: agent
+                        - generic [ref=e100] [box=-2335,486,37,6]: plan_integration_waves
+                      - generic [ref=e101] [box=-2355,494,57,5]: plan_integration_waves
+                  - group "persist_frozen_baseline (compute node)" [ref=e102] [cursor=pointer] [box=-2254,482,66,29]:
+                    - option "compute persist_frozen_baseline persist_frozen_baseline" [ref=e103] [box=-2254,482,66,22]:
+                      - generic [ref=e104] [box=-2250,486,57,7]:
+                        - generic [ref=e105] [box=-2250,486,24,7]: compute
+                        - generic [ref=e106] [box=-2224,486,31,6]: persist_frozen_baseline
+                      - generic [ref=e107] [box=-2250,494,57,5]: persist_frozen_baseline
+                  - group "author_cutover_dashboard (agent node)" [ref=e108] [cursor=pointer] [box=-2149,482,66,29]:
+                    - option "agent author_cutover_dashboard author_cutover_dashboard" [ref=e109] [box=-2149,482,66,22]:
+                      - generic [ref=e110] [box=-2145,486,57,7]:
+                        - generic [ref=e111] [box=-2145,486,19,7]: agent
+                        - generic [ref=e112] [box=-2125,486,37,6]: author_cutover_dashboard
+                      - generic [ref=e113] [box=-2145,494,57,5]: author_cutover_dashboard
+                  - group "review_cutover_dashboard (agent node)" [ref=e114] [cursor=pointer] [box=-2044,482,66,29]:
+                    - option "agent review_cutover_dashboard review_cutover_dashboard" [ref=e115] [box=-2044,482,66,22]:
+                      - generic [ref=e116] [box=-2040,486,57,7]:
+                        - generic [ref=e117] [box=-2040,486,19,7]: agent
+                        - generic [ref=e118] [box=-2020,486,37,6]: review_cutover_dashboard
+                      - generic [ref=e119] [box=-2040,494,57,5]: review_cutover_dashboard
+                  - group "repair_cutover_dashboard (agent node)" [ref=e120] [cursor=pointer] [box=-1939,482,66,29]:
+                    - option "agent repair_cutover_dashboard repair_cutover_dashboard" [ref=e121] [box=-1939,482,66,22]:
+                      - generic [ref=e122] [box=-1935,486,57,7]:
+                        - generic [ref=e123] [box=-1935,486,19,7]: agent
+                        - generic [ref=e124] [box=-1915,486,37,6]: repair_cutover_dashboard
+                      - generic [ref=e125] [box=-1935,494,57,5]: repair_cutover_dashboard
+                  - group "recheck_cutover_dashboard (agent node)" [ref=e126] [cursor=pointer] [box=-1834,482,66,29]:
+                    - option "agent recheck_cutover_dashboard recheck_cutover_dashboard" [ref=e127] [box=-1834,482,66,22]:
+                      - generic [ref=e128] [box=-1830,486,57,7]:
+                        - generic [ref=e129] [box=-1830,486,19,7]: agent
+                        - generic [ref=e130] [box=-1810,486,37,6]: recheck_cutover_dashboard
+                      - generic [ref=e131] [box=-1830,494,57,5]: recheck_cutover_dashboard
+                  - group "select_and_assign_wave (agent node)" [ref=e132] [cursor=pointer] [box=-1729,482,66,29]:
+                    - option "agent select_and_assign_wave select_and_assign_wave" [ref=e133] [box=-1729,482,66,22]:
+                      - generic [ref=e134] [box=-1725,486,57,7]:
+                        - generic [ref=e135] [box=-1725,486,19,7]: agent
+                        - generic [ref=e136] [box=-1705,486,37,6]: select_and_assign_wave
+                      - generic [ref=e137] [box=-1725,494,57,5]: select_and_assign_wave
+                  - group "implement_wave_lane_a (agent node)" [ref=e138] [cursor=pointer] [box=-1624,482,66,29]:
+                    - option "agent implement_wave_lane_a implement_wave_lane_a" [ref=e139] [box=-1624,482,66,22]:
+                      - generic [ref=e140] [box=-1620,486,57,7]:
+                        - generic [ref=e141] [box=-1620,486,19,7]: agent
+                        - generic [ref=e142] [box=-1600,486,37,6]: implement_wave_lane_a
+                      - generic [ref=e143] [box=-1620,494,57,5]: implement_wave_lane_a
+                  - group "implement_wave_lane_b (agent node)" [ref=e144] [cursor=pointer] [box=-1519,482,66,29]:
+                    - option "agent implement_wave_lane_b implement_wave_lane_b" [ref=e145] [box=-1519,482,66,22]:
+                      - generic [ref=e146] [box=-1515,486,57,7]:
+                        - generic [ref=e147] [box=-1515,486,19,7]: agent
+                        - generic [ref=e148] [box=-1495,486,37,6]: implement_wave_lane_b
+                      - generic [ref=e149] [box=-1515,494,57,5]: implement_wave_lane_b
+                  - group "implement_wave_lane_c (agent node)" [ref=e150] [cursor=pointer] [box=-1414,482,66,29]:
+                    - option "agent implement_wave_lane_c implement_wave_lane_c" [ref=e151] [box=-1414,482,66,22]:
+                      - generic [ref=e152] [box=-1410,486,57,7]:
+                        - generic [ref=e153] [box=-1410,486,19,7]: agent
+                        - generic [ref=e154] [box=-1390,486,37,6]: implement_wave_lane_c
+                      - generic [ref=e155] [box=-1410,494,57,5]: implement_wave_lane_c
+                  - group "review_wave_contract_compliance (agent node)" [ref=e156] [cursor=pointer] [box=-1309,482,66,29]:
+                    - option "agent review_wave_contract_compliance review_wave_contract_compliance" [ref=e157] [box=-1309,482,66,22]:
+                      - generic [ref=e158] [box=-1305,486,57,7]:
+                        - generic [ref=e159] [box=-1305,486,19,7]: agent
+                        - generic [ref=e160] [box=-1285,486,37,6]: review_wave_contract_compliance
+                      - generic [ref=e161] [box=-1305,494,57,5]: review_wave_contract_compliance
+                  - group "repair_wave_contract_findings (agent node)" [ref=e162] [cursor=pointer] [box=-1204,482,66,29]:
+                    - option "agent repair_wave_contract_findings repair_wave_contract_findings" [ref=e163] [box=-1204,482,66,22]:
+                      - generic [ref=e164] [box=-1200,486,57,7]:
+                        - generic [ref=e165] [box=-1200,486,19,7]: agent
+                        - generic [ref=e166] [box=-1180,486,37,6]: repair_wave_contract_findings
+                      - generic [ref=e167] [box=-1200,494,57,5]: repair_wave_contract_findings
+                  - group "integrate_wave (agent node)" [ref=e168] [cursor=pointer] [box=-1099,482,66,29]:
+                    - option "agent integrate_wave integrate_wave" [ref=e169] [box=-1099,482,66,22]:
+                      - generic [ref=e170] [box=-1095,486,57,7]:
+                        - generic [ref=e171] [box=-1095,486,19,7]: agent
+                        - generic [ref=e172] [box=-1075,486,29,6]: integrate_wave
+                      - generic [ref=e173] [box=-1095,494,57,5]: integrate_wave
+                  - group "run_wave_checks (compute node)" [ref=e174] [cursor=pointer] [box=-994,482,66,29]:
+                    - option "compute run_wave_checks run_wave_checks" [ref=e175] [box=-994,482,66,22]:
+                      - generic [ref=e176] [box=-990,486,57,7]:
+                        - generic [ref=e177] [box=-990,486,24,7]: compute
+                        - generic [ref=e178] [box=-964,486,31,6]: run_wave_checks
+                      - generic [ref=e179] [box=-990,494,57,5]: run_wave_checks
+                  - group "repair_wave_failures (agent node)" [ref=e180] [cursor=pointer] [box=-889,482,66,29]:
+                    - option "agent repair_wave_failures repair_wave_failures" [ref=e181] [box=-889,482,66,22]:
+                      - generic [ref=e182] [box=-885,486,57,7]:
+                        - generic [ref=e183] [box=-885,486,19,7]: agent
+                        - generic [ref=e184] [box=-865,486,37,6]: repair_wave_failures
+                      - generic [ref=e185] [box=-885,494,57,5]: repair_wave_failures
+                  - group "rerun_wave_checks (compute node)" [ref=e186] [cursor=pointer] [box=-784,482,66,29]:
+                    - option "compute rerun_wave_checks rerun_wave_checks" [ref=e187] [box=-784,482,66,22]:
+                      - generic [ref=e188] [box=-780,486,57,7]:
+                        - generic [ref=e189] [box=-780,486,24,7]: compute
+                        - generic [ref=e190] [box=-754,486,31,6]: rerun_wave_checks
+                      - generic [ref=e191] [box=-780,494,57,5]: rerun_wave_checks
+                  - group "checkpoint_wave (compute node)" [ref=e192] [cursor=pointer] [box=-679,482,66,29]:
+                    - option "compute checkpoint_wave checkpoint_wave" [ref=e193] [box=-679,482,66,22]:
+                      - generic [ref=e194] [box=-675,486,57,7]:
+                        - generic [ref=e195] [box=-675,486,24,7]: compute
+                        - generic [ref=e196] [box=-649,486,31,6]: checkpoint_wave
+                      - generic [ref=e197] [box=-675,494,57,5]: checkpoint_wave
+                  - group "cleanup_obsolete_surface (agent node)" [ref=e198] [cursor=pointer] [box=-574,482,66,29]:
+                    - option "agent cleanup_obsolete_surface cleanup_obsolete_surface" [ref=e199] [box=-574,482,66,22]:
+                      - generic [ref=e200] [box=-570,486,57,7]:
+                        - generic [ref=e201] [box=-570,486,19,7]: agent
+                        - generic [ref=e202] [box=-550,486,37,6]: cleanup_obsolete_surface
+                      - generic [ref=e203] [box=-570,494,57,5]: cleanup_obsolete_surface
+                  - group "verify_retention_cleanup (compute node)" [ref=e204] [cursor=pointer] [box=-469,482,66,29]:
+                    - option "compute verify_retention_cleanup verify_retention_cleanup" [ref=e205] [box=-469,482,66,22]:
+                      - generic [ref=e206] [box=-465,486,57,7]:
+                        - generic [ref=e207] [box=-465,486,24,7]: compute
+                        - generic [ref=e208] [box=-439,486,31,6]: verify_retention_cleanup
+                      - generic [ref=e209] [box=-465,494,57,5]: verify_retention_cleanup
+                  - group "repair_retention_cleanup (agent node)" [ref=e210] [cursor=pointer] [box=-364,482,66,29]:
+                    - option "agent repair_retention_cleanup repair_retention_cleanup" [ref=e211] [box=-364,482,66,22]:
+                      - generic [ref=e212] [box=-360,486,57,7]:
+                        - generic [ref=e213] [box=-360,486,19,7]: agent
+                        - generic [ref=e214] [box=-340,486,37,6]: repair_retention_cleanup
+                      - generic [ref=e215] [box=-360,494,57,5]: repair_retention_cleanup
+                  - group "reverify_retention_cleanup (compute node)" [ref=e216] [cursor=pointer] [box=-259,482,66,29]:
+                    - option "compute reverify_retention_cleanup reverify_retention_cleanup" [ref=e217] [box=-259,482,66,22]:
+                      - generic [ref=e218] [box=-255,486,57,7]:
+                        - generic [ref=e219] [box=-255,486,24,7]: compute
+                        - generic [ref=e220] [box=-229,486,31,6]: reverify_retention_cleanup
+                      - generic [ref=e221] [box=-255,494,57,5]: reverify_retention_cleanup
+                  - group "sync_canonical_docs (agent node)" [ref=e222] [cursor=pointer] [box=-154,482,66,29]:
+                    - option "agent sync_canonical_docs sync_canonical_docs" [ref=e223] [box=-154,482,66,22]:
+                      - generic [ref=e224] [box=-150,486,57,7]:
+                        - generic [ref=e225] [box=-150,486,19,7]: agent
+                        - generic [ref=e226] [box=-130,486,37,6]: sync_canonical_docs
+                      - generic [ref=e227] [box=-150,494,57,5]: sync_canonical_docs
+                  - group "review_docs_sync (agent node)" [ref=e228] [cursor=pointer] [box=-49,482,66,29]:
+                    - option "agent review_docs_sync review_docs_sync" [ref=e229] [box=-49,482,66,22]:
+                      - generic [ref=e230] [box=-45,486,57,7]:
+                        - generic [ref=e231] [box=-45,486,19,7]: agent
+                        - generic [ref=e232] [box=-25,486,35,6]: review_docs_sync
+                      - generic [ref=e233] [box=-45,494,57,5]: review_docs_sync
+                  - group "repair_docs_sync (agent node)" [ref=e234] [cursor=pointer] [box=56,482,66,29]:
+                    - option "agent repair_docs_sync repair_docs_sync" [ref=e235] [box=56,482,66,22]:
+                      - generic [ref=e236] [box=60,486,57,7]:
+                        - generic [ref=e237] [box=60,486,19,7]: agent
+                        - generic [ref=e238] [box=80,486,34,6]: repair_docs_sync
+                      - generic [ref=e239] [box=60,494,57,5]: repair_docs_sync
+                  - group "recheck_docs_sync (agent node)" [ref=e240] [cursor=pointer] [box=161,482,66,29]:
+                    - option "agent recheck_docs_sync recheck_docs_sync" [ref=e241] [box=161,482,66,22]:
+                      - generic [ref=e242] [box=165,486,57,7]:
+                        - generic [ref=e243] [box=165,486,19,7]: agent
+                        - generic [ref=e244] [box=185,486,37,6]: recheck_docs_sync
+                      - generic [ref=e245] [box=165,494,57,5]: recheck_docs_sync
+                  - group "checkpoint_cleanup_and_docs (compute node)" [ref=e246] [cursor=pointer] [box=266,482,66,29]:
+                    - option "compute checkpoint_cleanup_and_docs checkpoint_cleanup_and_docs" [ref=e247] [box=266,482,66,22]:
+                      - generic [ref=e248] [box=270,486,57,7]:
+                        - generic [ref=e249] [box=270,486,24,7]: compute
+                        - generic [ref=e250] [box=296,486,31,6]: checkpoint_cleanup_and_docs
+                      - generic [ref=e251] [box=270,494,57,5]: checkpoint_cleanup_and_docs
+                  - group "prepare_verification_matrix (agent node)" [ref=e252] [cursor=pointer] [box=371,482,66,29]:
+                    - option "agent prepare_verification_matrix prepare_verification_matrix" [ref=e253] [box=371,482,66,22]:
+                      - generic [ref=e254] [box=375,486,57,7]:
+                        - generic [ref=e255] [box=375,486,19,7]: agent
+                        - generic [ref=e256] [box=395,486,37,6]: prepare_verification_matrix
+                      - generic [ref=e257] [box=375,494,57,5]: prepare_verification_matrix
+                  - group "review_verification_manifest (agent node)" [ref=e258] [cursor=pointer] [box=476,482,66,29]:
+                    - option "agent review_verification_manifest review_verification_manifest" [ref=e259] [box=476,482,66,22]:
+                      - generic [ref=e260] [box=480,486,57,7]:
+                        - generic [ref=e261] [box=480,486,19,7]: agent
+                        - generic [ref=e262] [box=500,486,37,6]: review_verification_manifest
+                      - generic [ref=e263] [box=480,494,57,5]: review_verification_manifest
+                  - group "repair_verification_manifest (agent node)" [ref=e264] [cursor=pointer] [box=581,482,66,29]:
+                    - option "agent repair_verification_manifest repair_verification_manifest" [ref=e265] [box=581,482,66,22]:
+                      - generic [ref=e266] [box=585,486,57,7]:
+                        - generic [ref=e267] [box=585,486,19,7]: agent
+                        - generic [ref=e268] [box=605,486,37,6]: repair_verification_manifest
+                      - generic [ref=e269] [box=585,494,57,5]: repair_verification_manifest
+                  - group "recheck_verification_manifest (agent node)" [ref=e270] [cursor=pointer] [box=686,482,66,29]:
+                    - option "agent recheck_verification_manifest recheck_verification_manifest" [ref=e271] [box=686,482,66,22]:
+                      - generic [ref=e272] [box=690,486,57,7]:
+                        - generic [ref=e273] [box=690,486,19,7]: agent
+                        - generic [ref=e274] [box=710,486,37,6]: recheck_verification_manifest
+                      - generic [ref=e275] [box=690,494,57,5]: recheck_verification_manifest
+                  - group "check_migration_0074 (compute node)" [ref=e276] [cursor=pointer] [box=791,482,66,29]:
+                    - option "compute check_migration_0074 check_migration_0074" [ref=e277] [box=791,482,66,22]:
+                      - generic [ref=e278] [box=795,486,57,7]:
+                        - generic [ref=e279] [box=795,486,24,7]: compute
+                        - generic [ref=e280] [box=821,486,31,6]: check_migration_0074
+                      - generic [ref=e281] [box=795,494,57,5]: check_migration_0074
+                  - group "check_unit_tests (compute node)" [ref=e282] [cursor=pointer] [box=896,482,66,29]:
+                    - option "compute check_unit_tests check_unit_tests" [ref=e283] [box=896,482,66,22]:
+                      - generic [ref=e284] [box=900,486,57,7]:
+                        - generic [ref=e285] [box=900,486,24,7]: compute
+                        - generic [ref=e286] [box=926,486,31,6]: check_unit_tests
+                      - generic [ref=e287] [box=900,494,57,5]: check_unit_tests
+                  - group "check_integration_tests (compute node)" [ref=e288] [cursor=pointer] [box=1001,482,66,29]:
+                    - option "compute check_integration_tests check_integration_tests" [ref=e289] [box=1001,482,66,22]:
+                      - generic [ref=e290] [box=1005,486,57,7]:
+                        - generic [ref=e291] [box=1005,486,24,7]: compute
+                        - generic [ref=e292] [box=1031,486,31,6]: check_integration_tests
+                      - generic [ref=e293] [box=1005,494,57,5]: check_integration_tests
+                  - group "check_builds (compute node)" [ref=e294] [cursor=pointer] [box=1106,482,66,29]:
+                    - option "compute check_builds check_builds" [ref=e295] [box=1106,482,66,22]:
+                      - generic [ref=e296] [box=1110,486,57,7]:
+                        - generic [ref=e297] [box=1110,486,24,7]: compute
+                        - generic [ref=e298] [box=1136,486,26,6]: check_builds
+                      - generic [ref=e299] [box=1110,494,57,5]: check_builds
+                  - group "check_deterministic_playwright (compute node)" [ref=e300] [cursor=pointer] [box=1211,482,66,29]:
+                    - option "compute check_deterministic_playwright check_deterministic_playwright" [ref=e301] [box=1211,482,66,22]:
+                      - generic [ref=e302] [box=1215,486,57,7]:
+                        - generic [ref=e303] [box=1215,486,24,7]: compute
+                        - generic [ref=e304] [box=1241,486,31,6]: check_deterministic_playwright
+                      - generic [ref=e305] [box=1215,494,57,5]: check_deterministic_playwright
+                  - group "check_visual_breakpoints (compute node)" [ref=e306] [cursor=pointer] [box=1316,482,66,29]:
+                    - option "compute check_visual_breakpoints check_visual_breakpoints" [ref=e307] [box=1316,482,66,22]:
+                      - generic [ref=e308] [box=1320,486,57,7]:
+                        - generic [ref=e309] [box=1320,486,24,7]: compute
+                        - generic [ref=e310] [box=1346,486,31,6]: check_visual_breakpoints
+                      - generic [ref=e311] [box=1320,494,57,5]: check_visual_breakpoints
+                  - group "check_accessibility (compute node)" [ref=e312] [cursor=pointer] [box=1421,482,66,29]:
+                    - option "compute check_accessibility check_accessibility" [ref=e313] [box=1421,482,66,22]:
+                      - generic [ref=e314] [box=1425,486,57,7]:
+                        - generic [ref=e315] [box=1425,486,24,7]: compute
+                        - generic [ref=e316] [box=1451,486,31,6]: check_accessibility
+                      - generic [ref=e317] [box=1425,494,57,5]: check_accessibility
+                  - group "check_live_retrieval (compute node)" [ref=e318] [cursor=pointer] [box=1526,482,66,29]:
+                    - option "compute check_live_retrieval check_live_retrieval" [ref=e319] [box=1526,482,66,22]:
+                      - generic [ref=e320] [box=1530,486,57,7]:
+                        - generic [ref=e321] [box=1530,486,24,7]: compute
+                        - generic [ref=e322] [box=1556,486,31,6]: check_live_retrieval
+                      - generic [ref=e323] [box=1530,494,57,5]: check_live_retrieval
+                  - group "check_live_stop (compute node)" [ref=e324] [cursor=pointer] [box=1631,482,66,29]:
+                    - option "compute check_live_stop check_live_stop" [ref=e325] [box=1631,482,66,22]:
+                      - generic [ref=e326] [box=1635,486,57,7]:
+                        - generic [ref=e327] [box=1635,486,24,7]: compute
+                        - generic [ref=e328] [box=1661,486,31,6]: check_live_stop
+                      - generic [ref=e329] [box=1635,494,57,5]: check_live_stop
+                  - group "check_live_reset_during_run (compute node)" [ref=e330] [cursor=pointer] [box=1736,482,66,29]:
+                    - option "compute check_live_reset_during_run check_live_reset_during_run" [ref=e331] [box=1736,482,66,22]:
+                      - generic [ref=e332] [box=1740,486,57,7]:
+                        - generic [ref=e333] [box=1740,486,24,7]: compute
+                        - generic [ref=e334] [box=1766,486,31,6]: check_live_reset_during_run
+                      - generic [ref=e335] [box=1740,494,57,5]: check_live_reset_during_run
+                  - group "check_reachability_and_bundle (compute node)" [ref=e336] [cursor=pointer] [box=1841,482,66,29]:
+                    - option "compute check_reachability_and_bundle check_reachability_and_bundle" [ref=e337] [box=1841,482,66,22]:
+                      - generic [ref=e338] [box=1845,486,57,7]:
+                        - generic [ref=e339] [box=1845,486,24,7]: compute
+                        - generic [ref=e340] [box=1871,486,31,6]: check_reachability_and_bundle
+                      - generic [ref=e341] [box=1845,494,57,5]: check_reachability_and_bundle
+                  - group "check_callers_and_capabilities (compute node)" [ref=e342] [cursor=pointer] [box=1946,482,66,29]:
+                    - option "compute check_callers_and_capabilities check_callers_and_capabilities" [ref=e343] [box=1946,482,66,22]:
+                      - generic [ref=e344] [box=1950,486,57,7]:
+                        - generic [ref=e345] [box=1950,486,24,7]: compute
+                        - generic [ref=e346] [box=1976,486,31,6]: check_callers_and_capabilities
+                      - generic [ref=e347] [box=1950,494,57,5]: check_callers_and_capabilities
+                  - group "check_reference_integrity (compute node)" [ref=e348] [cursor=pointer] [box=2051,482,66,29]:
+                    - option "compute check_reference_integrity check_reference_integrity" [ref=e349] [box=2051,482,66,22]:
+                      - generic [ref=e350] [box=2055,486,57,7]:
+                        - generic [ref=e351] [box=2055,486,24,7]: compute
+                        - generic [ref=e352] [box=2081,486,31,6]: check_reference_integrity
+                      - generic [ref=e353] [box=2055,494,57,5]: check_reference_integrity
+                  - group "check_lint (compute node)" [ref=e354] [cursor=pointer] [box=2156,482,66,29]:
+                    - option "compute check_lint check_lint" [ref=e355] [box=2156,482,66,22]:
+                      - generic [ref=e356] [box=2160,486,57,7]:
+                        - generic [ref=e357] [box=2160,486,24,7]: compute
+                        - generic [ref=e358] [box=2186,486,20,6]: check_lint
+                      - generic [ref=e359] [box=2160,494,57,5]: check_lint
+                  - group "check_root (compute node)" [ref=e360] [cursor=pointer] [box=2261,482,66,29]:
+                    - option "compute check_root check_root" [ref=e361] [box=2261,482,66,22]:
+                      - generic [ref=e362] [box=2265,486,57,7]:
+                        - generic [ref=e363] [box=2265,486,24,7]: compute
+                        - generic [ref=e364] [box=2291,486,22,6]: check_root
+                      - generic [ref=e365] [box=2265,494,57,5]: check_root
+                  - group "aggregate_verification_matrix (compute node)" [ref=e366] [cursor=pointer] [box=2366,482,66,29]:
+                    - option "compute aggregate_verification_matrix aggregate_verification_matrix" [ref=e367] [box=2366,482,66,22]:
+                      - generic [ref=e368] [box=2370,486,57,7]:
+                        - generic [ref=e369] [box=2370,486,24,7]: compute
+                        - generic [ref=e370] [box=2396,486,31,6]: aggregate_verification_matrix
+                      - generic [ref=e371] [box=2370,494,57,5]: aggregate_verification_matrix
+                  - group "classify_verification_failures (compute node)" [ref=e372] [cursor=pointer] [box=2471,482,66,29]:
+                    - option "compute classify_verification_failures classify_verification_failures" [ref=e373] [box=2471,482,66,22]:
+                      - generic [ref=e374] [box=2475,486,57,7]:
+                        - generic [ref=e375] [box=2475,486,24,7]: compute
+                        - generic [ref=e376] [box=2501,486,31,6]: classify_verification_failures
+                      - generic [ref=e377] [box=2475,494,57,5]: classify_verification_failures
+                  - group "repair_verification_failures (agent node)" [ref=e378] [cursor=pointer] [box=2576,482,66,29]:
+                    - option "agent repair_verification_failures repair_verification_failures" [ref=e379] [box=2576,482,66,22]:
+                      - generic [ref=e380] [box=2580,486,57,7]:
+                        - generic [ref=e381] [box=2580,486,19,7]: agent
+                        - generic [ref=e382] [box=2600,486,37,6]: repair_verification_failures
+                      - generic [ref=e383] [box=2580,494,57,5]: repair_verification_failures
+                  - group "checkpoint_verification (compute node)" [ref=e384] [cursor=pointer] [box=2681,482,66,29]:
+                    - option "compute checkpoint_verification checkpoint_verification" [ref=e385] [box=2681,482,66,22]:
+                      - generic [ref=e386] [box=2685,486,57,7]:
+                        - generic [ref=e387] [box=2685,486,24,7]: compute
+                        - generic [ref=e388] [box=2711,486,31,6]: checkpoint_verification
+                      - generic [ref=e389] [box=2685,494,57,5]: checkpoint_verification
+                  - group "independent_final_review (agent node)" [ref=e390] [cursor=pointer] [box=2786,482,66,29]:
+                    - option "agent independent_final_review independent_final_review" [ref=e391] [box=2786,482,66,22]:
+                      - generic [ref=e392] [box=2790,486,57,7]:
+                        - generic [ref=e393] [box=2790,486,19,7]: agent
+                        - generic [ref=e394] [box=2810,486,37,6]: independent_final_review
+                      - generic [ref=e395] [box=2790,494,57,5]: independent_final_review
+                  - group "remediate_review_findings (agent node)" [ref=e396] [cursor=pointer] [box=2891,482,66,29]:
+                    - option "agent remediate_review_findings remediate_review_findings" [ref=e397] [box=2891,482,66,22]:
+                      - generic [ref=e398] [box=2895,486,57,7]:
+                        - generic [ref=e399] [box=2895,486,19,7]: agent
+                        - generic [ref=e400] [box=2915,486,37,6]: remediate_review_findings
+                      - generic [ref=e401] [box=2895,494,57,5]: remediate_review_findings
+                  - group "run_affected_regressions (compute node)" [ref=e402] [cursor=pointer] [box=2996,482,66,29]:
+                    - option "compute run_affected_regressions run_affected_regressions" [ref=e403] [box=2996,482,66,22]:
+                      - generic [ref=e404] [box=3000,486,57,7]:
+                        - generic [ref=e405] [box=3000,486,24,7]: compute
+                        - generic [ref=e406] [box=3026,486,31,6]: run_affected_regressions
+                      - generic [ref=e407] [box=3000,494,57,5]: run_affected_regressions
+                  - group "repair_review_regression_failures (agent node)" [ref=e408] [cursor=pointer] [box=3101,482,66,29]:
+                    - option "agent repair_review_regression_failures repair_review_regression_failures" [ref=e409] [box=3101,482,66,22]:
+                      - generic [ref=e410] [box=3105,486,57,7]:
+                        - generic [ref=e411] [box=3105,486,19,7]: agent
+                        - generic [ref=e412] [box=3125,486,37,6]: repair_review_regression_failures
+                      - generic [ref=e413] [box=3105,494,57,5]: repair_review_regression_failures
+                  - group "rerun_affected_regressions (compute node)" [ref=e414] [cursor=pointer] [box=3206,482,66,29]:
+                    - option "compute rerun_affected_regressions rerun_affected_regressions" [ref=e415] [box=3206,482,66,22]:
+                      - generic [ref=e416] [box=3210,486,57,7]:
+                        - generic [ref=e417] [box=3210,486,24,7]: compute
+                        - generic [ref=e418] [box=3236,486,31,6]: rerun_affected_regressions
+                      - generic [ref=e419] [box=3210,494,57,5]: rerun_affected_regressions
+                  - group "checkpoint_review (compute node)" [ref=e420] [cursor=pointer] [box=3311,482,66,29]:
+                    - option "compute checkpoint_review checkpoint_review" [ref=e421] [box=3311,482,66,22]:
+                      - generic [ref=e422] [box=3315,486,57,7]:
+                        - generic [ref=e423] [box=3315,486,24,7]: compute
+                        - generic [ref=e424] [box=3341,486,31,6]: checkpoint_review
+                      - generic [ref=e425] [box=3315,494,57,5]: checkpoint_review
+                  - group "assert_stable_review_and_verification (compute node)" [ref=e426] [cursor=pointer] [box=3416,482,66,29]:
+                    - option "compute assert_stable_review_and_verification assert_stable_review_and_verification" [ref=e427] [box=3416,482,66,22]:
+                      - generic [ref=e428] [box=3420,486,57,7]:
+                        - generic [ref=e429] [box=3420,486,24,7]: compute
+                        - generic [ref=e430] [box=3446,486,31,6]: assert_stable_review_and_verification
+                      - generic [ref=e431] [box=3420,494,57,5]: assert_stable_review_and_verification
+                  - group "final_readiness_gate (compute node)" [ref=e432] [cursor=pointer] [box=3521,482,66,29]:
+                    - option "compute final_readiness_gate final_readiness_gate" [ref=e433] [box=3521,482,66,22]:
+                      - generic [ref=e434] [box=3525,486,57,7]:
+                        - generic [ref=e435] [box=3525,486,24,7]: compute
+                        - generic [ref=e436] [box=3551,486,31,6]: final_readiness_gate
+                      - generic [ref=e437] [box=3525,494,57,5]: final_readiness_gate
+                  - group "capture_approval_record (compute node)" [ref=e438] [cursor=pointer] [box=3626,482,66,29]:
+                    - option "compute capture_approval_record capture_approval_record" [ref=e439] [box=3626,482,66,22]:
+                      - generic [ref=e440] [box=3630,486,57,7]:
+                        - generic [ref=e441] [box=3630,486,24,7]: compute
+                        - generic [ref=e442] [box=3656,486,31,6]: capture_approval_record
+                      - generic [ref=e443] [box=3630,494,57,5]: capture_approval_record
+                  - group "validate_final_result (compute node)" [ref=e444] [cursor=pointer] [box=3731,482,66,29]:
+                    - option "compute validate_final_result validate_final_result" [ref=e445] [box=3731,482,66,22]:
+                      - generic [ref=e446] [box=3735,486,57,7]:
+                        - generic [ref=e447] [box=3735,486,24,7]: compute
+                        - generic [ref=e448] [box=3761,486,31,6]: validate_final_result
+                      - generic [ref=e449] [box=3735,494,57,5]: validate_final_result
+            - generic "Control Panel" [ref=e450] [box=48,614,26,78]:
+              - button "Zoom In" [ref=e451] [cursor=pointer] [box=48,614,26,26]
+              - button "Zoom Out" [disabled] [box=48,640,26,26]
+              - button "Fit View" [ref=e454] [cursor=pointer] [box=48,666,26,26]
+    - generic [ref=e458] [box=18,734,981,5210]:
+      - heading "Run tree and durable events" [level=2] [ref=e460] [box=33,749,177,18]
+      - generic [ref=e462] [box=33,776,951,5152]:
+        - generic [ref=e463] [box=33,776,470,5152]:
+          - button "implement-ui-playground-demo-cutover workflow Running" [ref=e464] [box=34,777,468,50]:
+            - generic [ref=e465] [box=44,784,246,36]:
+              - generic [ref=e466] [box=44,784,246,20]: implement-ui-playground-demo-cutover
+              - generic [ref=e467] [box=44,804,246,17]: workflow
+            - generic [ref=e468] [box=405,791,87,22]: Running
+          - button "sequence compute Running" [ref=e470] [box=34,827,468,50]:
+            - generic [ref=e471] [box=60,834,59,36]:
+              - generic [ref=e472] [box=60,834,59,20]: sequence
+              - generic [ref=e473] [box=60,854,59,17]: compute
+            - generic [ref=e474] [box=405,841,87,22]: Running
+          - button "initialize_run compute Complete" [ref=e476] [box=34,877,468,50]:
+            - generic [ref=e477] [box=76,884,76,36]:
+              - generic [ref=e478] [box=76,884,76,20]: initialize_run
+              - generic [ref=e479] [box=76,904,76,17]: compute
+            - generic [ref=e480] [box=397,891,96,22]: Complete
+          - button "assert_preflight_ready compute Complete" [ref=e482] [box=34,927,468,50]:
+            - generic [ref=e483] [box=76,934,138,36]:
+              - generic [ref=e484] [box=76,934,138,20]: assert_preflight_ready
+              - generic [ref=e485] [box=76,954,138,17]: compute
+            - generic [ref=e486] [box=397,941,96,22]: Complete
+          - button "branch compute Running" [ref=e488] [box=34,977,468,50]:
+            - generic [ref=e489] [box=76,984,46,36]:
+              - generic [ref=e490] [box=76,984,46,20]: branch
+              - generic [ref=e491] [box=76,1004,46,17]: compute
+            - generic [ref=e492] [box=405,991,87,22]: Running
+          - button "sequence compute Running" [ref=e494] [box=34,1027,468,50]:
+            - generic [ref=e495] [box=92,1034,59,36]:
+              - generic [ref=e496] [box=92,1034,59,20]: sequence
+              - generic [ref=e497] [box=92,1054,59,17]: compute
+            - generic [ref=e498] [box=405,1041,87,22]: Running
+          - button "audit_repository_and_plan agent Complete" [ref=e500] [box=34,1077,468,50]:
+            - generic [ref=e501] [box=108,1084,161,36]:
+              - generic [ref=e502] [box=108,1084,161,20]: audit_repository_and_plan
+              - generic [ref=e503] [box=108,1104,161,17]: agent
+            - generic [ref=e504] [box=397,1091,96,22]: Complete
+          - button "freeze_contracts agent Complete" [ref=e506] [box=34,1127,468,50]:
+            - generic [ref=e507] [box=108,1134,102,36]:
+              - generic [ref=e508] [box=108,1134,102,20]: freeze_contracts
+              - generic [ref=e509] [box=108,1154,102,17]: agent
+            - generic [ref=e510] [box=397,1141,96,22]: Complete
+          - button "plan_integration_waves agent Complete" [ref=e512] [box=34,1177,468,50]:
+            - generic [ref=e513] [box=108,1184,142,36]:
+              - generic [ref=e514] [box=108,1184,142,20]: plan_integration_waves
+              - generic [ref=e515] [box=108,1204,142,17]: agent
+            - generic [ref=e516] [box=397,1191,96,22]: Complete
+          - button "persist_frozen_baseline compute Complete" [ref=e518] [box=34,1227,468,50]:
+            - generic [ref=e519] [box=108,1234,145,36]:
+              - generic [ref=e520] [box=108,1234,145,20]: persist_frozen_baseline
+              - generic [ref=e521] [box=108,1254,145,17]: compute
+            - generic [ref=e522] [box=397,1241,96,22]: Complete
+          - button "author_cutover_dashboard agent Complete" [ref=e524] [box=34,1277,468,50]:
+            - generic [ref=e525] [box=108,1284,163,36]:
+              - generic [ref=e526] [box=108,1284,163,20]: author_cutover_dashboard
+              - generic [ref=e527] [box=108,1304,163,17]: agent
+            - generic [ref=e528] [box=397,1291,96,22]: Complete
+          - button "ralph loop Running" [ref=e530] [box=34,1327,468,50]:
+            - generic [ref=e531] [box=108,1334,31,36]:
+              - generic [ref=e532] [box=108,1334,31,20]: ralph
+              - generic [ref=e533] [box=108,1354,31,17]: loop
+            - generic [ref=e534] [box=405,1341,87,22]: Running
+          - button "sequence compute Running" [ref=e536] [box=34,1377,468,50]:
+            - generic [ref=e537] [box=124,1384,59,36]:
+              - generic [ref=e538] [box=124,1384,59,20]: sequence
+              - generic [ref=e539] [box=124,1404,59,17]: compute
+            - generic [ref=e540] [box=405,1391,87,22]: Running
+          - button "review_cutover_dashboard agent Complete" [ref=e542] [box=34,1427,468,50]:
+            - generic [ref=e543] [box=140,1434,162,36]:
+              - generic [ref=e544] [box=140,1434,162,20]: review_cutover_dashboard
+              - generic [ref=e545] [box=140,1454,162,17]: agent
+            - generic [ref=e546] [box=397,1441,96,22]: Complete
+          - button "branch compute Complete" [ref=e548] [box=34,1477,468,50]:
+            - generic [ref=e549] [box=140,1484,46,36]:
+              - generic [ref=e550] [box=140,1484,46,20]: branch
+              - generic [ref=e551] [box=140,1504,46,17]: compute
+            - generic [ref=e552] [box=397,1491,96,22]: Complete
+          - button "repair_cutover_dashboard agent Complete" [ref=e554] [box=34,1527,468,50]:
+            - generic [ref=e555] [box=156,1534,158,36]:
+              - generic [ref=e556] [box=156,1534,158,20]: repair_cutover_dashboard
+              - generic [ref=e557] [box=156,1554,158,17]: agent
+            - generic [ref=e558] [box=397,1541,96,22]: Complete
+          - button "recheck_cutover_dashboard agent Running" [ref=e560] [box=34,1577,468,50]:
+            - generic [ref=e561] [box=140,1584,172,36]:
+              - generic [ref=e562] [box=140,1584,172,20]: recheck_cutover_dashboard
+              - generic [ref=e563] [box=140,1604,172,17]: agent
+            - generic [ref=e564] [box=405,1591,87,22]: Running
+          - button "ralph loop Queued" [ref=e566] [box=34,1627,468,50]:
+            - generic [ref=e567] [box=108,1634,31,36]:
+              - generic [ref=e568] [box=108,1634,31,20]: ralph
+              - generic [ref=e569] [box=108,1654,31,17]: loop
+            - generic [ref=e570] [box=411,1641,81,22]: Queued
+          - button "sequence compute Queued" [ref=e572] [box=34,1677,468,50]:
+            - generic [ref=e573] [box=124,1684,59,36]:
+              - generic [ref=e574] [box=124,1684,59,20]: sequence
+              - generic [ref=e575] [box=124,1704,59,17]: compute
+            - generic [ref=e576] [box=411,1691,81,22]: Queued
+          - button "select_and_assign_wave agent Queued" [ref=e578] [box=34,1727,468,50]:
+            - generic [ref=e579] [box=140,1734,150,36]:
+              - generic [ref=e580] [box=140,1734,150,20]: select_and_assign_wave
+              - generic [ref=e581] [box=140,1754,150,17]: agent
+            - generic [ref=e582] [box=411,1741,81,22]: Queued
+          - button "parallel parallel Queued" [ref=e584] [box=34,1777,468,50]:
+            - generic [ref=e585] [box=140,1784,44,36]:
+              - generic [ref=e586] [box=140,1784,44,20]: parallel
+              - generic [ref=e587] [box=140,1804,44,17]: parallel
+            - generic [ref=e588] [box=411,1791,81,22]: Queued
+          - button "branch compute Queued" [ref=e590] [box=34,1827,468,50]:
+            - generic [ref=e591] [box=156,1834,46,36]:
+              - generic [ref=e592] [box=156,1834,46,20]: branch
+              - generic [ref=e593] [box=156,1854,46,17]: compute
+            - generic [ref=e594] [box=411,1841,81,22]: Queued
+          - button "branch compute Queued" [ref=e596] [box=34,1877,468,50]:
+            - generic [ref=e597] [box=156,1884,46,36]:
+              - generic [ref=e598] [box=156,1884,46,20]: branch
+              - generic [ref=e599] [box=156,1904,46,17]: compute
+            - generic [ref=e600] [box=411,1891,81,22]: Queued
+          - button "branch compute Queued" [ref=e602] [box=34,1927,468,50]:
+            - generic [ref=e603] [box=156,1934,46,36]:
+              - generic [ref=e604] [box=156,1934,46,20]: branch
+              - generic [ref=e605] [box=156,1954,46,17]: compute
+            - generic [ref=e606] [box=411,1941,81,22]: Queued
+          - button "ralph loop Queued" [ref=e608] [box=34,1977,468,50]:
+            - generic [ref=e609] [box=140,1984,31,36]:
+              - generic [ref=e610] [box=140,1984,31,20]: ralph
+              - generic [ref=e611] [box=140,2004,31,17]: loop
+            - generic [ref=e612] [box=411,1991,81,22]: Queued
+          - button "sequence compute Queued" [ref=e614] [box=34,2027,468,50]:
+            - generic [ref=e615] [box=156,2034,59,36]:
+              - generic [ref=e616] [box=156,2034,59,20]: sequence
+              - generic [ref=e617] [box=156,2054,59,17]: compute
+            - generic [ref=e618] [box=411,2041,81,22]: Queued
+          - button "review_wave_contract_compliance agent Queued" [ref=e620] [box=34,2077,468,50]:
+            - generic [ref=e621] [box=172,2084,210,36]:
+              - generic [ref=e622] [box=172,2084,210,20]: review_wave_contract_compliance
+              - generic [ref=e623] [box=172,2104,210,17]: agent
+            - generic [ref=e624] [box=411,2091,81,22]: Queued
+          - button "branch compute Queued" [ref=e626] [box=34,2127,468,50]:
+            - generic [ref=e627] [box=172,2134,46,36]:
+              - generic [ref=e628] [box=172,2134,46,20]: branch
+              - generic [ref=e629] [box=172,2154,46,17]: compute
+            - generic [ref=e630] [box=411,2141,81,22]: Queued
+          - button "merge-queue compute Queued" [ref=e632] [box=34,2177,468,50]:
+            - generic [ref=e633] [box=140,2184,82,36]:
+              - generic [ref=e634] [box=140,2184,82,20]: merge-queue
+              - generic [ref=e635] [box=140,2204,82,17]: compute
+            - generic [ref=e636] [box=411,2191,81,22]: Queued
+          - button "integrate_wave agent Queued" [ref=e638] [box=34,2227,468,50]:
+            - generic [ref=e639] [box=156,2234,91,36]:
+              - generic [ref=e640] [box=156,2234,91,20]: integrate_wave
+              - generic [ref=e641] [box=156,2254,91,17]: agent
+            - generic [ref=e642] [box=411,2241,81,22]: Queued
+          - button "ralph loop Queued" [ref=e644] [box=34,2277,468,50]:
+            - generic [ref=e645] [box=156,2284,31,36]:
+              - generic [ref=e646] [box=156,2284,31,20]: ralph
+              - generic [ref=e647] [box=156,2304,31,17]: loop
+            - generic [ref=e648] [box=411,2291,81,22]: Queued
+          - button "sequence compute Queued" [ref=e650] [box=34,2327,468,50]:
+            - generic [ref=e651] [box=172,2334,59,36]:
+              - generic [ref=e652] [box=172,2334,59,20]: sequence
+              - generic [ref=e653] [box=172,2354,59,17]: compute
+            - generic [ref=e654] [box=411,2341,81,22]: Queued
+          - button "run_wave_checks agent Queued" [ref=e656] [box=34,2377,468,50]:
+            - generic [ref=e657] [box=188,2384,107,36]:
+              - generic [ref=e658] [box=188,2384,107,20]: run_wave_checks
+              - generic [ref=e659] [box=188,2404,107,17]: agent
+            - generic [ref=e660] [box=411,2391,81,22]: Queued
+          - button "branch compute Queued" [ref=e662] [box=34,2427,468,50]:
+            - generic [ref=e663] [box=188,2434,46,36]:
+              - generic [ref=e664] [box=188,2434,46,20]: branch
+              - generic [ref=e665] [box=188,2454,46,17]: compute
+            - generic [ref=e666] [box=411,2441,81,22]: Queued
+          - button "repair_wave_failures agent Queued" [ref=e668] [box=34,2477,468,50]:
+            - generic [ref=e669] [box=204,2484,123,36]:
+              - generic [ref=e670] [box=204,2484,123,20]: repair_wave_failures
+              - generic [ref=e671] [box=204,2504,123,17]: agent
+            - generic [ref=e672] [box=411,2491,81,22]: Queued
+          - button "rerun_wave_checks agent Queued" [ref=e674] [box=34,2527,468,50]:
+            - generic [ref=e675] [box=188,2534,119,36]:
+              - generic [ref=e676] [box=188,2534,119,20]: rerun_wave_checks
+              - generic [ref=e677] [box=188,2554,119,17]: agent
+            - generic [ref=e678] [box=411,2541,81,22]: Queued
+          - button "checkpoint_wave compute Queued" [ref=e680] [box=34,2577,468,50]:
+            - generic [ref=e681] [box=156,2584,104,36]:
+              - generic [ref=e682] [box=156,2584,104,20]: checkpoint_wave
+              - generic [ref=e683] [box=156,2604,104,17]: compute
+            - generic [ref=e684] [box=411,2591,81,22]: Queued
+          - button "cleanup_obsolete_surface agent Queued" [ref=e686] [box=34,2627,468,50]:
+            - generic [ref=e687] [box=108,2634,160,36]:
+              - generic [ref=e688] [box=108,2634,160,20]: cleanup_obsolete_surface
+              - generic [ref=e689] [box=108,2654,160,17]: agent
+            - generic [ref=e690] [box=411,2641,81,22]: Queued
+          - button "ralph loop Queued" [ref=e692] [box=34,2677,468,50]:
+            - generic [ref=e693] [box=108,2684,31,36]:
+              - generic [ref=e694] [box=108,2684,31,20]: ralph
+              - generic [ref=e695] [box=108,2704,31,17]: loop
+            - generic [ref=e696] [box=411,2691,81,22]: Queued
+          - button "sequence compute Queued" [ref=e698] [box=34,2727,468,50]:
+            - generic [ref=e699] [box=124,2734,59,36]:
+              - generic [ref=e700] [box=124,2734,59,20]: sequence
+              - generic [ref=e701] [box=124,2754,59,17]: compute
+            - generic [ref=e702] [box=411,2741,81,22]: Queued
+          - button "verify_retention_cleanup compute Queued" [ref=e704] [box=34,2777,468,50]:
+            - generic [ref=e705] [box=140,2784,149,36]:
+              - generic [ref=e706] [box=140,2784,149,20]: verify_retention_cleanup
+              - generic [ref=e707] [box=140,2804,149,17]: compute
+            - generic [ref=e708] [box=411,2791,81,22]: Queued
+          - button "branch compute Queued" [ref=e710] [box=34,2827,468,50]:
+            - generic [ref=e711] [box=140,2834,46,36]:
+              - generic [ref=e712] [box=140,2834,46,20]: branch
+              - generic [ref=e713] [box=140,2854,46,17]: compute
+            - generic [ref=e714] [box=411,2841,81,22]: Queued
+          - button "repair_retention_cleanup agent Queued" [ref=e716] [box=34,2877,468,50]:
+            - generic [ref=e717] [box=156,2884,151,36]:
+              - generic [ref=e718] [box=156,2884,151,20]: repair_retention_cleanup
+              - generic [ref=e719] [box=156,2904,151,17]: agent
+            - generic [ref=e720] [box=411,2891,81,22]: Queued
+          - button "reverify_retention_cleanup compute Queued" [ref=e722] [box=34,2927,468,50]:
+            - generic [ref=e723] [box=140,2934,161,36]:
+              - generic [ref=e724] [box=140,2934,161,20]: reverify_retention_cleanup
+              - generic [ref=e725] [box=140,2954,161,17]: compute
+            - generic [ref=e726] [box=411,2941,81,22]: Queued
+          - button "sync_canonical_docs agent Queued" [ref=e728] [box=34,2977,468,50]:
+            - generic [ref=e729] [box=108,2984,129,36]:
+              - generic [ref=e730] [box=108,2984,129,20]: sync_canonical_docs
+              - generic [ref=e731] [box=108,3004,129,17]: agent
+            - generic [ref=e732] [box=411,2991,81,22]: Queued
+          - button "ralph loop Queued" [ref=e734] [box=34,3027,468,50]:
+            - generic [ref=e735] [box=108,3034,31,36]:
+              - generic [ref=e736] [box=108,3034,31,20]: ralph
+              - generic [ref=e737] [box=108,3054,31,17]: loop
+            - generic [ref=e738] [box=411,3041,81,22]: Queued
+          - button "sequence compute Queued" [ref=e740] [box=34,3077,468,50]:
+            - generic [ref=e741] [box=124,3084,59,36]:
+              - generic [ref=e742] [box=124,3084,59,20]: sequence
+              - generic [ref=e743] [box=124,3104,59,17]: compute
+            - generic [ref=e744] [box=411,3091,81,22]: Queued
+          - button "review_docs_sync agent Queued" [ref=e746] [box=34,3127,468,50]:
+            - generic [ref=e747] [box=140,3134,110,36]:
+              - generic [ref=e748] [box=140,3134,110,20]: review_docs_sync
+              - generic [ref=e749] [box=140,3154,110,17]: agent
+            - generic [ref=e750] [box=411,3141,81,22]: Queued
+          - button "branch compute Queued" [ref=e752] [box=34,3177,468,50]:
+            - generic [ref=e753] [box=140,3184,46,36]:
+              - generic [ref=e754] [box=140,3184,46,20]: branch
+              - generic [ref=e755] [box=140,3204,46,17]: compute
+            - generic [ref=e756] [box=411,3191,81,22]: Queued
+          - button "recheck_docs_sync agent Queued" [ref=e758] [box=34,3227,468,50]:
+            - generic [ref=e759] [box=140,3234,120,36]:
+              - generic [ref=e760] [box=140,3234,120,20]: recheck_docs_sync
+              - generic [ref=e761] [box=140,3254,120,17]: agent
+            - generic [ref=e762] [box=411,3241,81,22]: Queued
+          - button "checkpoint_cleanup_and_docs compute Queued" [ref=e764] [box=34,3277,468,50]:
+            - generic [ref=e765] [box=108,3284,188,36]:
+              - generic [ref=e766] [box=108,3284,188,20]: checkpoint_cleanup_and_docs
+              - generic [ref=e767] [box=108,3304,188,17]: compute
+            - generic [ref=e768] [box=411,3291,81,22]: Queued
+          - button "prepare_verification_matrix agent Queued" [ref=e770] [box=34,3327,468,50]:
+            - generic [ref=e771] [box=108,3334,166,36]:
+              - generic [ref=e772] [box=108,3334,166,20]: prepare_verification_matrix
+              - generic [ref=e773] [box=108,3354,166,17]: agent
+            - generic [ref=e774] [box=411,3341,81,22]: Queued
+          - button "ralph loop Queued" [ref=e776] [box=34,3377,468,50]:
+            - generic [ref=e777] [box=108,3384,31,36]:
+              - generic [ref=e778] [box=108,3384,31,20]: ralph
+              - generic [ref=e779] [box=108,3404,31,17]: loop
+            - generic [ref=e780] [box=411,3391,81,22]: Queued
+          - button "sequence compute Queued" [ref=e782] [box=34,3427,468,50]:
+            - generic [ref=e783] [box=124,3434,59,36]:
+              - generic [ref=e784] [box=124,3434,59,20]: sequence
+              - generic [ref=e785] [box=124,3454,59,17]: compute
+            - generic [ref=e786] [box=411,3441,81,22]: Queued
+          - button "review_verification_manifest agent Queued" [ref=e788] [box=34,3477,468,50]:
+            - generic [ref=e789] [box=140,3484,172,36]:
+              - generic [ref=e790] [box=140,3484,172,20]: review_verification_manifest
+              - generic [ref=e791] [box=140,3504,172,17]: agent
+            - generic [ref=e792] [box=411,3491,81,22]: Queued
+          - button "branch compute Queued" [ref=e794] [box=34,3527,468,50]:
+            - generic [ref=e795] [box=140,3534,46,36]:
+              - generic [ref=e796] [box=140,3534,46,20]: branch
+              - generic [ref=e797] [box=140,3554,46,17]: compute
+            - generic [ref=e798] [box=411,3541,81,22]: Queued
+          - button "sequence compute Queued" [ref=e800] [box=34,3577,468,50]:
+            - generic [ref=e801] [box=156,3584,59,36]:
+              - generic [ref=e802] [box=156,3584,59,20]: sequence
+              - generic [ref=e803] [box=156,3604,59,17]: compute
+            - generic [ref=e804] [box=411,3591,81,22]: Queued
+          - button "branch compute Queued" [ref=e806] [box=34,3627,468,50]:
+            - generic [ref=e807] [box=172,3634,46,36]:
+              - generic [ref=e808] [box=172,3634,46,20]: branch
+              - generic [ref=e809] [box=172,3654,46,17]: compute
+            - generic [ref=e810] [box=411,3641,81,22]: Queued
+          - button "recheck_verification_manifest agent Queued" [ref=e812] [box=34,3677,468,50]:
+            - generic [ref=e813] [box=172,3684,182,36]:
+              - generic [ref=e814] [box=172,3684,182,20]: recheck_verification_manifest
+              - generic [ref=e815] [box=172,3704,182,17]: agent
+            - generic [ref=e816] [box=411,3691,81,22]: Queued
+          - button "ralph loop Queued" [ref=e818] [box=34,3727,468,50]:
+            - generic [ref=e819] [box=108,3734,31,36]:
+              - generic [ref=e820] [box=108,3734,31,20]: ralph
+              - generic [ref=e821] [box=108,3754,31,17]: loop
+            - generic [ref=e822] [box=411,3741,81,22]: Queued
+          - button "sequence compute Queued" [ref=e824] [box=34,3777,468,50]:
+            - generic [ref=e825] [box=124,3784,59,36]:
+              - generic [ref=e826] [box=124,3784,59,20]: sequence
+              - generic [ref=e827] [box=124,3804,59,17]: compute
+            - generic [ref=e828] [box=411,3791,81,22]: Queued
+          - button "ralph loop Queued" [ref=e830] [box=34,3827,468,50]:
+            - generic [ref=e831] [box=140,3834,31,36]:
+              - generic [ref=e832] [box=140,3834,31,20]: ralph
+              - generic [ref=e833] [box=140,3854,31,17]: loop
+            - generic [ref=e834] [box=411,3841,81,22]: Queued
+          - button "sequence compute Queued" [ref=e836] [box=34,3877,468,50]:
+            - generic [ref=e837] [box=156,3884,59,36]:
+              - generic [ref=e838] [box=156,3884,59,20]: sequence
+              - generic [ref=e839] [box=156,3904,59,17]: compute
+            - generic [ref=e840] [box=411,3891,81,22]: Queued
+          - button "parallel parallel Queued" [ref=e842] [box=34,3927,468,50]:
+            - generic [ref=e843] [box=172,3934,44,36]:
+              - generic [ref=e844] [box=172,3934,44,20]: parallel
+              - generic [ref=e845] [box=172,3954,44,17]: parallel
+            - generic [ref=e846] [box=411,3941,81,22]: Queued
+          - button "check_migration_0074 agent Queued" [ref=e848] [box=34,3977,468,50]:
+            - generic [ref=e849] [box=188,3984,139,36]:
+              - generic [ref=e850] [box=188,3984,139,20]: check_migration_0074
+              - generic [ref=e851] [box=188,4004,139,17]: agent
+            - generic [ref=e852] [box=411,3991,81,22]: Queued
+          - button "check_unit_tests agent Queued" [ref=e854] [box=34,4027,468,50]:
+            - generic [ref=e855] [box=188,4034,104,36]:
+              - generic [ref=e856] [box=188,4034,104,20]: check_unit_tests
+              - generic [ref=e857] [box=188,4054,104,17]: agent
+            - generic [ref=e858] [box=411,4041,81,22]: Queued
+          - button "check_integration_tests agent Queued" [ref=e860] [box=34,4077,468,50]:
+            - generic [ref=e861] [box=188,4084,146,36]:
+              - generic [ref=e862] [box=188,4084,146,20]: check_integration_tests
+              - generic [ref=e863] [box=188,4104,146,17]: agent
+            - generic [ref=e864] [box=411,4091,81,22]: Queued
+          - button "check_builds agent Queued" [ref=e866] [box=34,4127,468,50]:
+            - generic [ref=e867] [box=188,4134,80,36]:
+              - generic [ref=e868] [box=188,4134,80,20]: check_builds
+              - generic [ref=e869] [box=188,4154,80,17]: agent
+            - generic [ref=e870] [box=411,4141,81,22]: Queued
+          - button "check_deterministic_playwright agent Queued" [ref=e872] [box=34,4177,468,50]:
+            - generic [ref=e873] [box=188,4184,193,36]:
+              - generic [ref=e874] [box=188,4184,193,20]: check_deterministic_playwright
+              - generic [ref=e875] [box=188,4204,193,17]: agent
+            - generic [ref=e876] [box=411,4191,81,22]: Queued
+          - button "check_visual_breakpoints agent Queued" [ref=e878] [box=34,4227,468,50]:
+            - generic [ref=e879] [box=188,4234,157,36]:
+              - generic [ref=e880] [box=188,4234,157,20]: check_visual_breakpoints
+              - generic [ref=e881] [box=188,4254,157,17]: agent
+            - generic [ref=e882] [box=411,4241,81,22]: Queued
+          - button "check_accessibility agent Queued" [ref=e884] [box=34,4277,468,50]:
+            - generic [ref=e885] [box=188,4284,118,36]:
+              - generic [ref=e886] [box=188,4284,118,20]: check_accessibility
+              - generic [ref=e887] [box=188,4304,118,17]: agent
+            - generic [ref=e888] [box=411,4291,81,22]: Queued
+          - button "check_reachability_and_bundle agent Queued" [ref=e890] [box=34,4327,468,50]:
+            - generic [ref=e891] [box=188,4334,192,36]:
+              - generic [ref=e892] [box=188,4334,192,20]: check_reachability_and_bundle
+              - generic [ref=e893] [box=188,4354,192,17]: agent
+            - generic [ref=e894] [box=411,4341,81,22]: Queued
+          - button "sequence compute Queued" [ref=e896] [box=34,4377,468,50]:
+            - generic [ref=e897] [box=172,4384,59,36]:
+              - generic [ref=e898] [box=172,4384,59,20]: sequence
+              - generic [ref=e899] [box=172,4404,59,17]: compute
+            - generic [ref=e900] [box=411,4391,81,22]: Queued
+          - button "check_live_retrieval agent Queued" [ref=e902] [box=34,4427,468,50]:
+            - generic [ref=e903] [box=188,4434,120,36]:
+              - generic [ref=e904] [box=188,4434,120,20]: check_live_retrieval
+              - generic [ref=e905] [box=188,4454,120,17]: agent
+            - generic [ref=e906] [box=411,4441,81,22]: Queued
+          - button "check_live_stop agent Queued" [ref=e908] [box=34,4477,468,50]:
+            - generic [ref=e909] [box=188,4484,98,36]:
+              - generic [ref=e910] [box=188,4484,98,20]: check_live_stop
+              - generic [ref=e911] [box=188,4504,98,17]: agent
+            - generic [ref=e912] [box=411,4491,81,22]: Queued
+          - button "check_live_reset_during_run agent Queued" [ref=e914] [box=34,4527,468,50]:
+            - generic [ref=e915] [box=188,4534,176,36]:
+              - generic [ref=e916] [box=188,4534,176,20]: check_live_reset_during_run
+              - generic [ref=e917] [box=188,4554,176,17]: agent
+            - generic [ref=e918] [box=411,4541,81,22]: Queued
+          - button "parallel parallel Queued" [ref=e920] [box=34,4577,468,50]:
+            - generic [ref=e921] [box=172,4584,44,36]:
+              - generic [ref=e922] [box=172,4584,44,20]: parallel
+              - generic [ref=e923] [box=172,4604,44,17]: parallel
+            - generic [ref=e924] [box=411,4591,81,22]: Queued
+          - button "check_callers_and_capabilities agent Queued" [ref=e926] [box=34,4627,468,50]:
+            - generic [ref=e927] [box=188,4634,188,36]:
+              - generic [ref=e928] [box=188,4634,188,20]: check_callers_and_capabilities
+              - generic [ref=e929] [box=188,4654,188,17]: agent
+            - generic [ref=e930] [box=411,4641,81,22]: Queued
+          - button "check_reference_integrity agent Queued" [ref=e932] [box=34,4677,468,50]:
+            - generic [ref=e933] [box=188,4684,159,36]:
+              - generic [ref=e934] [box=188,4684,159,20]: check_reference_integrity
+              - generic [ref=e935] [box=188,4704,159,17]: agent
+            - generic [ref=e936] [box=411,4691,81,22]: Queued
+          - button "check_lint agent Queued" [ref=e938] [box=34,4727,468,50]:
+            - generic [ref=e939] [box=188,4734,62,36]:
+              - generic [ref=e940] [box=188,4734,62,20]: check_lint
+              - generic [ref=e941] [box=188,4754,62,17]: agent
+            - generic [ref=e942] [box=411,4741,81,22]: Queued
+          - button "check_root agent Queued" [ref=e944] [box=34,4777,468,50]:
+            - generic [ref=e945] [box=188,4784,68,36]:
+              - generic [ref=e946] [box=188,4784,68,20]: check_root
+              - generic [ref=e947] [box=188,4804,68,17]: agent
+            - generic [ref=e948] [box=411,4791,81,22]: Queued
+          - button "aggregate_verification_matrix agent Queued" [ref=e950] [box=34,4827,468,50]:
+            - generic [ref=e951] [box=172,4834,181,36]:
+              - generic [ref=e952] [box=172,4834,181,20]: aggregate_verification_matrix
+              - generic [ref=e953] [box=172,4854,181,17]: agent
+            - generic [ref=e954] [box=411,4841,81,22]: Queued
+          - button "branch compute Queued" [ref=e956] [box=34,4877,468,50]:
+            - generic [ref=e957] [box=172,4884,46,36]:
+              - generic [ref=e958] [box=172,4884,46,20]: branch
+              - generic [ref=e959] [box=172,4904,46,17]: compute
+            - generic [ref=e960] [box=411,4891,81,22]: Queued
+          - button "sequence compute Queued" [ref=e962] [box=34,4927,468,50]:
+            - generic [ref=e963] [box=188,4934,59,36]:
+              - generic [ref=e964] [box=188,4934,59,20]: sequence
+              - generic [ref=e965] [box=188,4954,59,17]: compute
+            - generic [ref=e966] [box=411,4941,81,22]: Queued
+          - button "classify_verification_failures agent Queued" [ref=e968] [box=34,4977,468,50]:
+            - generic [ref=e969] [box=204,4984,171,36]:
+              - generic [ref=e970] [box=204,4984,171,20]: classify_verification_failures
+              - generic [ref=e971] [box=204,5004,171,17]: agent
+            - generic [ref=e972] [box=411,4991,81,22]: Queued
+          - button "branch compute Queued" [ref=e974] [box=34,5027,468,50]:
+            - generic [ref=e975] [box=204,5034,46,36]:
+              - generic [ref=e976] [box=204,5034,46,20]: branch
+              - generic [ref=e977] [box=204,5054,46,17]: compute
+            - generic [ref=e978] [box=411,5041,81,22]: Queued
+          - button "repair_verification_failures agent Queued" [ref=e980] [box=34,5077,468,50]:
+            - generic [ref=e981] [box=220,5084,161,36]:
+              - generic [ref=e982] [box=220,5084,161,20]: repair_verification_failures
+              - generic [ref=e983] [box=220,5104,161,17]: agent
+            - generic [ref=e984] [box=411,5091,81,22]: Queued
+          - button "checkpoint_verification compute Queued" [ref=e986] [box=34,5127,468,50]:
+            - generic [ref=e987] [box=140,5134,142,36]:
+              - generic [ref=e988] [box=140,5134,142,20]: checkpoint_verification
+              - generic [ref=e989] [box=140,5154,142,17]: compute
+            - generic [ref=e990] [box=411,5141,81,22]: Queued
+          - button "ralph loop Queued" [ref=e992] [box=34,5177,468,50]:
+            - generic [ref=e993] [box=140,5184,31,36]:
+              - generic [ref=e994] [box=140,5184,31,20]: ralph
+              - generic [ref=e995] [box=140,5204,31,17]: loop
+            - generic [ref=e996] [box=411,5191,81,22]: Queued
+          - button "sequence compute Queued" [ref=e998] [box=34,5227,468,50]:
+            - generic [ref=e999] [box=156,5234,59,36]:
+              - generic [ref=e1000] [box=156,5234,59,20]: sequence
+              - generic [ref=e1001] [box=156,5254,59,17]: compute
+            - generic [ref=e1002] [box=411,5241,81,22]: Queued
+          - button "independent_final_review agent Queued" [ref=e1004] [box=34,5277,468,50]:
+            - generic [ref=e1005] [box=172,5284,156,36]:
+              - generic [ref=e1006] [box=172,5284,156,20]: independent_final_review
+              - generic [ref=e1007] [box=172,5304,156,17]: agent
+            - generic [ref=e1008] [box=411,5291,81,22]: Queued
+          - button "branch compute Queued" [ref=e1010] [box=34,5327,468,50]:
+            - generic [ref=e1011] [box=172,5334,46,36]:
+              - generic [ref=e1012] [box=172,5334,46,20]: branch
+              - generic [ref=e1013] [box=172,5354,46,17]: compute
+            - generic [ref=e1014] [box=411,5341,81,22]: Queued
+          - button "ralph loop Queued" [ref=e1016] [box=34,5377,468,50]:
+            - generic [ref=e1017] [box=172,5384,31,36]:
+              - generic [ref=e1018] [box=172,5384,31,20]: ralph
+              - generic [ref=e1019] [box=172,5404,31,17]: loop
+            - generic [ref=e1020] [box=411,5391,81,22]: Queued
+          - button "sequence compute Queued" [ref=e1022] [box=34,5427,468,50]:
+            - generic [ref=e1023] [box=188,5434,59,36]:
+              - generic [ref=e1024] [box=188,5434,59,20]: sequence
+              - generic [ref=e1025] [box=188,5454,59,17]: compute
+            - generic [ref=e1026] [box=411,5441,81,22]: Queued
+          - button "run_affected_regressions agent Queued" [ref=e1028] [box=34,5477,468,50]:
+            - generic [ref=e1029] [box=204,5484,156,36]:
+              - generic [ref=e1030] [box=204,5484,156,20]: run_affected_regressions
+              - generic [ref=e1031] [box=204,5504,156,17]: agent
+            - generic [ref=e1032] [box=411,5491,81,22]: Queued
+          - button "branch compute Queued" [ref=e1034] [box=34,5527,468,50]:
+            - generic [ref=e1035] [box=204,5534,46,36]:
+              - generic [ref=e1036] [box=204,5534,46,20]: branch
+              - generic [ref=e1037] [box=204,5554,46,17]: compute
+            - generic [ref=e1038] [box=411,5541,81,22]: Queued
+          - button "repair_review_regression_failures agent Queued" [ref=e1040] [box=34,5577,468,50]:
+            - generic [ref=e1041] [box=220,5584,186,36]:
+              - generic [ref=e1042] [box=220,5584,186,20]: repair_review_regression_failures
+              - generic [ref=e1043] [box=220,5604,186,17]: agent
+            - generic [ref=e1044] [box=416,5591,76,22]: Queued
+          - button "rerun_affected_regressions agent Queued" [ref=e1046] [box=34,5627,468,50]:
+            - generic [ref=e1047] [box=204,5634,168,36]:
+              - generic [ref=e1048] [box=204,5634,168,20]: rerun_affected_regressions
+              - generic [ref=e1049] [box=204,5654,168,17]: agent
+            - generic [ref=e1050] [box=411,5641,81,22]: Queued
+          - button "checkpoint_review compute Queued" [ref=e1052] [box=34,5677,468,50]:
+            - generic [ref=e1053] [box=140,5684,114,36]:
+              - generic [ref=e1054] [box=140,5684,114,20]: checkpoint_review
+              - generic [ref=e1055] [box=140,5704,114,17]: compute
+            - generic [ref=e1056] [box=411,5691,81,22]: Queued
+          - button "assert_stable_review_and_verification compute Queued" [ref=e1058] [box=34,5727,468,50]:
+            - generic [ref=e1059] [box=140,5734,232,36]:
+              - generic [ref=e1060] [box=140,5734,232,20]: assert_stable_review_and_verification
+              - generic [ref=e1061] [box=140,5754,232,17]: compute
+            - generic [ref=e1062] [box=411,5741,81,22]: Queued
+          - button "final_readiness_gate compute Queued" [ref=e1064] [box=34,5777,468,50]:
+            - generic [ref=e1065] [box=108,5784,125,36]:
+              - generic [ref=e1066] [box=108,5784,125,20]: final_readiness_gate
+              - generic [ref=e1067] [box=108,5804,125,17]: compute
+            - generic [ref=e1068] [box=411,5791,81,22]: Queued
+          - button "branch compute Queued" [ref=e1070] [box=34,5827,468,50]:
+            - generic [ref=e1071] [box=108,5834,46,36]:
+              - generic [ref=e1072] [box=108,5834,46,20]: branch
+              - generic [ref=e1073] [box=108,5854,46,17]: compute
+            - generic [ref=e1074] [box=411,5841,81,22]: Queued
+          - button "emit_readiness_failed_result compute Queued" [ref=e1076] [box=34,5877,468,50]:
+            - generic [ref=e1077] [box=124,5884,174,36]:
+              - generic [ref=e1078] [box=124,5884,174,20]: emit_readiness_failed_result
+              - generic [ref=e1079] [box=124,5904,174,17]: compute
+            - generic [ref=e1080] [box=411,5891,81,22]: Queued
+        - generic [ref=e1082] [box=515,776,470,360]:
+          - generic [ref=e1083] [box=516,777,468,39]:
+            - generic [ref=e1084] [box=524,788,66,17]: 180 events
+            - button "Show all heartbeats (162)" [ref=e1588] [cursor=pointer] [box=813,783,162,26]
+          - generic [ref=e1589] [box=516,816,468,319]:
+            - generic [ref=e1591] [box=524,-122,442,30]:
+              - generic [ref=e1592] [box=524,-122,398,30]:
+                - generic [ref=e1593] [box=530,-116,33,17]: "25161"
+                - generic [ref=e1594] [box=571,-118,140,22]: TaskHeartbeat ×8
+                - generic [ref=e1595] [box=719,-118,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1596] [box=907,-116,9,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1597] [cursor=pointer] [box=923,-119,36,23]: "{ }"
+            - generic [ref=e1599] [box=524,-88,442,30]:
+              - generic [ref=e1600] [box=524,-88,398,30]:
+                - generic [ref=e1601] [box=530,-82,33,17]: "25162"
+                - generic [ref=e1602] [box=571,-84,100,22]: AgentEvent
+                - generic [ref=e1603] [box=679,-84,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1604] [box=866,-82,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1605] [cursor=pointer] [box=923,-85,36,23]: "{ }"
+            - generic [ref=e1607] [box=524,-54,442,30]:
+              - generic [ref=e1608] [box=524,-54,398,30]:
+                - generic [ref=e1609] [box=530,-48,33,17]: "25166"
+                - generic [ref=e1610] [box=571,-50,140,22]: TaskHeartbeat ×4
+                - generic [ref=e1611] [box=719,-50,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1612] [box=907,-48,9,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1613] [cursor=pointer] [box=923,-51,36,23]: "{ }"
+            - generic [ref=e1615] [box=524,-20,442,30]:
+              - generic [ref=e1616] [box=524,-20,398,30]:
+                - generic [ref=e1617] [box=530,-14,33,17]: "25167"
+                - generic [ref=e1618] [box=571,-16,100,22]: AgentEvent
+                - generic [ref=e1619] [box=679,-16,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1620] [box=866,-14,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1621] [cursor=pointer] [box=923,-17,36,23]: "{ }"
+            - generic [ref=e1623] [box=524,14,442,30]:
+              - generic [ref=e1624] [box=524,14,398,30]:
+                - generic [ref=e1625] [box=530,20,33,17]: "25168"
+                - generic [ref=e1626] [box=571,18,122,22]: TaskHeartbeat
+                - generic [ref=e1627] [box=700,18,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1628] [box=888,20,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1629] [cursor=pointer] [box=923,17,36,23]: "{ }"
+            - generic [ref=e1631] [box=524,48,442,30]:
+              - generic [ref=e1632] [box=524,48,398,30]:
+                - generic [ref=e1633] [box=530,54,33,17]: "25169"
+                - generic [ref=e1634] [box=571,52,100,22]: AgentEvent
+                - generic [ref=e1635] [box=679,52,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1636] [box=866,54,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1637] [cursor=pointer] [box=923,51,36,23]: "{ }"
+            - generic [ref=e1639] [box=524,82,442,30]:
+              - generic [ref=e1640] [box=524,82,398,30]:
+                - generic [ref=e1641] [box=530,88,33,17]: "25196"
+                - generic [ref=e1642] [box=571,86,147,22]: TaskHeartbeat ×27
+                - generic [ref=e1643] [box=725,86,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1644] [box=913,88,2,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1645] [cursor=pointer] [box=923,85,36,23]: "{ }"
+            - generic [ref=e1647] [box=524,116,442,30]:
+              - generic [ref=e1648] [box=524,116,398,30]:
+                - generic [ref=e1649] [box=530,122,33,17]: "25197"
+                - generic [ref=e1650] [box=571,120,100,22]: AgentEvent
+                - generic [ref=e1651] [box=679,120,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1652] [box=866,122,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1653] [cursor=pointer] [box=923,119,36,23]: "{ }"
+            - generic [ref=e1655] [box=524,150,442,30]:
+              - generic [ref=e1656] [box=524,150,398,30]:
+                - generic [ref=e1657] [box=530,156,33,17]: "25199"
+                - generic [ref=e1658] [box=571,154,140,22]: TaskHeartbeat ×2
+                - generic [ref=e1659] [box=718,154,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1660] [box=906,156,9,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1661] [cursor=pointer] [box=923,153,36,23]: "{ }"
+            - generic [ref=e1663] [box=524,184,442,30]:
+              - generic [ref=e1664] [box=524,184,398,30]:
+                - generic [ref=e1665] [box=530,190,33,17]: "25200"
+                - generic [ref=e1666] [box=571,188,100,22]: AgentEvent
+                - generic [ref=e1667] [box=679,188,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1668] [box=866,190,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1669] [cursor=pointer] [box=923,187,36,23]: "{ }"
+            - generic [ref=e1671] [box=524,218,442,30]:
+              - generic [ref=e1672] [box=524,218,398,30]:
+                - generic [ref=e1673] [box=530,224,33,17]: "25219"
+                - generic [ref=e1674] [box=571,222,146,22]: TaskHeartbeat ×19
+                - generic [ref=e1675] [box=725,222,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1676] [box=912,224,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1677] [cursor=pointer] [box=923,221,36,23]: "{ }"
+            - generic [ref=e1679] [box=524,252,442,30]:
+              - generic [ref=e1680] [box=524,252,398,30]:
+                - generic [ref=e1681] [box=530,258,33,17]: "25220"
+                - generic [ref=e1682] [box=571,256,100,22]: AgentEvent
+                - generic [ref=e1683] [box=679,256,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1684] [box=866,258,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1685] [cursor=pointer] [box=923,255,36,23]: "{ }"
+            - generic [ref=e1687] [box=524,286,442,30]:
+              - generic [ref=e1688] [box=524,286,398,30]:
+                - generic [ref=e1689] [box=530,292,33,17]: "25221"
+                - generic [ref=e1690] [box=571,290,122,22]: TaskHeartbeat
+                - generic [ref=e1691] [box=700,290,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1692] [box=888,292,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1693] [cursor=pointer] [box=923,289,36,23]: "{ }"
+            - generic [ref=e1695] [box=524,320,442,30]:
+              - generic [ref=e1696] [box=524,320,398,30]:
+                - generic [ref=e1697] [box=530,326,33,17]: "25222"
+                - generic [ref=e1698] [box=571,324,100,22]: AgentEvent
+                - generic [ref=e1699] [box=679,324,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1700] [box=866,326,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1701] [cursor=pointer] [box=923,323,36,23]: "{ }"
+            - generic [ref=e1703] [box=524,354,442,30]:
+              - generic [ref=e1704] [box=524,354,398,30]:
+                - generic [ref=e1705] [box=530,360,33,17]: "25232"
+                - generic [ref=e1706] [box=571,358,146,22]: TaskHeartbeat ×10
+                - generic [ref=e1707] [box=725,358,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1708] [box=912,360,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1709] [cursor=pointer] [box=923,357,36,23]: "{ }"
+            - generic [ref=e1711] [box=524,388,442,30]:
+              - generic [ref=e1712] [box=524,388,398,30]:
+                - generic [ref=e1713] [box=530,394,33,17]: "25233"
+                - generic [ref=e1714] [box=571,392,100,22]: AgentEvent
+                - generic [ref=e1715] [box=679,392,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1716] [box=866,394,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1717] [cursor=pointer] [box=923,391,36,23]: "{ }"
+            - generic [ref=e1719] [box=524,422,442,30]:
+              - generic [ref=e1720] [box=524,422,398,30]:
+                - generic [ref=e1721] [box=530,428,33,17]: "25234"
+                - generic [ref=e1722] [box=571,426,122,22]: TaskHeartbeat
+                - generic [ref=e1723] [box=700,426,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1724] [box=888,428,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1725] [cursor=pointer] [box=923,425,36,23]: "{ }"
+            - generic [ref=e1727] [box=524,456,442,30]:
+              - generic [ref=e1728] [box=524,456,398,30]:
+                - generic [ref=e1729] [box=530,462,33,17]: "25235"
+                - generic [ref=e1730] [box=571,460,100,22]: AgentEvent
+                - generic [ref=e1731] [box=679,460,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1732] [box=866,462,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1733] [cursor=pointer] [box=923,459,36,23]: "{ }"
+            - generic [ref=e1735] [box=524,490,442,30]:
+              - generic [ref=e1736] [box=524,490,398,30]:
+                - generic [ref=e1737] [box=530,496,33,17]: "25247"
+                - generic [ref=e1738] [box=571,494,146,22]: TaskHeartbeat ×12
+                - generic [ref=e1739] [box=724,494,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1740] [box=912,496,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1741] [cursor=pointer] [box=923,493,36,23]: "{ }"
+            - generic [ref=e1743] [box=524,524,442,30]:
+              - generic [ref=e1744] [box=524,524,398,30]:
+                - generic [ref=e1745] [box=530,530,33,17]: "25248"
+                - generic [ref=e1746] [box=571,528,100,22]: AgentEvent
+                - generic [ref=e1747] [box=679,528,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1748] [box=866,530,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1749] [cursor=pointer] [box=923,527,36,23]: "{ }"
+            - generic [ref=e1751] [box=524,558,442,30]:
+              - generic [ref=e1752] [box=524,558,398,30]:
+                - generic [ref=e1753] [box=530,564,33,17]: "25249"
+                - generic [ref=e1754] [box=571,562,122,22]: TaskHeartbeat
+                - generic [ref=e1755] [box=700,562,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1756] [box=888,564,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1757] [cursor=pointer] [box=923,561,36,23]: "{ }"
+            - generic [ref=e1759] [box=524,592,442,30]:
+              - generic [ref=e1760] [box=524,592,398,30]:
+                - generic [ref=e1761] [box=530,598,33,17]: "25250"
+                - generic [ref=e1762] [box=571,596,100,22]: AgentEvent
+                - generic [ref=e1763] [box=679,596,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1764] [box=866,598,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1765] [cursor=pointer] [box=923,595,36,23]: "{ }"
+            - generic [ref=e1767] [box=524,626,442,30]:
+              - generic [ref=e1768] [box=524,626,398,30]:
+                - generic [ref=e1769] [box=530,632,33,17]: "25265"
+                - generic [ref=e1770] [box=571,630,146,22]: TaskHeartbeat ×15
+                - generic [ref=e1771] [box=725,630,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1772] [box=912,632,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1773] [cursor=pointer] [box=923,629,36,23]: "{ }"
+            - generic [ref=e1775] [box=524,660,442,30]:
+              - generic [ref=e1776] [box=524,660,398,30]:
+                - generic [ref=e1777] [box=530,666,33,17]: "25266"
+                - generic [ref=e1778] [box=571,664,100,22]: AgentEvent
+                - generic [ref=e1779] [box=679,664,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1780] [box=866,666,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1781] [cursor=pointer] [box=923,663,36,23]: "{ }"
+            - generic [ref=e1783] [box=524,694,442,30]:
+              - generic [ref=e1784] [box=524,694,398,30]:
+                - generic [ref=e1785] [box=530,700,33,17]: "25267"
+                - generic [ref=e1786] [box=571,698,122,22]: TaskHeartbeat
+                - generic [ref=e1787] [box=700,698,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1788] [box=888,700,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1789] [cursor=pointer] [box=923,697,36,23]: "{ }"
+            - generic [ref=e1791] [box=524,728,442,30]:
+              - generic [ref=e1792] [box=524,728,398,30]:
+                - generic [ref=e1793] [box=530,734,33,17]: "25268"
+                - generic [ref=e1794] [box=571,732,100,22]: AgentEvent
+                - generic [ref=e1795] [box=679,732,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1796] [box=866,734,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1797] [cursor=pointer] [box=923,731,36,23]: "{ }"
+            - generic [ref=e1799] [box=524,762,442,30]:
+              - generic [ref=e1800] [box=524,762,398,30]:
+                - generic [ref=e1801] [box=530,768,33,17]: "25290"
+                - generic [ref=e1802] [box=571,766,147,22]: TaskHeartbeat ×22
+                - generic [ref=e1803] [box=726,766,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1804] [box=913,768,2,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1805] [cursor=pointer] [box=923,765,36,23]: "{ }"
+            - generic [ref=e1807] [box=524,796,442,30]:
+              - generic [ref=e1808] [box=524,796,398,30]:
+                - generic [ref=e1809] [box=530,802,33,17]: "25291"
+                - generic [ref=e1810] [box=571,800,100,22]: AgentEvent
+                - generic [ref=e1811] [box=679,800,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1812] [box=866,802,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1813] [cursor=pointer] [box=923,799,36,23]: "{ }"
+            - generic [ref=e1815] [box=524,830,442,30]:
+              - generic [ref=e1816] [box=524,830,398,30]:
+                - generic [ref=e1817] [box=530,836,33,17]: "25292"
+                - generic [ref=e1818] [box=571,834,122,22]: TaskHeartbeat
+                - generic [ref=e1819] [box=700,834,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1820] [box=888,836,27,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1821] [cursor=pointer] [box=923,833,36,23]: "{ }"
+            - generic [ref=e1823] [box=524,864,442,30]:
+              - generic [ref=e1824] [box=524,864,398,30]:
+                - generic [ref=e1825] [box=530,870,33,17]: "25293"
+                - generic [ref=e1826] [box=571,868,100,22]: AgentEvent
+                - generic [ref=e1827] [box=679,868,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1828] [box=866,870,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1829] [cursor=pointer] [box=923,867,36,23]: "{ }"
+            - generic [ref=e1831] [box=524,898,442,30]:
+              - generic [ref=e1832] [box=524,898,398,30]:
+                - generic [ref=e1833] [box=530,904,33,17]: "25312"
+                - generic [ref=e1834] [box=571,902,146,22]: TaskHeartbeat ×19
+                - generic [ref=e1835] [box=725,902,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1836] [box=912,904,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1837] [cursor=pointer] [box=923,901,36,23]: "{ }"
+            - generic [ref=e1839] [box=524,932,442,30]:
+              - generic [ref=e1840] [box=524,932,398,30]:
+                - generic [ref=e1841] [box=530,938,33,17]: "25313"
+                - generic [ref=e1842] [box=571,936,100,22]: AgentEvent
+                - generic [ref=e1843] [box=679,936,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1844] [box=866,938,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1845] [cursor=pointer] [box=923,935,36,23]: "{ }"
+            - generic [ref=e1847] [box=524,966,442,30]:
+              - generic [ref=e1848] [box=524,966,398,30]:
+                - generic [ref=e1849] [box=530,972,33,17]: "25316"
+                - generic [ref=e1850] [box=571,970,140,22]: TaskHeartbeat ×3
+                - generic [ref=e1851] [box=719,970,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1852] [box=906,972,9,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1853] [cursor=pointer] [box=923,969,36,23]: "{ }"
+            - generic [ref=e1855] [box=524,1000,442,30]:
+              - generic [ref=e1856] [box=524,1000,398,30]:
+                - generic [ref=e1857] [box=530,1006,33,17]: "25317"
+                - generic [ref=e1858] [box=571,1004,100,22]: AgentEvent
+                - generic [ref=e1859] [box=679,1004,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1860] [box=866,1006,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1861] [cursor=pointer] [box=923,1003,36,23]: "{ }"
+            - generic [ref=e1863] [box=524,1034,442,30]:
+              - generic [ref=e1864] [box=524,1034,398,30]:
+                - generic [ref=e1865] [box=530,1040,33,17]: "25327"
+                - generic [ref=e1866] [box=571,1038,146,22]: TaskHeartbeat ×10
+                - generic [ref=e1867] [box=725,1038,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1868] [box=912,1040,3,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1869] [cursor=pointer] [box=923,1037,36,23]: "{ }"
+            - generic [ref=e1871] [box=524,1068,442,30]:
+              - generic [ref=e1872] [box=524,1068,398,30]:
+                - generic [ref=e1873] [box=530,1074,33,17]: "25328"
+                - generic [ref=e1874] [box=571,1072,100,22]: AgentEvent
+                - generic [ref=e1875] [box=679,1072,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1876] [box=866,1074,49,18]: recheck_cutover_dashboard agent activity
+              - button "Show event payload" [ref=e1877] [cursor=pointer] [box=923,1071,36,23]: "{ }"
+            - generic [ref=e1879] [box=524,1102,442,30]:
+              - generic [ref=e1880] [box=524,1102,398,30]:
+                - generic [ref=e1881] [box=530,1108,33,17]: "25333"
+                - generic [ref=e1882] [box=571,1106,140,22]: TaskHeartbeat ×5
+                - generic [ref=e1883] [box=719,1106,180,21]: recheck_cutover_dashboard
+                - generic [ref=e1884] [box=906,1108,9,18]: recheck_cutover_dashboard · heartbeat
+              - button "Show event payload" [ref=e1885] [cursor=pointer] [box=923,1105,36,23]: "{ }"
+    - generic [ref=e1087] [box=18,5955,981,6312]:
+      - heading "Agent fleet, ownership, and live chat" [level=2] [ref=e1089] [box=33,5970,231,18]
+      - generic [ref=e1090] [box=33,5998,951,6255]:
+        - table [ref=e1092] [box=33,5998,1358,1179]:
+          - rowgroup [ref=e1093] [box=33,5998,1358,33]:
+            - row [ref=e1094] [box=33,5998,1358,33]:
+              - columnheader "item" [ref=e1095] [box=33,5998,706,33]
+              - columnheader "role" [ref=e1096] [box=739,5998,290,33]
+              - columnheader "status" [ref=e1097] [box=1029,5998,361,33]
+          - rowgroup [ref=e1098] [box=33,6031,1358,1146]:
+            - row [ref=e1099] [box=33,6031,1358,40]:
+              - cell "audit_repository_and_plan" [ref=e1100] [box=33,6031,706,40]
+              - cell "Luna/worker" [ref=e1101] [box=739,6031,290,40]
+              - cell "Complete" [ref=e1102] [box=1029,6031,361,40]
+            - row [ref=e1105] [box=33,6070,1358,40]:
+              - cell "freeze_contracts" [ref=e1106] [box=33,6070,706,40]
+              - cell "Luna/worker" [ref=e1107] [box=739,6070,290,40]
+              - cell "Complete" [ref=e1108] [box=1029,6070,361,40]
+            - row [ref=e1111] [box=33,6110,1358,40]:
+              - cell "plan_integration_waves" [ref=e1112] [box=33,6110,706,40]
+              - cell "Luna/worker" [ref=e1113] [box=739,6110,290,40]
+              - cell "Complete" [ref=e1114] [box=1029,6110,361,40]
+            - row [ref=e1117] [box=33,6149,1358,40]:
+              - cell "author_cutover_dashboard" [ref=e1118] [box=33,6149,706,40]
+              - cell "Luna/worker" [ref=e1119] [box=739,6149,290,40]
+              - cell "Complete" [ref=e1120] [box=1029,6149,361,40]
+            - row [ref=e1123] [box=33,6189,1358,40]:
+              - cell "review_cutover_dashboard" [ref=e1124] [box=33,6189,706,40]
+              - cell "Sol review" [ref=e1125] [box=739,6189,290,40]
+              - cell "Complete" [ref=e1126] [box=1029,6189,361,40]
+            - row [ref=e1129] [box=33,6228,1358,40]:
+              - cell "repair_cutover_dashboard" [ref=e1130] [box=33,6228,706,40]
+              - cell "Luna/worker" [ref=e1131] [box=739,6228,290,40]
+              - cell "Complete" [ref=e1132] [box=1029,6228,361,40]
+            - row [ref=e1135] [box=33,6268,1358,40]:
+              - cell "recheck_cutover_dashboard" [ref=e1136] [box=33,6268,706,40]
+              - cell "Luna/worker" [ref=e1137] [box=739,6268,290,40]
+              - cell "Running" [ref=e1138] [box=1029,6268,361,40]
+            - row [ref=e1141] [box=33,6307,1358,40]:
+              - cell "select_and_assign_wave" [ref=e1142] [box=33,6307,706,40]
+              - cell "Luna/worker" [ref=e1143] [box=739,6307,290,40]
+              - cell "Queued" [ref=e1144] [box=1029,6307,361,40]
+            - row [ref=e1147] [box=33,6347,1358,40]:
+              - cell "implement_wave_lane_a" [ref=e1148] [box=33,6347,706,40]
+              - cell "Luna lane" [ref=e1149] [box=739,6347,290,40]
+              - cell "Queued" [ref=e1150] [box=1029,6347,361,40]
+            - row [ref=e1153] [box=33,6386,1358,40]:
+              - cell "implement_wave_lane_b" [ref=e1154] [box=33,6386,706,40]
+              - cell "Luna lane" [ref=e1155] [box=739,6386,290,40]
+              - cell "Queued" [ref=e1156] [box=1029,6386,361,40]
+            - row [ref=e1159] [box=33,6426,1358,40]:
+              - cell "implement_wave_lane_c" [ref=e1160] [box=33,6426,706,40]
+              - cell "Luna lane" [ref=e1161] [box=739,6426,290,40]
+              - cell "Queued" [ref=e1162] [box=1029,6426,361,40]
+            - row [ref=e1165] [box=33,6465,1358,40]:
+              - cell "review_wave_contract_compliance" [ref=e1166] [box=33,6465,706,40]
+              - cell "Sol review" [ref=e1167] [box=739,6465,290,40]
+              - cell "Queued" [ref=e1168] [box=1029,6465,361,40]
+            - row [ref=e1171] [box=33,6505,1358,40]:
+              - cell "repair_wave_contract_findings" [ref=e1172] [box=33,6505,706,40]
+              - cell "Luna/worker" [ref=e1173] [box=739,6505,290,40]
+              - cell "Queued" [ref=e1174] [box=1029,6505,361,40]
+            - row [ref=e1177] [box=33,6544,1358,40]:
+              - cell "integrate_wave" [ref=e1178] [box=33,6544,706,40]
+              - cell "Luna/worker" [ref=e1179] [box=739,6544,290,40]
+              - cell "Queued" [ref=e1180] [box=1029,6544,361,40]
+            - row [ref=e1183] [box=33,6584,1358,40]:
+              - cell "repair_wave_failures" [ref=e1184] [box=33,6584,706,40]
+              - cell "Luna/worker" [ref=e1185] [box=739,6584,290,40]
+              - cell "Queued" [ref=e1186] [box=1029,6584,361,40]
+            - row [ref=e1189] [box=33,6623,1358,40]:
+              - cell "cleanup_obsolete_surface" [ref=e1190] [box=33,6623,706,40]
+              - cell "Luna/worker" [ref=e1191] [box=739,6623,290,40]
+              - cell "Queued" [ref=e1192] [box=1029,6623,361,40]
+            - row [ref=e1195] [box=33,6663,1358,40]:
+              - cell "repair_retention_cleanup" [ref=e1196] [box=33,6663,706,40]
+              - cell "Luna/worker" [ref=e1197] [box=739,6663,290,40]
+              - cell "Queued" [ref=e1198] [box=1029,6663,361,40]
+            - row [ref=e1201] [box=33,6702,1358,40]:
+              - cell "sync_canonical_docs" [ref=e1202] [box=33,6702,706,40]
+              - cell "Luna/worker" [ref=e1203] [box=739,6702,290,40]
+              - cell "Queued" [ref=e1204] [box=1029,6702,361,40]
+            - row [ref=e1207] [box=33,6742,1358,40]:
+              - cell "review_docs_sync" [ref=e1208] [box=33,6742,706,40]
+              - cell "Sol review" [ref=e1209] [box=739,6742,290,40]
+              - cell "Queued" [ref=e1210] [box=1029,6742,361,40]
+            - row [ref=e1213] [box=33,6781,1358,40]:
+              - cell "repair_docs_sync" [ref=e1214] [box=33,6781,706,40]
+              - cell "Luna/worker" [ref=e1215] [box=739,6781,290,40]
+              - cell "Queued" [ref=e1216] [box=1029,6781,361,40]
+            - row [ref=e1219] [box=33,6821,1358,40]:
+              - cell "recheck_docs_sync" [ref=e1220] [box=33,6821,706,40]
+              - cell "Luna/worker" [ref=e1221] [box=739,6821,290,40]
+              - cell "Queued" [ref=e1222] [box=1029,6821,361,40]
+            - row [ref=e1225] [box=33,6860,1358,40]:
+              - cell "prepare_verification_matrix" [ref=e1226] [box=33,6860,706,40]
+              - cell "Luna/worker" [ref=e1227] [box=739,6860,290,40]
+              - cell "Queued" [ref=e1228] [box=1029,6860,361,40]
+            - row [ref=e1231] [box=33,6900,1358,40]:
+              - cell "review_verification_manifest" [ref=e1232] [box=33,6900,706,40]
+              - cell "Sol review" [ref=e1233] [box=739,6900,290,40]
+              - cell "Queued" [ref=e1234] [box=1029,6900,361,40]
+            - row [ref=e1237] [box=33,6939,1358,40]:
+              - cell "repair_verification_manifest" [ref=e1238] [box=33,6939,706,40]
+              - cell "Luna/worker" [ref=e1239] [box=739,6939,290,40]
+              - cell "Queued" [ref=e1240] [box=1029,6939,361,40]
+            - row [ref=e1243] [box=33,6979,1358,40]:
+              - cell "recheck_verification_manifest" [ref=e1244] [box=33,6979,706,40]
+              - cell "Luna/worker" [ref=e1245] [box=739,6979,290,40]
+              - cell "Queued" [ref=e1246] [box=1029,6979,361,40]
+            - row [ref=e1249] [box=33,7018,1358,40]:
+              - cell "repair_verification_failures" [ref=e1250] [box=33,7018,706,40]
+              - cell "Luna/worker" [ref=e1251] [box=739,7018,290,40]
+              - cell "Queued" [ref=e1252] [box=1029,7018,361,40]
+            - row [ref=e1255] [box=33,7058,1358,40]:
+              - cell "independent_final_review" [ref=e1256] [box=33,7058,706,40]
+              - cell "Sol review" [ref=e1257] [box=739,7058,290,40]
+              - cell "Queued" [ref=e1258] [box=1029,7058,361,40]
+            - row [ref=e1261] [box=33,7097,1358,40]:
+              - cell "remediate_review_findings" [ref=e1262] [box=33,7097,706,40]
+              - cell "Sol review" [ref=e1263] [box=739,7097,290,40]
+              - cell "Queued" [ref=e1264] [box=1029,7097,361,40]
+            - row [ref=e1267] [box=33,7137,1358,40]:
+              - cell "repair_review_regression_failures" [ref=e1268] [box=33,7137,706,40]
+              - cell "Sol review" [ref=e1269] [box=739,7137,290,40]
+              - cell "Queued" [ref=e1270] [box=1029,7137,361,40]
+        - generic [ref=e1273] [box=33,7197,1358,5056]:
+          - generic [ref=e1274] [box=33,7197,1358,250]:
+            - generic [ref=e1275] [box=46,7210,1332,36]:
+              - generic [ref=e1276] [box=46,7210,1226,36]:
+                - generic [ref=e1277] [box=46,7210,1226,20]: audit_repository_and_plan
+                - generic [ref=e1886] [box=46,7229,1226,17]: codex
+              - generic [ref=e1278] [box=1280,7217,98,22]: Complete
+            - log [ref=e1887] [box=46,7254,1332,180]:
+              - region "Conversation messages" [ref=e1889] [box=46,7254,1332,180]:
+                - article [ref=e1891] [box=370,-2926,672,10204]:
+                  - paragraph [ref=e1895] [box=384,-2916,510,10184]:
+                    - text: "{ \"summary\": \"Read-only audit complete for"
+                    - code [ref=e1896] [box=384,-2878,266,18]: /Users/polarzero/code/projects/brief
+                    - text: and the fixed plan at
+                    - code [ref=e1897] [box=384,-2878,494,37]: artifacts/ui-playground-demo-implementation-plan.html
+                    - text: ". The cutover has not been implemented: current code still has multi-chat and archive-reset contracts, no product Stop or message-mutation routes, syntactic demo cookies, old UI defaults, disabled-source filtering, and fixture-era demo code. Git starting state remains untouched:"
+                    - code [ref=e1898] [box=456,-2783,40,18]: main
+                    - text: is at
+                    - code [ref=e1899] [box=529,-2783,294,18]: fe405755b98c2c8170635282a1f0fea1013d2dd1
+                    - text: ", two commits ahead of"
+                    - code [ref=e1900] [box=496,-2764,89,18]: origin/main
+                    - text: ", with no staged or tracked unstaged changes and 34 untracked Smithers workflow files. The tracked"
+                    - code [ref=e1901] [box=692,-2745,111,18]: ui-playground/
+                    - text: "reference is clean. No files were edited and no tests or services were run.\", \"sourceInventoryArtifact\": \"Fixed inputs: repository"
+                    - code [ref=e1902] [box=384,-2689,266,18]: /Users/polarzero/code/projects/brief
+                    - text: ; plan
+                    - code [ref=e1903] [box=384,-2689,477,37]: artifacts/ui-playground-demo-implementation-plan.html
+                    - text: (438 lines, 77,040 bytes); workflow artifact root
+                    - code [ref=e1904] [box=384,-2651,336,18]: artifacts/implement-ui-playground-demo-cutover
+                    - text: .
+                    - code [ref=e1905] [box=728,-2651,75,18]: AGENTS.md
+                    - text: and
+                    - code [ref=e1906] [box=384,-2632,273,18]: docs/references/effect-smol/AGENTS.md
+                    - text: "were read. Git:"
+                    - code [ref=e1907] [box=752,-2632,40,18]: main
+                    - text: at
+                    - code [ref=e1908] [box=384,-2613,294,18]: fe405755b98c2c8170635282a1f0fea1013d2dd1
+                    - text: ", upstream"
+                    - code [ref=e1909] [box=746,-2613,89,18]: origin/main
+                    - text: at
+                    - code [ref=e1910] [box=384,-2594,294,18]: 568e919c4b48d95ee24adeafc80a53e1c06e5529
+                    - text: ", ahead 2 and behind 0. Starting commits are"
+                    - code [ref=e1911] [box=462,-2575,385,18]: "d25a54a35 feat(ui): add subscriber subscriptions view"
+                    - text: and
+                    - code [ref=e1912] [box=384,-2556,378,18]: "fe405755b fix(ui): remove compact navigation divider"
+                    - text: ; their upstream diff changes 19 files with 585 insertions and 200 deletions across five canonical docs and
+                    - code [ref=e1913] [box=410,-2518,104,18]: ui-playground
+                    - text: . There are no staged or tracked unstaged changes. The 34 protected untracked files comprise 29
+                    - code [ref=e1914] [box=619,-2499,132,18]: .smithers/prompts
+                    - text: ", three"
+                    - code [ref=e1915] [box=384,-2480,125,18]: .smithers/skills
+                    - text: ", one workflow UI, and one workflow source. Tracked counts are apps 301, packages 150, database migrations 72, docs 2,074, tests 9, and"
+                    - code [ref=e1916] [box=384,-2461,500,37]: ui-playground
+                    - text: 69. Root workspaces are
+                    - code [ref=e1917] [box=617,-2442,54,18]: apps/*
+                    - text: and
+                    - code [ref=e1918] [box=701,-2442,82,18]: packages/*
+                    - text: ;
+                    - code [ref=e1919] [box=384,-2442,434,37]: ui-playground
+                    - text: stays outside them with its own
+                    - code [ref=e1920] [box=658,-2423,132,18]: package-lock.json
+                    - text: . Root tooling uses Bun, TypeScript 6.0.3, Vite 8.1.0, Vitest 4.1.9, and Playwright 1.61.1. Product Effect packages use
+                    - code [ref=e1921] [box=511,-2385,104,18]: 4.0.0-beta.92
+                    - text: .
+                    - code [ref=e1922] [box=622,-2385,75,18]: apps/demo
+                    - text: currently depends on
+                    - code [ref=e1923] [box=384,-2366,139,18]: "@hartlib/demo-data"
+                    - text: ; API and tests depend on
+                    - code [ref=e1924] [box=384,-2366,423,37]: "@hartlib/backend-domain/product-chats"
+                    - text: ; both conflict with the cutover.
+                    - code [ref=e1925] [box=723,-2347,89,18]: packages/ui
+                    - text: lacks several reference dependencies, including the required overlay primitives,
+                    - code [ref=e1926] [box=787,-2328,40,18]: cmdk
+                    - text: ","
+                    - code [ref=e1927] [box=384,-2328,499,37]: react-resizable-panels
+                    - text: ", and"
+                    - code [ref=e1928] [box=536,-2309,125,18]: rehype-highlight
+                    - text: ; workers must add only packages used by the final port. Existing starting evidence is
+                    - code [ref=e1929] [box=384,-2291,477,37]: artifacts/implement-ui-playground-demo-cutover/baseline/starting-worktree.json
+                    - text: ","
+                    - code [ref=e1930] [box=384,-2272,491,37]: baseline/ui-playground-manifest.json
+                    - text: ", and"
+                    - code [ref=e1931] [box=593,-2253,181,18]: preflight/preflight.json
+                    - text: . Preflight reports ready and records only the names
+                    - code [ref=e1932] [box=593,-2234,89,18]: ZAI_API_KEY
+                    - text: ","
+                    - code [ref=e1933] [box=384,-2215,202,18]: HARTLIB_E2E_LIVE_PROVIDER=1
+                    - text: ", and"
+                    - code [ref=e1934] [box=620,-2215,146,18]: HARTLIB_E2E_STACK=1
+                    - text: "; no secret value was read or repeated.\", \"citedDocsArtifact\": \"The complete fixed plan and all eight cited canonical documents were read."
+                    - code [ref=e1935] [box=523,-2158,146,18]: docs/design.spec.md
+                    - text: still specifies two demo accounts, routable publisher/client views, fixture or IndexedDB documents, multi-chat sharing/archive/deletion, and archive-and-replace reset.
+                    - code [ref=e1936] [box=728,-2120,160,18]: docs/design-system.md
+                    - text: specifies the current Pressroom OKLCH palette and 0.5px radii rather than the reference defaults.
+                    - code [ref=e1937] [box=502,-2082,181,18]: docs/engineering.spec.md
+                    - text: retains publisher fixtures, explicit chat IDs, chat collections, and reset routes while also supplying strict schema, migration, security, and Effect rules that remain useful.
+                    - code [ref=e1938] [box=384,-2045,432,37]: docs/ai-chat-runtime.spec.md
+                    - text: says multiple chats are allowed, the demo has no Stop endpoint, Stop is out of scope, and a legacy citation decoder is accepted; its nearby claim that no alternate decoder exists is internally inconsistent. Its durable SSE, provider, citation, source, memory, access, and failure rules remain source evidence.
+                    - code [ref=e1939] [box=384,-1950,181,18]: docs/data-access.spec.md
+                    - text: retains sharing/archive/delete-chat rules and legacy web-quote text; its derived-row, secure-document, memory, and retention rules remain relevant where the fixed plan keeps them.
+                    - code [ref=e1940] [box=685,-1912,188,18]: docs/localization.spec.md
+                    - text: keeps paired locale/market rules and canonical JSON catalog ownership.
+                    - code [ref=e1941] [box=384,-1874,167,18]: docs/expansion.spec.md
+                    - text: keeps future market and publisher context but cannot create a shipped publisher path.
+                    - code [ref=e1942] [box=583,-1855,308,18]: docs/public-source-marketplace.research.md
+                    - text: supports real official sources, authenticated content, and enablement controls, but stale invitation wording must go. The plan expressly overrides conflicts in these documents until P9 syncs them as specifications. The cited earlier report
+                    - code [ref=e1943] [box=384,-1780,371,18]: artifacts/ui-playground-demo-integration-audit.html
+                    - text: "is background evidence only: it proposed omitted publisher surfaces, an empty-only visualization port, disabled Stop, archive/new-chat reset, and restored publisher fixtures, all superseded by the fixed plan.\", \"effectReferencesArtifact\": \"The full 2,061-file"
+                    - code [ref=e1944] [box=668,-1704,209,18]: docs/references/effect-smol/
+                    - text: tree was inventoried, and its governing instructions,
+                    - code [ref=e1945] [box=700,-1686,146,18]: .patterns/effect.md
+                    - text: ","
+                    - code [ref=e1946] [box=384,-1667,153,18]: .patterns/testing.md
+                    - text: ", package manifests, and relevant implementation modules were read. The local reference and product dependencies both use Effect"
+                    - code [ref=e1947] [box=384,-1648,497,37]: 4.0.0-beta.92
+                    - text: . Relevant sources are
+                    - code [ref=e1948] [box=577,-1629,216,18]: packages/effect/src/Effect.ts
+                    - text: ","
+                    - code [ref=e1949] [box=800,-1629,68,18]: Fiber.ts
+                    - text: ","
+                    - code [ref=e1950] [box=384,-1610,75,18]: Stream.ts
+                    - text: ","
+                    - code [ref=e1951] [box=467,-1610,75,18]: Schema.ts
+                    - text: ","
+                    - code [ref=e1952] [box=550,-1610,181,18]: unstable/sql/Migrator.ts
+                    - text: ","
+                    - code [ref=e1953] [box=384,-1591,188,18]: unstable/sql/SqlClient.ts
+                    - text: ","
+                    - code [ref=e1954] [box=580,-1591,230,18]: packages/sql/pg/src/PgClient.ts
+                    - text: ", and"
+                    - code [ref=e1955] [box=384,-1572,202,18]: unstable/http/HttpRouter.ts
+                    - text: ". They provide the current APIs needed for interruption, fiber cancellation, retry and delay schedules, scoped work, stream interruption, strict codecs, transactions, PostgreSQL access, migration loading, and HTTP routes. New backend work must follow v4 patterns: no JavaScript"
+                    - code [ref=e1956] [box=384,-1496,75,18]: try/catch
+                    - text: around yielded effects, use
+                    - code [ref=e1957] [box=631,-1496,104,18]: return yield*
+                    - text: for terminal effects, prefer
+                    - code [ref=e1958] [box=424,-1477,132,18]: Effect.fnUntraced
+                    - text: for reusable effect functions, use class-based
+                    - code [ref=e1959] [box=384,-1458,118,18]: Context.Service
+                    - text: ", and use"
+                    - code [ref=e1960] [box=561,-1458,75,18]: TestClock
+                    - text: for time tests. The worker's
+                    - code [ref=e1961] [box=809,-1458,61,18]: effect3
+                    - text: "alias exists only for Smithers interoperability and is not a valid base for new cutover code.\", \"currentCodeInventoryArtifact\": \"API route registry:"
+                    - code [ref=e1962] [box=384,-1383,209,18]: apps/api/src/routes/index.ts
+                    - text: registers health, demo session, public sources/documents, identity and billing webhooks, billing, chat, client workspace, exports, memories, product chats, platform support, publisher workspace/onboarding, memberships, and publisher documents. Impacted chat routes are
+                    - code [ref=e1963] [box=449,-1307,97,18]: GET /v1/chat
+                    - text: ","
+                    - code [ref=e1964] [box=553,-1307,167,18]: POST /v1/chat/messages
+                    - text: ","
+                    - code [ref=e1965] [box=727,-1307,160,18]: GET /v1/chats/:chatId
+                    - text: ","
+                    - code [ref=e1966] [box=384,-1288,230,18]: POST /v1/chats/:chatId/messages
+                    - text: ","
+                    - code [ref=e1967] [box=622,-1288,216,18]: GET /v1/ai-runs/:runId/stream
+                    - text: ", and"
+                    - code [ref=e1968] [box=384,-1269,209,18]: GET /v1/ai-runs/:runId/debug
+                    - text: . Product-chat routes add
+                    - code [ref=e1969] [box=384,-1269,431,37]: GET/POST /v1/chats
+                    - text: ", share, unshare, delete, and reset. No"
+                    - code [ref=e1970] [box=384,-1250,394,37]: POST /v1/ai-runs/:runId/stop
+                    - text: ","
+                    - code [ref=e1971] [box=510,-1231,259,18]: DELETE /v1/chat/messages/:messageId
+                    - text: ","
+                    - code [ref=e1972] [box=384,-1231,433,37]: PATCH /v1/chat/messages/:messageId
+                    - text: ", or"
+                    - code [ref=e1973] [box=611,-1212,202,18]: POST /v1/demo/session/reset
+                    - text: exists. Memory and public-source routes already provide the real list/revision/revert/delete and source list/toggle/secure-document paths the plan retains. Shared contracts in
+                    - code [ref=e1974] [box=384,-1156,202,18]: packages/shared/src/chat.ts
+                    - text: and
+                    - code [ref=e1975] [box=616,-1156,132,18]: http-contracts.ts
+                    - text: include collection queries, create/list/reset schemas, optional explicit-chat access, queued/running/succeeded/failed run outcomes, done/error terminal events, and queued/running/succeeded/failed debug status. They lack
+                    - code [ref=e1976] [box=739,-1099,61,18]: stopped
+                    - text: .
+                    - code [ref=e1977] [box=384,-1080,153,18]: PublicCitationRecord
+                    - text: explicitly decodes
+                    - code [ref=e1978] [box=653,-1080,153,18]: LegacyCitationRecord
+                    - text: .
+                    - code [ref=e1979] [box=384,-1061,301,18]: packages/api-client/src/product-client.ts
+                    - text: exposes list/create/share/unshare/delete/reset and optional chat IDs;
+                    - code [ref=e1980] [box=384,-1042,490,37]: packages/backend-domain/src/product-chats.ts
+                    - text: implements those operations. Demo authentication in
+                    - code [ref=e1981] [box=399,-1004,209,18]: apps/api/src/demo-session.ts
+                    - text: accepts any cookie-safe slug and has no active or revoked session row. Database migration loading sorts and records every SQL file through Effect Migrator. There are 72 migrations through
+                    - code [ref=e1982] [box=782,-966,40,18]: "0073"
+                    - text: with no
+                    - code [ref=e1983] [box=384,-947,40,18]: "0065"
+                    - text: ;
+                    - code [ref=e1984] [box=432,-947,40,18]: "0061"
+                    - text: enables multiple chats and
+                    - code [ref=e1985] [box=641,-947,40,18]: "0071"
+                    - text: adds archive/replacement lineage. No
+                    - code [ref=e1986] [box=405,-929,40,18]: "0074"
+                    - text: exists. The current graph includes chats, messages, runs/events, observations, source exposures and uses, usage, memories/revisions, subscription bindings, jobs, companies, memberships, and users, so the reset purge needs a complete FK and job audit. Demo routing recognizes client root/source/publication paths but maps bad, publisher, and gallery-like paths to client root; dormant publisher builders and resolvers remain, and no branded 404 exists.
+                    - code [ref=e1987] [box=384,-815,167,18]: apps/demo/src/main.tsx
+                    - text: imports
+                    - code [ref=e1988] [box=605,-815,139,18]: "@hartlib/demo-data"
+                    - text: ", carries local publication state, static and IndexedDB PDF handling, ad hoc storage clearing, and a visible header reset button wired to archive-and-replace. The package's seeded source and issue arrays are currently empty, but its fake account/plan models and four checked-in demo PDFs remain."
+                    - code [ref=e1989] [box=605,-740,195,18]: scopePublicContentToMarket
+                    - text: filters out
+                    - code [ref=e1990] [box=384,-721,125,18]: subscribed:false
+                    - text: rows, and its test requires that stale behavior.
+                    - code [ref=e1991] [box=791,-721,89,18]: packages/ui
+                    - text: has 38 tracked source/test files and uses the old OKLCH/0.5px defaults; the 69-file reference has the complete shell, palette, tables, publisher views, chat, visualization, overlays, primitives, i18n, storage, mocks, gallery, and hex/2px theme. No current product import reaches
+                    - code [ref=e1992] [box=598,-645,104,18]: ui-playground
+                    - text: ", and its tracked diff is clean."
+                    - code [ref=e1993] [box=384,-626,68,18]: apps/web
+                    - text: still exposes explicit-chat, client, publisher, platform, support, and legal routes and uses the multi-chat client; D24 requires a named-use audit rather than automatic retention. Tracked test-file counts are API 18, demo 11, web 16, worker 65, API client 4, backend domain 3, config 1, demo data 1, i18n 2, shared 5, source ingestion 10, UI 5, workspace 2, chat E2E 2, and platform E2E 3.
+                    - code [ref=e1994] [box=384,-532,167,18]: tests/e2e/chat.spec.ts
+                    - text: contains the required live baseline
+                    - code [ref=e1995] [box=384,-532,478,37]: real provider internal retrieval persists a cited answer
+                    - text: ", but also seven archive-reset tests. It has no product Stop, message edit/delete, replay-safe identity reset, purge, dormant publisher, full visualization fixture, breakpoint snapshot, or accessibility coverage."
+                    - code [ref=e1996] [box=447,-456,287,18]: tests/platform-e2e/product-chat.spec.ts
+                    - text: exercises the product slated for deletion. The E2E setup uses a literal
+                    - code [ref=e1997] [box=672,-437,75,18]: demo-user
+                    - text: "cookie, which will cease to work once sessions require an active database row.\", \"contradictions\": [ \"The fixed plan is internally inconsistent about"
+                    - code [ref=e1998] [box=667,-381,47,18]: /docs
+                    - text: ": D18, C2, and the Docs architecture row require"
+                    - code [ref=e1999] [box=533,-362,259,18]: packages/docs/src/html.ts#DOCS_HTML
+                    - text: body, headings, fields, and links to remain exact, while D8 and the multi-chat deletion rows require every
+                    - code [ref=e2000] [box=421,-324,75,18]: /v1/chats
+                    - text: document to disappear. Current
+                    - code [ref=e2001] [box=696,-324,75,18]: DOCS_HTML
+                    - text: documents explicit-chat routes, done/error-only SSE, and no Stop. The plan does not state which rule wins.", "Plan D8/D9 requires one singular chat and removal of all list/create/read-by-ID/send-by-ID/share/unshare/archive/delete-chat/reset capability. Current routes, shared schemas, API client, backend domain, web UI, tests, migrations 0061/0071, and several canonical docs still implement and require that multi-chat product.", "Plan D10 requires durable real Stop. Current public contracts have no Stop route, stop intent,
+                    - code [ref=e2002] [box=457,-173,61,18]: stopped
+                    - text: run status, terminal SSE event, debug state, partial finalizer, or worker cancellation path;
+                    - code [ref=e2003] [box=556,-154,209,18]: docs/ai-chat-runtime.spec.md
+                    - text: explicitly says the demo has no Stop endpoint and lists Stop as out of scope.", "Plan D11/D12 requires exact single-message deletion and last-visible-question editing. No matching route, schema, client method, domain transaction, UI action, or test exists.", "Plan D20–D23 replaces archive reset with a confirmed command-palette identity reset. Current demo exposes a header reset icon, calls
+                    - code [ref=e2004] [box=384,-22,174,18]: /v1/chats/:chatId/reset
+                    - text: ", keeps the same visitor cookie, clears only selected local state, and does not revoke, replay, purge, fence writes, or hard reload.\", \"Plan D21 requires every normal request to accept only an existing active session. Current authentication treats any valid cookie-safe slug as an authenticated demo visitor and stores no session or revocation state.\", \"Plan D5/D25 requires a complete but unreachable publisher composition and no shipped mock runtime. Canonical docs still describe routable publisher/account switching and fixtures; current parser hides publisher routes but retains publisher builders, fake account models,"
+                    - code [ref=e2005] [box=573,129,139,18]: "@hartlib/demo-data"
+                    - text: ", local PDF state, and checked-in fixture PDFs, while the required dormant final composition does not exist.\", \"Plan D6/D7 requires the full visualization presentation and message association with honest empty live data. Current product has no complete visualization component, while canonical docs and the earlier audit describe it as future work or an empty-only omission.\", \"Plan D16 requires disabled real public-source rows to remain visible."
+                    - code [ref=e2006] [box=384,280,230,18]: apps/demo/src/market-content.ts
+                    - text: filters on
+                    - code [ref=e2007] [box=675,280,132,18]: source.subscribed
+                    - text: ", and its test asserts that disabled rows and their publications disappear.\", \"Plan D1 requires bad, publisher, and gallery URLs to render a branded 404. Current"
+                    - code [ref=e2008] [box=384,336,153,18]: getDemoRouteFromPath
+                    - text: normalizes all of them to client root, while
+                    - code [ref=e2009] [box=384,355,104,18]: buildDemoPath
+                    - text: can still produce publisher URLs.", "Plan D3/R27 makes the reference design the sole default. Current
+                    - code [ref=e2010] [box=790,374,89,18]: packages/ui
+                    - text: and canonical design docs still use a smaller component set, OKLCH values, and 0.5px radii rather than the reference hex palette, 2px radius, overlays, publisher controls, and visualization parts.", "Plan D9/C14 forbids legacy decoders. Current
+                    - code [ref=e2011] [box=672,450,153,18]: PublicCitationRecord
+                    - text: decodes omitted and string quote forms through
+                    - code [ref=e2012] [box=627,469,153,18]: LegacyCitationRecord
+                    - text: ;
+                    - code [ref=e2013] [box=384,469,500,37]: docs/ai-chat-runtime.spec.md
+                    - text: both endorses that decoder and, a few lines later, says no alternate decoder exists.", "Current tests prove the product being removed and do not prove the new Stop, message mutations, active-session reset, replay races, uncapped purge, dormant composition, full visualization states, or required visual and accessibility gates.", "The earlier integration audit conflicts with the approved plan on publisher omission, visualization scope, unsupported Stop, archive/new-chat reset, and publisher fixtures. It must not be used as authority where the fixed plan settled those points.", "The workflow's retained-reference manifest hashes all ignored and generated content under
+                    - code [ref=e2014] [box=473,676,104,18]: ui-playground
+                    - text: ", including 12,280"
+                    - code [ref=e2015] [box=687,676,97,18]: node_modules
+                    - text: entries, build output,
+                    - code [ref=e2016] [box=431,695,75,18]: .smithers
+                    - text: ", test results, SQLite files, and"
+                    - code [ref=e2017] [box=692,695,153,18]: tsconfig.tsbuildinfo
+                    - text: . A reference build or local tool can therefore fail byte equality even when all 69 tracked authored files remain unchanged.", "The workflow's final retention proof compares
+                    - code [ref=e2018] [box=672,752,188,18]: currentRepositoryDigest()
+                    - text: ", which hashes manifest plus Git status and diff, with the initial manifest-only digest. Those hash domains cannot match, yet the same final result hard-codes"
+                    - code [ref=e2019] [box=384,808,181,18]: "zeroActionableWork: true"
+                    - text: ".\", \"The workflow's verification does not meet the plan: migration 0074 is checked only by text search, unit and integration checks both run"
+                    - code [ref=e2020] [box=700,846,97,18]: bun run test
+                    - text: ", reserved ports are not passed to Playwright, several full-stack Playwright/build checks run in parallel against shared ports and state, reference runtime dependency count is hard-coded to zero, and final test and visual artifact arrays are empty.\", \"The starting-worktree artifact records status, HEAD, and only the unstaged diff. It omits the staged diff, upstream relation, ahead-commit diff, and untracked contents. The supplemental audit supplies that state, but later restore logic must not treat the original artifact as a complete baseline. Preflight also reports service readiness without checking Docker or starting any service.\" ], \"settledPlanOverrides\": [ \"The fixed plan's user decisions override conflicting claims in the eight canonical Markdown documents and the earlier integration audit until P9 rewrites the canonical specs.\", \""
+                    - code [ref=e2021] [box=390,1110,111,18]: ui-playground/
+                    - text: remains permanent, byte-protected authored reference source. Keep its README, lockfile, gallery, i18n, services, mocks, visual generators, publisher pages, and source; ship no import, workspace dependency, copy, fallback, or runtime read from it.", "
+                    - code [ref=e2022] [box=390,1186,89,18]: packages/ui
+                    - text: becomes the only design-system and reusable-component owner, with the complete playground design as its default.
+                    - code [ref=e2023] [box=697,1205,75,18]: apps/demo
+                    - text: owns routes, controllers, fetches, SSE, locale and route state, command actions, and browser storage.", "Port the complete publisher UI and app composition with honest empty inputs, but expose no URL, import from the product router, link, switcher, command, navigation item, palette result, or shipped chunk that can reach it.", "Port the complete visualization presentation, version controls, sandbox canvas, and message association. The reachable demo supplies zero real versions and exposes no fake generation, mock visual, backend contract, or version-dependent action.", "Use one singular chat. Remove collection, explicit-chat, create, share, unshare, archive, delete-chat, and reset-chat contracts everywhere. Keep an internal chat UUID only for persistence, runs, locks, and purge order.", "Add immutable migration
+                    - code [ref=e2024] [box=545,1450,216,18]: 0074_demo_product_cutover.sql
+                    - text: ; keep 0001–0073 byte-for-byte as boot history. Drop and recreate affected live objects and old demo rows without backfill, dual paths, aliases, repair functions, legacy decoders, or compatibility endpoints.", "Implement
+                    - code [ref=e2025] [box=458,1525,209,18]: POST /v1/ai-runs/:runId/stop
+                    - text: with durable partial text and valid citations, no memory, idempotent cancellation, terminal
+                    - code [ref=e2026] [box=723,1544,61,18]: stopped
+                    - text: projection/SSE/debug state, and normal committed completion winning the race.", "
+                    - code [ref=e2027] [box=390,1582,259,18]: DELETE /v1/chat/messages/:messageId
+                    - text: removes only the selected visible row and retains its pair and derived rows.
+                    - code [ref=e2028] [box=611,1601,252,18]: PATCH /v1/chat/messages/:messageId
+                    - text: edits only the last visible user question, supersedes the old projected run, removes the old visible answer, retains prior derived rows, and queues exactly one replacement run.", "Ship no Regenerate or attachment feature. Keep browser dictation, post-success empty-history suggestions, and a schema-checked, persisted web-search choice that defaults on while server
+                    - code [ref=e2029] [box=559,1714,139,18]: EffectiveWebPolicy
+                    - text: remains final.", "Subscriptions use only real authorized public sources. Disabled rows remain visible; mutations need per-row pending, rollback, visible error, and stale-response fencing. Remove invitations, seeded issues and PDFs, fake metrics, and Read/Unread state.", "Keep
+                    - code [ref=e2030] [box=425,1809,47,18]: /docs
+                    - text: route, deny-by-default CSP, font grants, English
+                    - code [ref=e2031] [box=769,1809,40,18]: lang
+                    - text: ", and UI-owned standalone styling; the unresolved content conflict is recorded separately rather than guessed.\", \"All shipped and dormant labels, aria text, counts, errors, reset confirmation, publisher fixtures, and visualization fixtures belong in the schema-checked"
+                    - code [ref=e2032] [box=384,1884,483,37]: fr-FR.json
+                    - text: and
+                    - code [ref=e2033] [box=469,1903,82,18]: en-US.json
+                    - text: catalogs. Ship no reference translator.", "Reset demo exists only as a confirmed command-palette action. It uses an operation UUID, one locked replay-safe successor session, immediate old-session revocation,
+                    - code [ref=e2034] [box=455,1960,33,18]: "202"
+                    - text: before purge, pending-operation recovery, one storage registry and clearer, stream/write fencing, in-memory reset, hard reload, and an uncapped restart-safe purge job outside the old identity graph.", "Delete every obsolete visual, export, dependency, test, route, schema, package, and caller after the P1 caller audit.
+                    - code [ref=e2035] [box=594,2035,68,18]: apps/web
+                    - text: "and other products receive no blanket protection; retain only code with a named reachable-demo, dormant-fixture, or required-infrastructure use.\", \"Final parity approval compares live client/docs/404 and direct dormant fixtures with the permanent reference, records only settled differences, reruns all proof, and never deletes the reference.\" ]}{ \"summary\": \"Read-only audit complete for"
+                    - code [ref=e2036] [box=384,2205,266,18]: /Users/polarzero/code/projects/brief
+                    - text: and the fixed plan at
+                    - code [ref=e2037] [box=384,2205,494,37]: artifacts/ui-playground-demo-implementation-plan.html
+                    - text: ". The cutover has not been implemented: current code still has multi-chat and archive-reset contracts, no product Stop or message-mutation routes, syntactic demo cookies, old UI defaults, disabled-source filtering, and fixture-era demo code. Git starting state remains untouched:"
+                    - code [ref=e2038] [box=456,2299,40,18]: main
+                    - text: is at
+                    - code [ref=e2039] [box=529,2299,294,18]: fe405755b98c2c8170635282a1f0fea1013d2dd1
+                    - text: ", two commits ahead of"
+                    - code [ref=e2040] [box=496,2318,89,18]: origin/main
+                    - text: ", with no staged or tracked unstaged changes and 34 untracked Smithers workflow files. The tracked"
+                    - code [ref=e2041] [box=692,2337,111,18]: ui-playground/
+                    - text: "reference is clean. No files were edited and no tests or services were run.\", \"sourceInventoryArtifact\": \"Fixed inputs: repository"
+                    - code [ref=e2042] [box=384,2394,266,18]: /Users/polarzero/code/projects/brief
+                    - text: ; plan
+                    - code [ref=e2043] [box=384,2394,477,37]: artifacts/ui-playground-demo-implementation-plan.html
+                    - text: (438 lines, 77,040 bytes); workflow artifact root
+                    - code [ref=e2044] [box=384,2432,336,18]: artifacts/implement-ui-playground-demo-cutover
+                    - text: .
+                    - code [ref=e2045] [box=728,2432,75,18]: AGENTS.md
+                    - text: and
+                    - code [ref=e2046] [box=384,2451,273,18]: docs/references/effect-smol/AGENTS.md
+                    - text: "were read. Git:"
+                    - code [ref=e2047] [box=752,2451,40,18]: main
+                    - text: at
+                    - code [ref=e2048] [box=384,2470,294,18]: fe405755b98c2c8170635282a1f0fea1013d2dd1
+                    - text: ", upstream"
+                    - code [ref=e2049] [box=746,2470,89,18]: origin/main
+                    - text: at
+                    - code [ref=e2050] [box=384,2489,294,18]: 568e919c4b48d95ee24adeafc80a53e1c06e5529
+                    - text: ", ahead 2 and behind 0. Starting commits are"
+                    - code [ref=e2051] [box=462,2508,385,18]: "d25a54a35 feat(ui): add subscriber subscriptions view"
+                    - text: and
+                    - code [ref=e2052] [box=384,2527,378,18]: "fe405755b fix(ui): remove compact navigation divider"
+                    - text: ; their upstream diff changes 19 files with 585 insertions and 200 deletions across five canonical docs and
+                    - code [ref=e2053] [box=410,2565,104,18]: ui-playground
+                    - text: . There are no staged or tracked unstaged changes. The 34 protected untracked files comprise 29
+                    - code [ref=e2054] [box=619,2584,132,18]: .smithers/prompts
+                    - text: ", three"
+                    - code [ref=e2055] [box=384,2603,125,18]: .smithers/skills
+                    - text: ", one workflow UI, and one workflow source. Tracked counts are apps 301, packages 150, database migrations 72, docs 2,074, tests 9, and"
+                    - code [ref=e2056] [box=384,2621,500,37]: ui-playground
+                    - text: 69. Root workspaces are
+                    - code [ref=e2057] [box=617,2640,54,18]: apps/*
+                    - text: and
+                    - code [ref=e2058] [box=701,2640,82,18]: packages/*
+                    - text: ;
+                    - code [ref=e2059] [box=384,2640,434,37]: ui-playground
+                    - text: stays outside them with its own
+                    - code [ref=e2060] [box=658,2659,132,18]: package-lock.json
+                    - text: . Root tooling uses Bun, TypeScript 6.0.3, Vite 8.1.0, Vitest 4.1.9, and Playwright 1.61.1. Product Effect packages use
+                    - code [ref=e2061] [box=511,2697,104,18]: 4.0.0-beta.92
+                    - text: .
+                    - code [ref=e2062] [box=622,2697,75,18]: apps/demo
+                    - text: currently depends on
+                    - code [ref=e2063] [box=384,2716,139,18]: "@hartlib/demo-data"
+                    - text: ; API and tests depend on
+                    - code [ref=e2064] [box=384,2716,423,37]: "@hartlib/backend-domain/product-chats"
+                    - text: ; both conflict with the cutover.
+                    - code [ref=e2065] [box=723,2735,89,18]: packages/ui
+                    - text: lacks several reference dependencies, including the required overlay primitives,
+                    - code [ref=e2066] [box=787,2754,40,18]: cmdk
+                    - text: ","
+                    - code [ref=e2067] [box=384,2754,499,37]: react-resizable-panels
+                    - text: ", and"
+                    - code [ref=e2068] [box=536,2773,125,18]: rehype-highlight
+                    - text: ; workers must add only packages used by the final port. Existing starting evidence is
+                    - code [ref=e2069] [box=384,2792,477,37]: artifacts/implement-ui-playground-demo-cutover/baseline/starting-worktree.json
+                    - text: ","
+                    - code [ref=e2070] [box=384,2811,491,37]: baseline/ui-playground-manifest.json
+                    - text: ", and"
+                    - code [ref=e2071] [box=593,2830,181,18]: preflight/preflight.json
+                    - text: . Preflight reports ready and records only the names
+                    - code [ref=e2072] [box=593,2849,89,18]: ZAI_API_KEY
+                    - text: ","
+                    - code [ref=e2073] [box=384,2868,202,18]: HARTLIB_E2E_LIVE_PROVIDER=1
+                    - text: ", and"
+                    - code [ref=e2074] [box=620,2868,146,18]: HARTLIB_E2E_STACK=1
+                    - text: "; no secret value was read or repeated.\", \"citedDocsArtifact\": \"The complete fixed plan and all eight cited canonical documents were read."
+                    - code [ref=e2075] [box=523,2925,146,18]: docs/design.spec.md
+                    - text: still specifies two demo accounts, routable publisher/client views, fixture or IndexedDB documents, multi-chat sharing/archive/deletion, and archive-and-replace reset.
+                    - code [ref=e2076] [box=728,2962,160,18]: docs/design-system.md
+                    - text: specifies the current Pressroom OKLCH palette and 0.5px radii rather than the reference defaults.
+                    - code [ref=e2077] [box=502,3000,181,18]: docs/engineering.spec.md
+                    - text: retains publisher fixtures, explicit chat IDs, chat collections, and reset routes while also supplying strict schema, migration, security, and Effect rules that remain useful.
+                    - code [ref=e2078] [box=384,3038,432,37]: docs/ai-chat-runtime.spec.md
+                    - text: says multiple chats are allowed, the demo has no Stop endpoint, Stop is out of scope, and a legacy citation decoder is accepted; its nearby claim that no alternate decoder exists is internally inconsistent. Its durable SSE, provider, citation, source, memory, access, and failure rules remain source evidence.
+                    - code [ref=e2079] [box=384,3133,181,18]: docs/data-access.spec.md
+                    - text: retains sharing/archive/delete-chat rules and legacy web-quote text; its derived-row, secure-document, memory, and retention rules remain relevant where the fixed plan keeps them.
+                    - code [ref=e2080] [box=685,3170,188,18]: docs/localization.spec.md
+                    - text: keeps paired locale/market rules and canonical JSON catalog ownership.
+                    - code [ref=e2081] [box=384,3208,167,18]: docs/expansion.spec.md
+                    - text: keeps future market and publisher context but cannot create a shipped publisher path.
+                    - code [ref=e2082] [box=583,3227,308,18]: docs/public-source-marketplace.research.md
+                    - text: supports real official sources, authenticated content, and enablement controls, but stale invitation wording must go. The plan expressly overrides conflicts in these documents until P9 syncs them as specifications. The cited earlier report
+                    - code [ref=e2083] [box=384,3303,371,18]: artifacts/ui-playground-demo-integration-audit.html
+                    - text: "is background evidence only: it proposed omitted publisher surfaces, an empty-only visualization port, disabled Stop, archive/new-chat reset, and restored publisher fixtures, all superseded by the fixed plan.\", \"effectReferencesArtifact\": \"The full 2,061-file"
+                    - code [ref=e2084] [box=668,3378,209,18]: docs/references/effect-smol/
+                    - text: tree was inventoried, and its governing instructions,
+                    - code [ref=e2085] [box=700,3397,146,18]: .patterns/effect.md
+                    - text: ","
+                    - code [ref=e2086] [box=384,3416,153,18]: .patterns/testing.md
+                    - text: ", package manifests, and relevant implementation modules were read. The local reference and product dependencies both use Effect"
+                    - code [ref=e2087] [box=384,3435,497,37]: 4.0.0-beta.92
+                    - text: . Relevant sources are
+                    - code [ref=e2088] [box=577,3454,216,18]: packages/effect/src/Effect.ts
+                    - text: ","
+                    - code [ref=e2089] [box=800,3454,68,18]: Fiber.ts
+                    - text: ","
+                    - code [ref=e2090] [box=384,3473,75,18]: Stream.ts
+                    - text: ","
+                    - code [ref=e2091] [box=467,3473,75,18]: Schema.ts
+                    - text: ","
+                    - code [ref=e2092] [box=550,3473,181,18]: unstable/sql/Migrator.ts
+                    - text: ","
+                    - code [ref=e2093] [box=384,3492,188,18]: unstable/sql/SqlClient.ts
+                    - text: ","
+                    - code [ref=e2094] [box=580,3492,230,18]: packages/sql/pg/src/PgClient.ts
+                    - text: ", and"
+                    - code [ref=e2095] [box=384,3511,202,18]: unstable/http/HttpRouter.ts
+                    - text: ". They provide the current APIs needed for interruption, fiber cancellation, retry and delay schedules, scoped work, stream interruption, strict codecs, transactions, PostgreSQL access, migration loading, and HTTP routes. New backend work must follow v4 patterns: no JavaScript"
+                    - code [ref=e2096] [box=384,3586,75,18]: try/catch
+                    - text: around yielded effects, use
+                    - code [ref=e2097] [box=631,3586,104,18]: return yield*
+                    - text: for terminal effects, prefer
+                    - code [ref=e2098] [box=424,3605,132,18]: Effect.fnUntraced
+                    - text: for reusable effect functions, use class-based
+                    - code [ref=e2099] [box=384,3624,118,18]: Context.Service
+                    - text: ", and use"
+                    - code [ref=e2100] [box=561,3624,75,18]: TestClock
+                    - text: for time tests. The worker's
+                    - code [ref=e2101] [box=809,3624,61,18]: effect3
+                    - text: "alias exists only for Smithers interoperability and is not a valid base for new cutover code.\", \"currentCodeInventoryArtifact\": \"API route registry:"
+                    - code [ref=e2102] [box=384,3700,209,18]: apps/api/src/routes/index.ts
+                    - text: registers health, demo session, public sources/documents, identity and billing webhooks, billing, chat, client workspace, exports, memories, product chats, platform support, publisher workspace/onboarding, memberships, and publisher documents. Impacted chat routes are
+                    - code [ref=e2103] [box=449,3775,97,18]: GET /v1/chat
+                    - text: ","
+                    - code [ref=e2104] [box=553,3775,167,18]: POST /v1/chat/messages
+                    - text: ","
+                    - code [ref=e2105] [box=727,3775,160,18]: GET /v1/chats/:chatId
+                    - text: ","
+                    - code [ref=e2106] [box=384,3794,230,18]: POST /v1/chats/:chatId/messages
+                    - text: ","
+                    - code [ref=e2107] [box=622,3794,216,18]: GET /v1/ai-runs/:runId/stream
+                    - text: ", and"
+                    - code [ref=e2108] [box=384,3813,209,18]: GET /v1/ai-runs/:runId/debug
+                    - text: . Product-chat routes add
+                    - code [ref=e2109] [box=384,3813,431,37]: GET/POST /v1/chats
+                    - text: ", share, unshare, delete, and reset. No"
+                    - code [ref=e2110] [box=384,3832,394,37]: POST /v1/ai-runs/:runId/stop
+                    - text: ","
+                    - code [ref=e2111] [box=510,3851,259,18]: DELETE /v1/chat/messages/:messageId
+                    - text: ","
+                    - code [ref=e2112] [box=384,3851,433,37]: PATCH /v1/chat/messages/:messageId
+                    - text: ", or"
+                    - code [ref=e2113] [box=611,3870,202,18]: POST /v1/demo/session/reset
+                    - text: exists. Memory and public-source routes already provide the real list/revision/revert/delete and source list/toggle/secure-document paths the plan retains. Shared contracts in
+                    - code [ref=e2114] [box=384,3927,202,18]: packages/shared/src/chat.ts
+                    - text: and
+                    - code [ref=e2115] [box=616,3927,132,18]: http-contracts.ts
+                    - text: include collection queries, create/list/reset schemas, optional explicit-chat access, queued/running/succeeded/failed run outcomes, done/error terminal events, and queued/running/succeeded/failed debug status. They lack
+                    - code [ref=e2116] [box=739,3983,61,18]: stopped
+                    - text: .
+                    - code [ref=e2117] [box=384,4002,153,18]: PublicCitationRecord
+                    - text: explicitly decodes
+                    - code [ref=e2118] [box=653,4002,153,18]: LegacyCitationRecord
+                    - text: .
+                    - code [ref=e2119] [box=384,4021,301,18]: packages/api-client/src/product-client.ts
+                    - text: exposes list/create/share/unshare/delete/reset and optional chat IDs;
+                    - code [ref=e2120] [box=384,4040,490,37]: packages/backend-domain/src/product-chats.ts
+                    - text: implements those operations. Demo authentication in
+                    - code [ref=e2121] [box=399,4078,209,18]: apps/api/src/demo-session.ts
+                    - text: accepts any cookie-safe slug and has no active or revoked session row. Database migration loading sorts and records every SQL file through Effect Migrator. There are 72 migrations through
+                    - code [ref=e2122] [box=782,4116,40,18]: "0073"
+                    - text: with no
+                    - code [ref=e2123] [box=384,4135,40,18]: "0065"
+                    - text: ;
+                    - code [ref=e2124] [box=432,4135,40,18]: "0061"
+                    - text: enables multiple chats and
+                    - code [ref=e2125] [box=641,4135,40,18]: "0071"
+                    - text: adds archive/replacement lineage. No
+                    - code [ref=e2126] [box=405,4154,40,18]: "0074"
+                    - text: exists. The current graph includes chats, messages, runs/events, observations, source exposures and uses, usage, memories/revisions, subscription bindings, jobs, companies, memberships, and users, so the reset purge needs a complete FK and job audit. Demo routing recognizes client root/source/publication paths but maps bad, publisher, and gallery-like paths to client root; dormant publisher builders and resolvers remain, and no branded 404 exists.
+                    - code [ref=e2127] [box=384,4267,167,18]: apps/demo/src/main.tsx
+                    - text: imports
+                    - code [ref=e2128] [box=605,4267,139,18]: "@hartlib/demo-data"
+                    - text: ", carries local publication state, static and IndexedDB PDF handling, ad hoc storage clearing, and a visible header reset button wired to archive-and-replace. The package's seeded source and issue arrays are currently empty, but its fake account/plan models and four checked-in demo PDFs remain."
+                    - code [ref=e2129] [box=605,4343,195,18]: scopePublicContentToMarket
+                    - text: filters out
+                    - code [ref=e2130] [box=384,4362,125,18]: subscribed:false
+                    - text: rows, and its test requires that stale behavior.
+                    - code [ref=e2131] [box=791,4362,89,18]: packages/ui
+                    - text: has 38 tracked source/test files and uses the old OKLCH/0.5px defaults; the 69-file reference has the complete shell, palette, tables, publisher views, chat, visualization, overlays, primitives, i18n, storage, mocks, gallery, and hex/2px theme. No current product import reaches
+                    - code [ref=e2132] [box=598,4437,104,18]: ui-playground
+                    - text: ", and its tracked diff is clean."
+                    - code [ref=e2133] [box=384,4456,68,18]: apps/web
+                    - text: still exposes explicit-chat, client, publisher, platform, support, and legal routes and uses the multi-chat client; D24 requires a named-use audit rather than automatic retention. Tracked test-file counts are API 18, demo 11, web 16, worker 65, API client 4, backend domain 3, config 1, demo data 1, i18n 2, shared 5, source ingestion 10, UI 5, workspace 2, chat E2E 2, and platform E2E 3.
+                    - code [ref=e2134] [box=384,4551,167,18]: tests/e2e/chat.spec.ts
+                    - text: contains the required live baseline
+                    - code [ref=e2135] [box=384,4551,478,37]: real provider internal retrieval persists a cited answer
+                    - text: ", but also seven archive-reset tests. It has no product Stop, message edit/delete, replay-safe identity reset, purge, dormant publisher, full visualization fixture, breakpoint snapshot, or accessibility coverage."
+                    - code [ref=e2136] [box=447,4626,287,18]: tests/platform-e2e/product-chat.spec.ts
+                    - text: exercises the product slated for deletion. The E2E setup uses a literal
+                    - code [ref=e2137] [box=672,4645,75,18]: demo-user
+                    - text: "cookie, which will cease to work once sessions require an active database row.\", \"contradictions\": [ \"The fixed plan is internally inconsistent about"
+                    - code [ref=e2138] [box=667,4702,47,18]: /docs
+                    - text: ": D18, C2, and the Docs architecture row require"
+                    - code [ref=e2139] [box=533,4721,259,18]: packages/docs/src/html.ts#DOCS_HTML
+                    - text: body, headings, fields, and links to remain exact, while D8 and the multi-chat deletion rows require every
+                    - code [ref=e2140] [box=421,4759,75,18]: /v1/chats
+                    - text: document to disappear. Current
+                    - code [ref=e2141] [box=696,4759,75,18]: DOCS_HTML
+                    - text: documents explicit-chat routes, done/error-only SSE, and no Stop. The plan does not state which rule wins.", "Plan D8/D9 requires one singular chat and removal of all list/create/read-by-ID/send-by-ID/share/unshare/archive/delete-chat/reset capability. Current routes, shared schemas, API client, backend domain, web UI, tests, migrations 0061/0071, and several canonical docs still implement and require that multi-chat product.", "Plan D10 requires durable real Stop. Current public contracts have no Stop route, stop intent,
+                    - code [ref=e2142] [box=457,4909,61,18]: stopped
+                    - text: run status, terminal SSE event, debug state, partial finalizer, or worker cancellation path;
+                    - code [ref=e2143] [box=556,4928,209,18]: docs/ai-chat-runtime.spec.md
+                    - text: explicitly says the demo has no Stop endpoint and lists Stop as out of scope.", "Plan D11/D12 requires exact single-message deletion and last-visible-question editing. No matching route, schema, client method, domain transaction, UI action, or test exists.", "Plan D20–D23 replaces archive reset with a confirmed command-palette identity reset. Current demo exposes a header reset icon, calls
+                    - code [ref=e2144] [box=384,5060,174,18]: /v1/chats/:chatId/reset
+                    - text: ", keeps the same visitor cookie, clears only selected local state, and does not revoke, replay, purge, fence writes, or hard reload.\", \"Plan D21 requires every normal request to accept only an existing active session. Current authentication treats any valid cookie-safe slug as an authenticated demo visitor and stores no session or revocation state.\", \"Plan D5/D25 requires a complete but unreachable publisher composition and no shipped mock runtime. Canonical docs still describe routable publisher/account switching and fixtures; current parser hides publisher routes but retains publisher builders, fake account models,"
+                    - code [ref=e2145] [box=573,5211,139,18]: "@hartlib/demo-data"
+                    - text: ", local PDF state, and checked-in fixture PDFs, while the required dormant final composition does not exist.\", \"Plan D6/D7 requires the full visualization presentation and message association with honest empty live data. Current product has no complete visualization component, while canonical docs and the earlier audit describe it as future work or an empty-only omission.\", \"Plan D16 requires disabled real public-source rows to remain visible."
+                    - code [ref=e2146] [box=384,5362,230,18]: apps/demo/src/market-content.ts
+                    - text: filters on
+                    - code [ref=e2147] [box=675,5362,132,18]: source.subscribed
+                    - text: ", and its test asserts that disabled rows and their publications disappear.\", \"Plan D1 requires bad, publisher, and gallery URLs to render a branded 404. Current"
+                    - code [ref=e2148] [box=384,5419,153,18]: getDemoRouteFromPath
+                    - text: normalizes all of them to client root, while
+                    - code [ref=e2149] [box=384,5438,104,18]: buildDemoPath
+                    - text: can still produce publisher URLs.", "Plan D3/R27 makes the reference design the sole default. Current
+                    - code [ref=e2150] [box=790,5457,89,18]: packages/ui
+                    - text: and canonical design docs still use a smaller component set, OKLCH values, and 0.5px radii rather than the reference hex palette, 2px radius, overlays, publisher controls, and visualization parts.", "Plan D9/C14 forbids legacy decoders. Current
+                    - code [ref=e2151] [box=672,5532,153,18]: PublicCitationRecord
+                    - text: decodes omitted and string quote forms through
+                    - code [ref=e2152] [box=627,5551,153,18]: LegacyCitationRecord
+                    - text: ;
+                    - code [ref=e2153] [box=384,5551,500,37]: docs/ai-chat-runtime.spec.md
+                    - text: both endorses that decoder and, a few lines later, says no alternate decoder exists.", "Current tests prove the product being removed and do not prove the new Stop, message mutations, active-session reset, replay races, uncapped purge, dormant composition, full visualization states, or required visual and accessibility gates.", "The earlier integration audit conflicts with the approved plan on publisher omission, visualization scope, unsupported Stop, archive/new-chat reset, and publisher fixtures. It must not be used as authority where the fixed plan settled those points.", "The workflow's retained-reference manifest hashes all ignored and generated content under
+                    - code [ref=e2154] [box=473,5759,104,18]: ui-playground
+                    - text: ", including 12,280"
+                    - code [ref=e2155] [box=687,5759,97,18]: node_modules
+                    - text: entries, build output,
+                    - code [ref=e2156] [box=431,5778,75,18]: .smithers
+                    - text: ", test results, SQLite files, and"
+                    - code [ref=e2157] [box=692,5778,153,18]: tsconfig.tsbuildinfo
+                    - text: . A reference build or local tool can therefore fail byte equality even when all 69 tracked authored files remain unchanged.", "The workflow's final retention proof compares
+                    - code [ref=e2158] [box=672,5834,188,18]: currentRepositoryDigest()
+                    - text: ", which hashes manifest plus Git status and diff, with the initial manifest-only digest. Those hash domains cannot match, yet the same final result hard-codes"
+                    - code [ref=e2159] [box=384,5891,181,18]: "zeroActionableWork: true"
+                    - text: ".\", \"The workflow's verification does not meet the plan: migration 0074 is checked only by text search, unit and integration checks both run"
+                    - code [ref=e2160] [box=700,5929,97,18]: bun run test
+                    - text: ", reserved ports are not passed to Playwright, several full-stack Playwright/build checks run in parallel against shared ports and state, reference runtime dependency count is hard-coded to zero, and final test and visual artifact arrays are empty.\", \"The starting-worktree artifact records status, HEAD, and only the unstaged diff. It omits the staged diff, upstream relation, ahead-commit diff, and untracked contents. The supplemental audit supplies that state, but later restore logic must not treat the original artifact as a complete baseline. Preflight also reports service readiness without checking Docker or starting any service.\" ], \"settledPlanOverrides\": [ \"The fixed plan's user decisions override conflicting claims in the eight canonical Markdown documents and the earlier integration audit until P9 rewrites the canonical specs.\", \""
+                    - code [ref=e2161] [box=390,6193,111,18]: ui-playground/
+                    - text: remains permanent, byte-protected authored reference source. Keep its README, lockfile, gallery, i18n, services, mocks, visual generators, publisher pages, and source; ship no import, workspace dependency, copy, fallback, or runtime read from it.", "
+                    - code [ref=e2162] [box=390,6268,89,18]: packages/ui
+                    - text: becomes the only design-system and reusable-component owner, with the complete playground design as its default.
+                    - code [ref=e2163] [box=697,6287,75,18]: apps/demo
+                    - text: owns routes, controllers, fetches, SSE, locale and route state, command actions, and browser storage.", "Port the complete publisher UI and app composition with honest empty inputs, but expose no URL, import from the product router, link, switcher, command, navigation item, palette result, or shipped chunk that can reach it.", "Port the complete visualization presentation, version controls, sandbox canvas, and message association. The reachable demo supplies zero real versions and exposes no fake generation, mock visual, backend contract, or version-dependent action.", "Use one singular chat. Remove collection, explicit-chat, create, share, unshare, archive, delete-chat, and reset-chat contracts everywhere. Keep an internal chat UUID only for persistence, runs, locks, and purge order.", "Add immutable migration
+                    - code [ref=e2164] [box=545,6532,216,18]: 0074_demo_product_cutover.sql
+                    - text: ; keep 0001–0073 byte-for-byte as boot history. Drop and recreate affected live objects and old demo rows without backfill, dual paths, aliases, repair functions, legacy decoders, or compatibility endpoints.", "Implement
+                    - code [ref=e2165] [box=458,6608,209,18]: POST /v1/ai-runs/:runId/stop
+                    - text: with durable partial text and valid citations, no memory, idempotent cancellation, terminal
+                    - code [ref=e2166] [box=723,6627,61,18]: stopped
+                    - text: projection/SSE/debug state, and normal committed completion winning the race.", "
+                    - code [ref=e2167] [box=390,6665,259,18]: DELETE /v1/chat/messages/:messageId
+                    - text: removes only the selected visible row and retains its pair and derived rows.
+                    - code [ref=e2168] [box=611,6684,252,18]: PATCH /v1/chat/messages/:messageId
+                    - text: edits only the last visible user question, supersedes the old projected run, removes the old visible answer, retains prior derived rows, and queues exactly one replacement run.", "Ship no Regenerate or attachment feature. Keep browser dictation, post-success empty-history suggestions, and a schema-checked, persisted web-search choice that defaults on while server
+                    - code [ref=e2169] [box=559,6797,139,18]: EffectiveWebPolicy
+                    - text: remains final.", "Subscriptions use only real authorized public sources. Disabled rows remain visible; mutations need per-row pending, rollback, visible error, and stale-response fencing. Remove invitations, seeded issues and PDFs, fake metrics, and Read/Unread state.", "Keep
+                    - code [ref=e2170] [box=425,6891,47,18]: /docs
+                    - text: route, deny-by-default CSP, font grants, English
+                    - code [ref=e2171] [box=769,6891,40,18]: lang
+                    - text: ", and UI-owned standalone styling; the unresolved content conflict is recorded separately rather than guessed.\", \"All shipped and dormant labels, aria text, counts, errors, reset confirmation, publisher fixtures, and visualization fixtures belong in the schema-checked"
+                    - code [ref=e2172] [box=384,6967,483,37]: fr-FR.json
+                    - text: and
+                    - code [ref=e2173] [box=469,6986,82,18]: en-US.json
+                    - text: catalogs. Ship no reference translator.", "Reset demo exists only as a confirmed command-palette action. It uses an operation UUID, one locked replay-safe successor session, immediate old-session revocation,
+                    - code [ref=e2174] [box=455,7042,33,18]: "202"
+                    - text: before purge, pending-operation recovery, one storage registry and clearer, stream/write fencing, in-memory reset, hard reload, and an uncapped restart-safe purge job outside the old identity graph.", "Delete every obsolete visual, export, dependency, test, route, schema, package, and caller after the P1 caller audit.
+                    - code [ref=e2175] [box=594,7118,68,18]: apps/web
+                    - text: "and other products receive no blanket protection; retain only code with a named reachable-demo, dormant-fixture, or required-infrastructure use.\", \"Final parity approval compares live client/docs/404 and direct dormant fixtures with the permanent reference, records only settled differences, reruns all proof, and never deletes the reference.\" ]}"
+          - generic [ref=e1282] [box=33,7457,1358,250]:
+            - generic [ref=e1283] [box=46,7470,1332,36]:
+              - generic [ref=e1284] [box=46,7470,1226,36]:
+                - generic [ref=e1285] [box=46,7470,1226,20]: freeze_contracts
+                - generic [ref=e2176] [box=46,7489,1226,17]: codex
+              - generic [ref=e1286] [box=1280,7477,98,22]: Complete
+            - log [ref=e2177] [box=46,7514,1332,180]:
+              - region "Conversation messages" [ref=e2179] [box=46,7514,1332,180]:
+                - article [ref=e2181] [box=370,-18242,672,25779]:
+                  - paragraph [ref=e2185] [box=384,-18232,510,25759]:
+                    - text: "{ \"summary\": \"The cutover contract is frozen by the rules below. It makes the singular demo chat, durable Stop, exact message mutations, real-source subscriptions, dormant publisher composition, empty live visualization, active database-backed sessions, replay-safe identity reset, strict citations, reference-default design system, and full deletion of the old product-chat and fixture paths mandatory. RESOLUTION entries settle every stale canonical claim, including the /docs conflict. No repository file was edited and no test or service was run.\", \"frozenContractsArtifact\": \"This JSON response is the authoritative cutover contract. It supersedes conflicting pre-cutover documentation and the earlier integration audit until P9 updates the canonical documents. No repository artifact was created because this task is read-only.\", \"behaviorRules\": [ \"AUTHORITY-001: Apply authority in this order: this frozen contract, settled decisions in artifacts/ui-playground-demo-implementation-plan.html, canonical docs after P9 sync, then current code and older reports as historical evidence only. A worker must stop if an implementation choice conflicts with a higher-ranked source.\", \"RESOLUTION-001: Resolve the /docs conflict in favor of the cutover API. Keep the /docs route, packages/docs/src/html.ts, DOCS_HTML, deny-by-default CSP, required font grants, English lang attribute, and standalone UI-owned styling. Change every body section, heading, field, example, and link that describes a deleted /v1/chats route, explicit chat ID, done/error-only SSE, missing Stop, or another stale contract. Unaffected content remains unchanged. The post-P9 DOCS_HTML snapshot, not its pre-cutover bytes, becomes exact.\", \"RESOLUTION-002: In docs/design.spec.md, replace two demo accounts, routable publisher views, fixture or IndexedDB documents, multi-chat sharing/archive/deletion, and archive-and-replace reset with one reachable client product, an unreachable publisher composition, real sources, one chat, and identity reset.\", \"RESOLUTION-003: In docs/design-system.md, replace the Pressroom OKLCH and 0.5px-radius defaults with the complete tracked ui-playground hex-token and 2px-radius defaults. packages/ui is the sole shipped owner.\", \"RESOLUTION-004: In docs/engineering.spec.md, remove publisher-fixture, explicit-chat-ID, chat-collection, and reset-chat requirements. Retain its strict-schema, migration, security, transaction, and Effect v4 rules.\", \"RESOLUTION-005: In docs/ai-chat-runtime.spec.md, replace multiple-chat and no-Stop claims with the singular-chat and durable-Stop contract. Delete the legacy citation allowance. Retain durable SSE, provider, source, memory, access, and failure rules where they do not conflict.\", \"RESOLUTION-006: In docs/data-access.spec.md, remove chat sharing, archive, chat deletion, archive reset, and legacy web-quote decoding. Retain derived-row, secure-document, memory, retention, and authorization rules where this contract keeps those features.\", \"RESOLUTION-007: Keep docs/localization.spec.md ownership of schema-checked fr-FR.json and en-US.json catalogs. Locale and market pairing cannot restore a publisher route, fixture source, legacy translator, or alternate catalog.\", \"RESOLUTION-008: Treat docs/expansion.spec.md publisher and market material as future context only. It cannot create a production publisher path, account switcher, command, link, navigation item, or chunk.\", \"RESOLUTION-009: In docs/public-source-marketplace.research.md, retain support for real official sources, authenticated content, and source enablement. Remove invitation, fake-source, seeded-publication, and Read/Unread product claims.\", \"RESOLUTION-010: The earlier artifacts/ui-playground-demo-integration-audit.html is background evidence only. Its publisher omission, empty-only visualization omission, unsupported Stop, archive/new-chat reset, and restored publisher fixtures do not apply.\", \"RESOLUTION-011: Existing tests, route registries, migrations, or exports that prove the old product do not preserve that product. Tests and callers must change or disappear; migrations 0001 through 0073 remain only as immutable boot history.\", \"ROUTE-001: The demo router may recognize only the pre-cutover client root, source, and publication route patterns. Unknown paths and every publisher or gallery path must select a branded not-found view. They must not redirect or normalize to the client root.\", \"ROUTE-002: Production routing, navigation, command search, links, switchers, and lazy-import maps must contain no publisher or gallery destination. Direct dormant rendering is allowed only from a test or visual-fixture entry that the production entry graph cannot reach.\", \"UI-001: packages/ui owns all shipped tokens, primitives, overlays, tables, chat presentation, visualization presentation, publisher presentation, and reusable states. apps/demo owns routes, controllers, fetches, SSE, locale and route state, command actions, and browser storage.\", \"UI-002: Port the complete publisher composition with honest empty inputs. Keep it buildable and directly testable, but expose no product URL, router import, navigation item, switcher, command, palette result, or production chunk that can reach it.\", \"UI-003: Port the complete visualization presentation, version controls, sandbox canvas, and message association. Reachable demo data must always contain zero real versions. The empty state must make version-dependent actions unavailable and must issue no visualization network request.\", \"UI-004: Test-only publisher and visualization fixtures may render non-empty states for parity checks, but they must use static fixture data, remain outside the production dependency graph, and create no service mock, backend route, persistence contract, or fallback.\", \"CHAT-001: The complete public chat route set is GET /v1/chat, POST /v1/chat/messages, GET /v1/ai-runs/:runId/stream, GET /v1/ai-runs/:runId/debug, POST /v1/ai-runs/:runId/stop, DELETE /v1/chat/messages/:messageId, and PATCH /v1/chat/messages/:messageId. No other /v1/chat or /v1/chats capability may ship.\", \"CHAT-002: GET /v1/chat resolves the sole chat through the active demo session. The public response and request path contain no chatId. The database may keep one internal chat UUID for joins, locks, runs, and purge order.\", \"CHAT-003: POST /v1/chat/messages accepts a strict JSON object with non-empty content and the required boolean webSearchEnabled. It rejects chatId and unknown fields, creates one user message and one queued run in one transaction, and returns 202 with the canonical queued-run projection.\", \"CHAT-004: Public run status is exactly queued, running, succeeded, failed, or stopped. Debug projections use the same set. SSE has exactly one terminal event: done for succeeded, error for failed, or stopped for stopped.\", \"STOP-001: POST /v1/ai-runs/:runId/stop accepts no request body. It requires an active session and a run owned by that session's internal chat. A missing or foreign run returns 404 rather than revealing ownership.\", \"STOP-002: The first stop request for a queued or running run durably records stop intent and returns 202. A repeat while cancellation is pending returns the same accepted projection. A request for an already terminal run returns 200 with its unchanged terminal projection.\", \"STOP-003: If stop wins, the worker cancels provider work, commits the generated text prefix and only citations that pass the strict citation schema, emits one stopped terminal event, exposes stopped through reload and debug, and creates no memory or later derived work. If zero text was generated, it creates no empty visible assistant row.\", \"STOP-004: Completion and stop use one database compare-and-set boundary. A committed succeeded or failed result wins over a later stop. A committed stop fences later provider chunks, finalizers, memories, and terminal events. No run may have two terminal states or terminal SSE events.\", \"STOP-005: SSE reconnection must replay the durable stopped terminal event with the existing durable event-ID rules. It must never synthesize done after stopped or depend on an in-memory cancellation flag for final truth.\", \"CITATION-001: PublicCitationRecord has one strict canonical representation. Delete LegacyCitationRecord and every omitted-field, string-quote, coercion, alternate decoder, repair, and fallback branch. Invalid provider citation data fails through the canonical typed failure path.\", \"MESSAGE-001: DELETE /v1/chat/messages/:messageId accepts no body. For an owned visible message it returns 204 and hides only that selected projection row. Its paired user or assistant row remains visible, and all raw events, runs, observations, source exposures, source uses, usage, citations, memories, and revisions remain stored.\", \"MESSAGE-002: DELETE returns 404 for a missing, foreign, or already hidden message. It must not invoke delete-chat behavior, cascade through the pair, rewrite history, or remove derived rows.\", \"MESSAGE-003: PATCH /v1/chat/messages/:messageId accepts only a strict JSON object containing non-empty content. It applies only when the target is the last visible user question; a missing or foreign target returns 404, and an assistant or non-last visible user message returns 409.\", \"MESSAGE-004: A successful PATCH keeps the question's public message identity, records the new question revision, excludes the prior run from the current projection, hides its old visible answer if present, retains all prior raw and derived rows, and creates exactly one replacement queued run in the same locked transaction. It returns 202 with the canonical queued-run projection.\", \"MESSAGE-005: An active old run superseded by PATCH must receive a durable write fence and cancellation signal. It cannot append text, citations, memories, or a terminal event to the current projection after the edit. Supersession does not add a compatibility route or a second public run-status vocabulary.\", \"FEATURE-001: Ship no Regenerate action, attachment picker, attachment request field, attachment storage, attachment route, hidden attachment trigger, or related dependency.\", \"FEATURE-002: Keep browser dictation. It may only place transcript text into the composer and must not create a second send path or upload audio.\", \"FEATURE-003: Show suggestions only after a successful run when visible chat history is empty. Suggestions must come from the locale catalogs and must not appear during queued, running, failed, or stopped states.\", \"WEB-001: Persist webSearchEnabled through the one browser-storage registry and default it to true when no valid stored value exists. The send schema must validate it. The server's EffectiveWebPolicy remains final and may deny web use despite the client preference; no client fallback may bypass it.\", \"SOURCE-001: Subscription screens list only real public-source rows that the active identity may access. A row with subscribed false remains visible and shows its disabled state. Source publications do not disappear merely because the source is disabled.\", \"SOURCE-002: Each source toggle has its own pending state. The UI may update that row optimistically, but on failure it restores the prior value and shows a localized visible error. A per-row request generation or equivalent token must prevent an older response from overwriting newer route, session, or mutation state.\", \"SOURCE-003: Keep the real source-list, toggle, and secure-document paths. Remove invitations, seeded issues, fixture PDFs, fake account or plan metrics, and Read/Unread state.\", \"SESSION-001: Every demo-product request except explicit session bootstrap and reset replay must resolve the cookie to an existing active database session. A cookie-safe slug, unknown ID, revoked session, or client-created value does not authenticate and receives 401.\", \"SESSION-002: The explicit bootstrap operation is the only path that may create a fresh active session for a request with no session cookie. It creates the row before accepting product work. It must not silently replace an unknown or revoked cookie.\", \"RESET-001: POST /v1/demo/session/reset is the only reset endpoint. It accepts a strict body containing one UUID operationId, requires the current session or the narrow replay exception, and returns 202 with a successor-session cookie and the durable reset-operation projection before purge completes.\", \"RESET-002: Under one database lock and transaction, the first reset operation creates exactly one successor session, records the operation and purge job outside the old identity graph, and revokes the old session before the 202 response. A replay with the same operationId returns the same successor. A different operationId for the same old session returns 409 and creates nothing.\", \"RESET-003: The reset endpoint may recognize a revoked old session only to replay its already recorded operationId. That exception cannot authorize chat, source, memory, document, stream, debug, or mutation requests.\", \"RESET-004: Reset exists only as a localized confirmed command-palette action. No header icon, route button, account switcher, hidden shortcut, archive action, or new-chat action may call it.\", \"RESET-005: After a successful 202, the client closes streams, runs the sole registered-storage clearer, clears in-memory query, chat, locale-dependent, and mutation state, installs the successor cookie through the response, and performs a hard reload. Bootstrap must recover a durable pending reset if the response or reload was interrupted.\", \"RESET-006: Revocation and session-generation checks fence all late writes, stream chunks, source toggles, message mutations, memories, exports, and job results associated with the old identity. Client-side clearing alone is never the security boundary.\", \"RESET-007: The purge job is restart-safe and has no maximum total row cap. It may use bounded batches, but it must continue until every row in the old identity graph is gone, retain global public-source catalog data, and never traverse into the successor session.\", \"I18N-001: Every shipped or dormant label, aria string, count, error, suggestion, reset confirmation, publisher fixture, and visualization fixture must be keyed in both schema-checked fr-FR.json and en-US.json catalogs. Inline user-facing literals and the ui-playground translator cannot ship.\", \"DESIGN-001: packages/ui must use the complete tracked ui-playground token set as its sole default: the reference hex values, 2px radius, typography, spacing, component states, overlays, tables, chat, publisher controls, and visualization parts. The prior active OKLCH palette and 0.5px default must not remain as an alternate theme or fallback.\", \"ACCESS-001: All reachable and direct dormant fixtures must support keyboard-only operation, visible focus, correct accessible names, valid dialog focus management, and reduced-motion behavior. Disabled visualization controls must remain discoverable but cannot dispatch an action.\" ], \"dependencyBoundaries\": [ \"DEP-001: ui-playground remains outside the root apps/"
+                    - emphasis [ref=e2186] [box=724,-14141,92,15]: and packages/
+                    - text: "workspaces and keeps its own package-lock.json. No root workspace manifest may add it.\", \"DEP-002: No production source, test helper used by production, package manifest, TypeScript path alias, Vite alias, CSS import, asset URL, copy task, code-generation task, dynamic import, or runtime file read may reference ui-playground. Ported code becomes owned packages/ui code with no sync or fallback path.\", \"DEP-003: The production build graph for apps/demo must reach packages/ui but must not reach a publisher entry, gallery entry, ui-playground, @hartlib/demo-data, or @hartlib/backend-domain/product-chats.\", \"DEP-004: packages/ui may depend on React-facing UI libraries but cannot fetch product data, open SSE, read demo routes, read product browser storage, call API clients, or import from apps/demo.\", \"DEP-005: apps/demo owns route and locale state, commands, fetch and SSE controllers, web-search preference, reset orchestration, and browser storage. It cannot own reusable design-system primitives or duplicate shared HTTP codecs.\", \"DEP-006: Shared request, response, SSE, run-status, citation, session, reset, and message-mutation codecs have one owner under packages/shared. API, worker, API client, demo, docs generation, and tests import those codecs rather than defining parallel shapes.\", \"DEP-007: apps/api and its tests must not import @hartlib/backend-domain/product-chats. Remove the product-chats module and its barrel exports once all callers are removed.\", \"DEP-008: apps/demo must not depend on @hartlib/demo-data. Delete that workspace package and all fake account, plan, issue, PDF, and publication consumers.\", \"DEP-009: Backend code must not add a visualization route, visualization persistence model, fake generation service, or placeholder provider. Live visualization state remains an honest empty input to the UI.\", \"DEP-010: Publisher and visualization parity fixtures may depend on packages/ui and locale catalogs only. They must remain test-only entry points and must not appear in a production bundle metafile.\", \"DEP-011: Add only UI packages imported by the final owned port. This includes cmdk, react-resizable-panels, rehype-highlight, and the exact overlay primitives actually imported. Every direct import must have one declared dependency, and every newly declared dependency must have at least one final import.\", \"DEP-012: New backend work must use Effect 4.0.0-beta.92 patterns from docs/references/effect-smol. It must not import the Smithers-only effect3 alias, use JavaScript try/catch around yielded effects, or add an older Effect compatibility layer.\", \"DEP-013: Reusable Effect functions use Effect.fnUntraced, services use class-based Context.Service, terminal effects use return yield*, scoped work owns its resources, and time-sensitive tests use TestClock.\", \"DEP-014: The two locale JSON catalogs remain the only product string source. No reference translator, third catalog, generated fallback catalog, or inline English fallback may enter the graph.\", \"DEP-015: packages/docs keeps standalone UI-owned CSS and font declarations. It must not import the demo app, packages/ui runtime components, or ui-playground to render /docs.\", \"DEP-016: One browser-storage registry owns every demo key and its clearer. Feature modules may register typed entries but may not call localStorage.clear, indexedDB.deleteDatabase, or maintain a second reset list.\", \"DEP-017: apps/web has no blanket retention. P1 must assign every retained apps/web file or export to a named required-infrastructure use. Explicit-chat, publisher, client, platform, or support code with no named retained caller must be deleted.\", \"DEP-018: Deterministic providers may remain only where already required for isolated regression tests. They cannot prove live behavior, ship in the demo runtime, back a fallback route, or substitute for a requested real-provider gate. Add no new mock.\" ], \"retainedFiles\": [ \"RET-001: Retain all 69 tracked authored files returned by git ls-files under ui-playground byte-for-byte against artifacts/implement-ui-playground-demo-cutover/baseline/ui-playground-manifest.json, including its README, package-lock.json, gallery, i18n, services, mocks, visual generators, publisher pages, and source.\", \"RET-002: Protect only the tracked ui-playground authored set for byte equality. Ignore node_modules, build output, .smithers, test results, SQLite files, and tsconfig.tsbuildinfo when computing the reference-retention digest; their presence or absence is not authored-source drift.\", \"RET-003: Retain every SQL migration from 0001 through 0073 byte-for-byte, including 0061 and 0071. Their obsolete behavior is boot history and must be removed from live schema by 0074, not by rewriting history.\", \"RET-004: Retain docs/design.spec.md, docs/design-system.md, docs/engineering.spec.md, docs/ai-chat-runtime.spec.md, docs/data-access.spec.md, docs/localization.spec.md, docs/expansion.spec.md, and docs/public-source-marketplace.research.md as canonical files, then update their stale claims during P9.\", \"RET-005: Retain docs/references/effect-smol/** unchanged as the local Effect v4 reference.\", \"RET-006: Retain packages/docs/src/html.ts and the DOCS_HTML export, but update stale endpoint and event content under RESOLUTION-001.\", \"RET-007: Retain the API route registry and the real health, demo-session, public-source, public-document, memory, identity and billing webhook, billing, export, membership, and required infrastructure route modules. Remove only obsolete registrations and callers.\", \"RET-008: Retain the existing real public-source list, toggle, secure-document, memory list, memory revision, memory revert, and memory delete implementations, subject to active-session authorization and the new reset fence.\", \"RET-009: Retain the provider, durable SSE event, run-debug, citation, source-exposure, source-use, usage, memory, and worker infrastructure needed by the singular chat. Extend it for stopped and supersession rather than introducing a second implementation.\", \"RET-010: Retain apps/demo as the sole shipped demo application and packages/ui as the sole shipped design-system package. Rewrite their current entries in place where practical; do not create parallel cutover applications.\", \"RET-011: Retain the canonical fr-FR.json and en-US.json catalog files and their schema checker. Add all new and dormant keys to both.\", \"RET-012: Retain tests/e2e/chat.spec.ts and its exact live baseline title real provider internal retrieval persists a cited answer. Delete its obsolete cases and add the required cutover flows.\", \"RET-013: Retain root workspace manifests, Bun lock data, TypeScript, Vite, Vitest, and Playwright infrastructure. Modify dependency entries only where the final import graph requires it.\", \"RET-014: Retain artifacts/implement-ui-playground-demo-cutover/baseline/starting-worktree.json, baseline/ui-playground-manifest.json, and preflight/preflight.json as input evidence; do not treat them as complete final proof.\", \"RET-015: Preserve the 34 protected untracked Smithers workflow files under .smithers and the workflow artifact/UI paths. Capture their names and content hashes before implementation and require the same protected-set hashes at handoff.\", \"RET-016: Preserve unrelated upstream work represented by main at fe405755b98c2c8170635282a1f0fea1013d2dd1 and its two commits over origin/main. Implementation may add conventional commits but must not rewrite, discard, or fold those commits.\", \"RET-017: Retain apps/web files only when the P1 named-use manifest ties each file to reachable demo behavior, a direct dormant fixture, or required shared infrastructure. The manifest is the exclusive retention allowlist for that app.\" ], \"deletionMap\": [ \"DEL-001: Delete API registration and implementation for GET /v1/chats, POST /v1/chats, GET /v1/chats/:chatId, POST /v1/chats/:chatId/messages, share, unshare, delete-chat, and reset-chat.\", \"DEL-002: Delete apps/api product-chat route modules and every route-registry import or export that exists only for list, create, explicit-chat, share, unshare, archive, delete-chat, or reset-chat behavior.\", \"DEL-003: Delete packages/backend-domain/src/product-chats.ts, its package/barrel exports, and its dedicated tests after removing all imports.\", \"DEL-004: Delete API-client listChats, createChat, readChatById, sendMessageByChatId, shareChat, unshareChat, archiveChat, deleteChat, and resetChat methods. Delete product-client.ts if no retained method remains.\", \"DEL-005: Delete shared list/create/reset chat schemas, collection query schemas, share/archive/delete-chat contracts, explicit-chat access branches, optional chatId fields, and their exports and decoder tests.\", \"DEL-006: Delete every demo and web caller, hook, query key, route builder, controller, menu item, command, link, cache, and state field for multiple chats, explicit chat IDs, sharing, unsharing, archive, delete-chat, reset-chat, or new-chat replacement.\", \"DEL-007: Delete tests/platform-e2e/product-chat.spec.ts and all unit or integration tests whose only purpose is the removed product-chat contract.\", \"DEL-008: Delete the seven archive-reset cases from tests/e2e/chat.spec.ts and every fixture, selector, or helper used only by those cases.\", \"DEL-009: Delete the @hartlib/demo-data workspace package, its dependency declarations, barrel exports, fake accounts, fake plans, seeded issues, seeded publications, fake metrics, and all consumers.\", \"DEL-010: Delete all four checked-in demo fixture PDFs and all product code that loads static or IndexedDB PDFs, mirrors publication state locally, or clears those stores ad hoc.\", \"DEL-011: Delete the visible header reset button, its icon-only action, archive-and-replace controller, selected-storage clearing, and old reset API call.\", \"DEL-012: Delete product publisher route variants, path builders, resolvers, account switching, links, navigation, command entries, and production lazy imports. Keep only the unreachable packages/ui composition and its direct fixture entry.\", \"DEL-013: Delete gallery routes and production gallery imports. Keep the tracked ui-playground gallery only inside the permanent reference.\", \"DEL-014: Delete shipped reference mocks, service shims, translator code, visual generators, copied fixture data, and any runtime fallback that reads ui-playground. The original reference files remain untouched in ui-playground.\", \"DEL-015: Delete LegacyCitationRecord and every legacy citation transform, union branch, test case, documentation example, and accepted string or omitted quote form.\", \"DEL-016: Delete the active Pressroom OKLCH token values, 0.5px default radius, alternate old-theme selector, and any fallback that can restore those defaults.\", \"DEL-017: Delete scopePublicContentToMarket logic that removes subscribed:false sources or their publications, and replace the test that requires that behavior.\", \"DEL-018: Delete source invitations, invitation wording, seeded source rows, fake issue rows, fake source metrics, and Read/Unread state and controls.\", \"DEL-019: Delete any Regenerate or attachment UI, route, schema, dependency, storage, test, documentation, or hidden action found by the P1 audit. Do not replace them.\", \"DEL-020: Delete syntactic demo-cookie authentication and every helper or test that treats an arbitrary cookie-safe slug such as demo-user as an authenticated session.\", \"DEL-021: Delete old docs text, examples, fields, and links for /v1/chats, explicit chat IDs, multiple chats, share/archive/delete/reset, no Stop, done/error-only terminal events, legacy citations, routable publishers, fixture documents, invitations, and the old design defaults.\", \"DEL-022: Delete @hartlib/demo-data and product-chats dependency edges from package manifests and lock data. Delete each old-only UI dependency after the final import graph proves it unused.\", \"DEL-023: Delete any compatibility endpoint, alias export, compatibility view, repair function, old decoder, dual write, dual read, feature flag, or fallback that preserves removed behavior.\", \"DEL-024: Delete any apps/web file or export absent from the P1 named-use allowlist. A directory name, prior product role, or existing test does not count as a retained use.\", \"DEL-025: Do not delete or edit migrations 0001 through 0073 to perform this map. Migration 0074 must remove obsolete live objects and rows.\" ], \"migrationRules\": [ \"MIG-001: Add exactly one immutable migration with basename 0074_demo_product_cutover.sql in the existing migration directory. The loader must find it through the normal Effect Migrator path; no manual startup SQL may duplicate it.\", \"MIG-002: Verify SHA-256 hashes for every migration 0001 through 0073 before and after implementation. The known missing 0065 number remains a valid historical gap and must not be filled.\", \"MIG-003: Migration 0074 performs a hard cutover. It may drop and recreate affected live tables, types, constraints, indexes, triggers, and projections and must delete old demo rows. It must not backfill old chat data or create a compatibility view, alias, repair function, dual schema, or legacy decoder.\", \"MIG-004: The post-0074 live schema permits at most one internal chat row per active demo session through a database uniqueness constraint. No public collection, share, archive, replacement-chat lineage, or user-selectable chat identifier remains.\", \"MIG-005: Create durable demo-session state with opaque server-generated IDs, active and revoked state, creation and revocation timestamps, and the data needed to fence writes. Authentication must query this state rather than validate cookie syntax.\", \"MIG-006: Create durable reset-operation state keyed by operationId and old session, with a uniqueness rule that allows exactly one successor per old session. Store the successor link, operation status, attempt data, and timestamps outside the rows purged with the old identity.\", \"MIG-007: Create or adapt a restart-safe purge job keyed to the reset operation. Its ownership and foreign keys must not cascade from the old session, user, company, membership, or chat.\", \"MIG-008: Add message-projection state needed to hide one visible row without deleting its pair or derived rows, and revision or supersession state needed to edit the last visible user question while keeping prior evidence.\", \"MIG-009: Add the stopped terminal run state to every durable run-status constraint or database type and add durable stop-intent and write-fence data. Public projection, debug, SSE, and worker queries must derive from the same stored state.\", \"MIG-010: Enforce one terminal transition per run with database constraints and compare-and-set updates. succeeded, failed, and stopped are mutually exclusive and cannot receive later chunks or terminal events.\", \"MIG-011: Preserve the current canonical citation storage shape only. Migration 0074 must not translate legacy citation rows because old demo rows are discarded.\", \"MIG-012: Remove live share, archive, deleted-chat, replacement-chat lineage, collection-ordering, and explicit-chat objects where they exist. Their names may survive only inside immutable historical migration text.\", \"MIG-013: Audit every foreign key and queued job reachable from the old identity. The purge must cover chat messages, runs, run events, observations, source exposures, source uses, usage, memories, memory revisions, subscription bindings, exports, identity-scoped documents, jobs, chats, memberships, companies, users, and the old session wherever those rows belong to that identity.\", \"MIG-014: Retain global public-source catalog and publication rows. Purge only identity-owned enablement, access, chat, memory, usage, export, and session data.\", \"MIG-015: Purge may process bounded batches but must persist its cursor and retry state and continue until no old-identity row remains. No constant may cap total rows, attempts, pages, or elapsed restarts in a way that leaves data behind.\", \"MIG-016: Apply 0074 transactionally through Effect's PostgreSQL and Migrator APIs where PostgreSQL permits. Any non-transactional operation must have an explicit restart-safe guard and an integration test; a JavaScript catch-and-continue path is forbidden.\", \"MIG-017: Test both a fresh database applying 0001 through 0074 and an upgrade database populated with representative pre-0074 multi-chat, archive, citation, source, memory, usage, job, and identity rows. Both paths must end at the same asserted schema and empty old demo graph.\", \"MIG-018: Record 0074 once in the migration ledger with its real checksum. A second application must be a no-op through the migrator, not through custom existence fallbacks.\" ], \"verificationGates\": [ \"GATE-001: Before implementation, capture HEAD, branch, upstream, ahead/behind counts, staged diff, unstaged diff, untracked names, hashes of the 34 protected untracked files, and the upstream commit diff. The incomplete starting-worktree artifact alone cannot satisfy this gate.\", \"GATE-002: Complete the P1 named-use audit before deleting mixed files. Produce one row per retained apps/web, API, shared, API-client, backend-domain, demo-data, packages/ui, and apps/demo export, naming its reachable-demo, dormant-fixture, or required-infrastructure caller. Any unlisted old-product export must be deleted.\", \"GATE-003: Hash the exact git ls-files -z ui-playground set before and after work and require all 69 path/hash pairs to match baseline/ui-playground-manifest.json. Do not include ignored or generated files in either digest domain.\", \"GATE-004: Require git diff --exit-code over every pre-0074 migration and require exactly one tracked file named 0074_demo_product_cutover.sql.\", \"GATE-005: Run 0074 through the real Effect migrator against fresh and populated PostgreSQL databases. Assert tables, types, constraints, indexes, foreign keys, migration ledger, row removal, singular-chat uniqueness, session revocation, terminal-state exclusivity, and second-run idempotence by database queries rather than SQL text search.\", \"GATE-006: Enumerate the API route registry and shared/client exports. Fail if any removed /v1/chats route, share, unshare, archive, delete-chat, reset-chat, list/create chat method, explicit-chat path, optional chatId, or compatibility alias remains.\", \"GATE-007: Exercise strict request decoding. Unknown fields and chatId must fail for singular send and mutation requests; legacy citation forms must fail; canonical requests and citations must pass.\", \"GATE-008: Build the full root workspace and apps/demo. Inspect dependency graphs and bundler metafiles and fail on ui-playground, @hartlib/demo-data, product-chats, publisher entry, gallery entry, reference translator, shipped mock, or test-fixture reachability.\", \"GATE-009: Compare all new dependency declarations with final static and dynamic imports. Fail on undeclared direct imports, unused newly added dependencies, duplicate versions introduced without need, or changes to ui-playground/package-lock.json.\", \"GATE-010: Run targeted unit tests for route parsing, branded not-found selection, strict schemas, run terminal transitions, stop idempotence, completion/stop races, message visibility, last-question edit validation, source visibility, stale-response fencing, storage registration, localization parity, and Effect TestClock behavior.\", \"GATE-011: Run API, worker, and PostgreSQL integration tests for first stop, repeated stop, stop before provider start, stop during text, stop with citations, completion winning, failure winning, SSE reconnect after stopped, and rejection of foreign runs. Assert one durable terminal event and no memory after stopped.\", \"GATE-012: Test DELETE on user and assistant rows. Assert only the selected row disappears after reload, its pair remains, every derived row count remains unchanged, and a repeated, missing, or foreign delete returns 404.\", \"GATE-013: Test PATCH on the last visible user question. Assert a stable question identity, stored revision, hidden old answer, retained old derived rows, one replacement run, cancellation and fencing of any active old run, and 409 for assistant or non-last questions.\", \"GATE-014: Test active-session authentication with no cookie, a valid active row, an arbitrary cookie-safe slug, an unknown ID, and a revoked ID. Only explicit bootstrap may create a session for the no-cookie case.\", \"GATE-015: Test reset with concurrent identical requests, a replay after revocation, a different operationId, response loss, server restart, worker restart, old-cookie reads and writes, late stream chunks, and hard reload. Assert one successor, immediate revocation, stable replay, 409 for the competing operation, and no old-session write after revocation.\", \"GATE-016: Populate every audited old-identity table with more rows than each purge batch size, run reset, restart the purge worker between batches, and require zero remaining old-graph rows with successor and global source rows intact. A small fixture below the former cap does not pass.\", \"GATE-017: Test source lists with enabled and disabled authorized rows. Both must remain visible through reload. Test per-row pending state, rollback and localized error on failure, and a delayed stale response that cannot overwrite newer state.\", \"GATE-018: Test webSearchEnabled with absent, valid true, valid false, and invalid stored data. Assert default true, schema-checked persistence through the one registry, inclusion in send requests, and server EffectiveWebPolicy authority.\", \"GATE-019: Keep and run the exact live baseline with real credentials: HARTLIB_E2E_LIVE_PROVIDER=1 HARTLIB_E2E_STACK=1 bun --env-file=.env x --bun playwright test tests/e2e/chat.spec.ts --project=hartlib-ai-chat-runtime -g \\\"real provider internal retrieval persists a cited answer\\\".\", \"GATE-020: Add and run flow-specific Playwright tests with the live stack and real provider for a stopped partial answer and last-question edit replacement. Each must exercise UI submission, API, worker, provider, durable database result, SSE, and reload. A deterministic provider cannot satisfy this gate.\", \"GATE-021: Run full-stack Playwright reset, message-delete, source-toggle, docs, routing, and persistence flows with real credentials where a provider is involved. Every required test must report passed; skipped, flaky-retried-only, or missing-credential exits do not pass.\", \"GATE-022: Allocate a free HARTLIB_E2E_PORT_BASE, pass it to every stack command, and run shared-state or shared-port full-stack suites serially with one worker. Do not run competing stack builds or Playwright suites in parallel.\", \"GATE-023: Render the live client, /docs, branded 404, direct dormant publisher fixture, and direct visualization fixtures at every viewport declared by the tracked ui-playground visual generator. Compare them with the permanent reference using the same locale, data, fonts, and motion settings.\", \"GATE-024: Record visual differences and approve only settled differences: no reachable publisher/gallery, real rather than mock data, honest empty live visualization, singular chat, new Stop/mutation/reset controls, and updated docs. Unlisted visual drift fails.\", \"GATE-025: Verify the live visualization shows the complete presentation with zero versions, disabled version-dependent actions, correct message association, and no visualization network request. Verify direct fixtures cover populated, empty, loading, disabled, and error presentation states without entering a production chunk.\", \"GATE-026: Run keyboard and automated accessibility checks on client, command palette and reset confirmation, source rows, chat actions, visualization, publisher fixture, docs, and 404. Fail on serious violations, missing accessible names, focus loss, inaccessible pending/error state, or reduced-motion violations.\", \"GATE-027: Validate fr-FR.json and en-US.json against the catalog schema and require identical key sets. Scan shipped and dormant UI source for inline user-facing strings and any reference translator import.\", \"GATE-028: Request /docs and assert 200, English lang, deny-by-default CSP, only required font grants, standalone styling, current singular routes, Stop, stopped SSE/debug state, message mutations, and absence of every /v1/chats or legacy-citation claim.\", \"GATE-029: Request known client routes, malformed client routes, publisher paths, gallery paths, and arbitrary paths. Assert only the client allowlist resolves to client views and all others render the branded 404 without a client-root fallback.\", \"GATE-030: Scan source, manifests, generated route lists, docs output, build output, and tests for removed endpoint strings, @hartlib/demo-data, product-chats, LegacyCitationRecord, localStorage.clear, IndexedDB PDF code, Regenerate, attachment contracts, invitation state, old reset, compatibility aliases, fallback paths, dual implementations, and added mocks. Any executable occurrence fails; immutable migration history may contain old SQL terms.\", \"GATE-031: Run the repository's distinct formatting, lint, type-check, unit, integration, build, and E2E commands. Do not label two identical bun run test invocations as separate unit and integration proof.\", \"GATE-032: Re-run all gates after P9 documentation sync and after the final production build. Final approval requires every mandatory gate to pass in that final tree.\" ], \"evidenceRequirements\": [ \"EVIDENCE-001: Store evidence under artifacts/implement-ui-playground-demo-cutover with a stable index that maps every AUTHORITY, RESOLUTION, behavior, dependency, retention, deletion, migration, and verification ID to one or more concrete artifacts.\", \"EVIDENCE-002: For each command, record the exact command, working directory, UTC timestamp, exit code, duration, relevant tool versions, and untruncated stdout and stderr or their content-addressed artifact paths.\", \"EVIDENCE-003: Record only credential variable names and whether each required value was present. Never read, print, hash, screenshot, or copy ZAI_API_KEY, cookies, bearer tokens, database passwords, or other secret values.\", \"EVIDENCE-004: Preserve the fixed plan identity with its path, 438-line and 77040-byte inventory, and a content hash. Record the repository start HEAD fe405755b98c2c8170635282a1f0fea1013d2dd1, upstream 568e919c4b48d95ee24adeafc80a53e1c06e5529, and complete starting-state evidence.\", \"EVIDENCE-005: Produce source-to-target and named-use manifests for every ported component and every retained mixed-file export. Each row must name the final owner, production reachability, direct-fixture reachability, locale ownership, and dependency reason.\", \"EVIDENCE-006: Produce a deletion manifest listing each removed file, symbol, route, schema, dependency, test, doc claim, fixture, and caller. Pair it with negative scans of source, manifests, docs output, route output, and build output.\", \"EVIDENCE-007: Produce a retention manifest for the 69 tracked ui-playground files, migrations 0001 through 0073, protected Smithers files, canonical docs, and unrelated starting commits. Use the same path and hash domain before and after each comparison.\", \"EVIDENCE-008: Do not compare currentRepositoryDigest with a manifest-only digest or expect the whole repository digest to remain equal after implementation. Compare protected subsets for equality and record the implementation diff separately.\", \"EVIDENCE-009: Produce dependency evidence from workspace manifests, lock data, import scans, TypeScript resolution, and production bundle metafiles. Compute reference and dormant dependency counts from actual graphs; do not hard-code zero.\", \"EVIDENCE-010: Produce migration evidence containing pre-0074 hashes, migrator output, migration-ledger rows, fresh and upgrade schema dumps, constraint and index queries, representative pre-cutover seed counts, post-cutover counts, and second-run results.\", \"EVIDENCE-011: Produce reset and purge evidence containing operation rows, session rows, job attempts and cursor changes, concurrency results, restart points, old-cookie HTTP results, fenced-write results, per-table before/after counts, and proof that the successor and global sources survived.\", \"EVIDENCE-012: Produce Stop evidence containing HTTP responses, durable run and event rows, provider cancellation timing, partial text and canonical citations, memory counts, debug projections, SSE transcripts including reconnect, and completion-versus-stop race outcomes.\", \"EVIDENCE-013: Produce message-mutation evidence containing pre/post visible projections, raw and derived row IDs and counts, replacement-run cardinality, revision data, reload results, and all 404 or 409 cases.\", \"EVIDENCE-014: Produce source-toggle evidence containing authorized enabled and disabled list responses, browser states, request-generation values, delayed response order, rollback state, localized error output, and persisted reload state.\", \"EVIDENCE-015: For every Playwright gate, retain the HTML report, machine-readable result, trace, screenshots, video when configured, server logs, API and worker logs, database identifiers, test title, project name, port base, and whether the live-provider flag was active.\", \"EVIDENCE-016: A mandatory live test counts only when Playwright reports passed with HARTLIB_E2E_LIVE_PROVIDER=1, HARTLIB_E2E_STACK=1, real credentials, and the requested full-stack path. Skipped, deterministic-only, mocked, manually inferred, or zero-exit-with-skip evidence is invalid.\", \"EVIDENCE-017: Produce visual evidence as matched reference and candidate images with viewport, locale, fixture, commit, font, and reduced-motion metadata, plus machine diff output and a reviewed list containing only the settled differences.\", \"EVIDENCE-018: Produce accessibility evidence with tool output and manual keyboard results for focus order, focus restoration, names, status announcements, pending and error states, and reduced motion. Screenshots alone do not prove accessibility.\", \"EVIDENCE-019: Produce localization evidence with schema results, key-set comparison, missing/extra key reports, and scans for inline labels and translator imports.\", \"EVIDENCE-020: Produce /docs and routing evidence from real HTTP responses, headers, rendered DOM, extracted links, route-manifest output, and direct browser navigation to client, bad, publisher, and gallery paths.\", \"EVIDENCE-021: Final testEvidence and visualEvidence arrays must be non-empty and enumerate every mandatory artifact. Missing artifacts fail the workflow even if a summary says tests passed.\", \"EVIDENCE-022: Set zeroActionableWork from the measured final diff and deletion manifest. It cannot be true for this unimplemented cutover and must never be hard-coded to satisfy retention.\", \"EVIDENCE-023: Treat the repository audit, preflight, and earlier report as inputs, not completion proof. Re-run every mutable check after implementation and after final docs sync.\", \"EVIDENCE-024: Record final HEAD, conventional commit subjects, branch and upstream relation, staged and unstaged diffs, untracked paths, protected-file hashes, implementation diff, test results, and outstanding failures. Claim completion only when every mandatory gate passes and no required work remains.\" ]}{ \"summary\": \"The cutover contract is frozen by the rules below. It makes the singular demo chat, durable Stop, exact message mutations, real-source subscriptions, dormant publisher composition, empty live visualization, active database-backed sessions, replay-safe identity reset, strict citations, reference-default design system, and full deletion of the old product-chat and fixture paths mandatory. RESOLUTION entries settle every stale canonical claim, including the /docs conflict. No repository file was edited and no test or service was run.\", \"frozenContractsArtifact\": \"This JSON response is the authoritative cutover contract. It supersedes conflicting pre-cutover documentation and the earlier integration audit until P9 updates the canonical documents. No repository artifact was created because this task is read-only.\", \"behaviorRules\": [ \"AUTHORITY-001: Apply authority in this order: this frozen contract, settled decisions in artifacts/ui-playground-demo-implementation-plan.html, canonical docs after P9 sync, then current code and older reports as historical evidence only. A worker must stop if an implementation choice conflicts with a higher-ranked source.\", \"RESOLUTION-001: Resolve the /docs conflict in favor of the cutover API. Keep the /docs route, packages/docs/src/html.ts, DOCS_HTML, deny-by-default CSP, required font grants, English lang attribute, and standalone UI-owned styling. Change every body section, heading, field, example, and link that describes a deleted /v1/chats route, explicit chat ID, done/error-only SSE, missing Stop, or another stale contract. Unaffected content remains unchanged. The post-P9 DOCS_HTML snapshot, not its pre-cutover bytes, becomes exact.\", \"RESOLUTION-002: In docs/design.spec.md, replace two demo accounts, routable publisher views, fixture or IndexedDB documents, multi-chat sharing/archive/deletion, and archive-and-replace reset with one reachable client product, an unreachable publisher composition, real sources, one chat, and identity reset.\", \"RESOLUTION-003: In docs/design-system.md, replace the Pressroom OKLCH and 0.5px-radius defaults with the complete tracked ui-playground hex-token and 2px-radius defaults. packages/ui is the sole shipped owner.\", \"RESOLUTION-004: In docs/engineering.spec.md, remove publisher-fixture, explicit-chat-ID, chat-collection, and reset-chat requirements. Retain its strict-schema, migration, security, transaction, and Effect v4 rules.\", \"RESOLUTION-005: In docs/ai-chat-runtime.spec.md, replace multiple-chat and no-Stop claims with the singular-chat and durable-Stop contract. Delete the legacy citation allowance. Retain durable SSE, provider, source, memory, access, and failure rules where they do not conflict.\", \"RESOLUTION-006: In docs/data-access.spec.md, remove chat sharing, archive, chat deletion, archive reset, and legacy web-quote decoding. Retain derived-row, secure-document, memory, retention, and authorization rules where this contract keeps those features.\", \"RESOLUTION-007: Keep docs/localization.spec.md ownership of schema-checked fr-FR.json and en-US.json catalogs. Locale and market pairing cannot restore a publisher route, fixture source, legacy translator, or alternate catalog.\", \"RESOLUTION-008: Treat docs/expansion.spec.md publisher and market material as future context only. It cannot create a production publisher path, account switcher, command, link, navigation item, or chunk.\", \"RESOLUTION-009: In docs/public-source-marketplace.research.md, retain support for real official sources, authenticated content, and source enablement. Remove invitation, fake-source, seeded-publication, and Read/Unread product claims.\", \"RESOLUTION-010: The earlier artifacts/ui-playground-demo-integration-audit.html is background evidence only. Its publisher omission, empty-only visualization omission, unsupported Stop, archive/new-chat reset, and restored publisher fixtures do not apply.\", \"RESOLUTION-011: Existing tests, route registries, migrations, or exports that prove the old product do not preserve that product. Tests and callers must change or disappear; migrations 0001 through 0073 remain only as immutable boot history.\", \"ROUTE-001: The demo router may recognize only the pre-cutover client root, source, and publication route patterns. Unknown paths and every publisher or gallery path must select a branded not-found view. They must not redirect or normalize to the client root.\", \"ROUTE-002: Production routing, navigation, command search, links, switchers, and lazy-import maps must contain no publisher or gallery destination. Direct dormant rendering is allowed only from a test or visual-fixture entry that the production entry graph cannot reach.\", \"UI-001: packages/ui owns all shipped tokens, primitives, overlays, tables, chat presentation, visualization presentation, publisher presentation, and reusable states. apps/demo owns routes, controllers, fetches, SSE, locale and route state, command actions, and browser storage.\", \"UI-002: Port the complete publisher composition with honest empty inputs. Keep it buildable and directly testable, but expose no product URL, router import, navigation item, switcher, command, palette result, or production chunk that can reach it.\", \"UI-003: Port the complete visualization presentation, version controls, sandbox canvas, and message association. Reachable demo data must always contain zero real versions. The empty state must make version-dependent actions unavailable and must issue no visualization network request.\", \"UI-004: Test-only publisher and visualization fixtures may render non-empty states for parity checks, but they must use static fixture data, remain outside the production dependency graph, and create no service mock, backend route, persistence contract, or fallback.\", \"CHAT-001: The complete public chat route set is GET /v1/chat, POST /v1/chat/messages, GET /v1/ai-runs/:runId/stream, GET /v1/ai-runs/:runId/debug, POST /v1/ai-runs/:runId/stop, DELETE /v1/chat/messages/:messageId, and PATCH /v1/chat/messages/:messageId. No other /v1/chat or /v1/chats capability may ship.\", \"CHAT-002: GET /v1/chat resolves the sole chat through the active demo session. The public response and request path contain no chatId. The database may keep one internal chat UUID for joins, locks, runs, and purge order.\", \"CHAT-003: POST /v1/chat/messages accepts a strict JSON object with non-empty content and the required boolean webSearchEnabled. It rejects chatId and unknown fields, creates one user message and one queued run in one transaction, and returns 202 with the canonical queued-run projection.\", \"CHAT-004: Public run status is exactly queued, running, succeeded, failed, or stopped. Debug projections use the same set. SSE has exactly one terminal event: done for succeeded, error for failed, or stopped for stopped.\", \"STOP-001: POST /v1/ai-runs/:runId/stop accepts no request body. It requires an active session and a run owned by that session's internal chat. A missing or foreign run returns 404 rather than revealing ownership.\", \"STOP-002: The first stop request for a queued or running run durably records stop intent and returns 202. A repeat while cancellation is pending returns the same accepted projection. A request for an already terminal run returns 200 with its unchanged terminal projection.\", \"STOP-003: If stop wins, the worker cancels provider work, commits the generated text prefix and only citations that pass the strict citation schema, emits one stopped terminal event, exposes stopped through reload and debug, and creates no memory or later derived work. If zero text was generated, it creates no empty visible assistant row.\", \"STOP-004: Completion and stop use one database compare-and-set boundary. A committed succeeded or failed result wins over a later stop. A committed stop fences later provider chunks, finalizers, memories, and terminal events. No run may have two terminal states or terminal SSE events.\", \"STOP-005: SSE reconnection must replay the durable stopped terminal event with the existing durable event-ID rules. It must never synthesize done after stopped or depend on an in-memory cancellation flag for final truth.\", \"CITATION-001: PublicCitationRecord has one strict canonical representation. Delete LegacyCitationRecord and every omitted-field, string-quote, coercion, alternate decoder, repair, and fallback branch. Invalid provider citation data fails through the canonical typed failure path.\", \"MESSAGE-001: DELETE /v1/chat/messages/:messageId accepts no body. For an owned visible message it returns 204 and hides only that selected projection row. Its paired user or assistant row remains visible, and all raw events, runs, observations, source exposures, source uses, usage, citations, memories, and revisions remain stored.\", \"MESSAGE-002: DELETE returns 404 for a missing, foreign, or already hidden message. It must not invoke delete-chat behavior, cascade through the pair, rewrite history, or remove derived rows.\", \"MESSAGE-003: PATCH /v1/chat/messages/:messageId accepts only a strict JSON object containing non-empty content. It applies only when the target is the last visible user question; a missing or foreign target returns 404, and an assistant or non-last visible user message returns 409.\", \"MESSAGE-004: A successful PATCH keeps the question's public message identity, records the new question revision, excludes the prior run from the current projection, hides its old visible answer if present, retains all prior raw and derived rows, and creates exactly one replacement queued run in the same locked transaction. It returns 202 with the canonical queued-run projection.\", \"MESSAGE-005: An active old run superseded by PATCH must receive a durable write fence and cancellation signal. It cannot append text, citations, memories, or a terminal event to the current projection after the edit. Supersession does not add a compatibility route or a second public run-status vocabulary.\", \"FEATURE-001: Ship no Regenerate action, attachment picker, attachment request field, attachment storage, attachment route, hidden attachment trigger, or related dependency.\", \"FEATURE-002: Keep browser dictation. It may only place transcript text into the composer and must not create a second send path or upload audio.\", \"FEATURE-003: Show suggestions only after a successful run when visible chat history is empty. Suggestions must come from the locale catalogs and must not appear during queued, running, failed, or stopped states.\", \"WEB-001: Persist webSearchEnabled through the one browser-storage registry and default it to true when no valid stored value exists. The send schema must validate it. The server's EffectiveWebPolicy remains final and may deny web use despite the client preference; no client fallback may bypass it.\", \"SOURCE-001: Subscription screens list only real public-source rows that the active identity may access. A row with subscribed false remains visible and shows its disabled state. Source publications do not disappear merely because the source is disabled.\", \"SOURCE-002: Each source toggle has its own pending state. The UI may update that row optimistically, but on failure it restores the prior value and shows a localized visible error. A per-row request generation or equivalent token must prevent an older response from overwriting newer route, session, or mutation state.\", \"SOURCE-003: Keep the real source-list, toggle, and secure-document paths. Remove invitations, seeded issues, fixture PDFs, fake account or plan metrics, and Read/Unread state.\", \"SESSION-001: Every demo-product request except explicit session bootstrap and reset replay must resolve the cookie to an existing active database session. A cookie-safe slug, unknown ID, revoked session, or client-created value does not authenticate and receives 401.\", \"SESSION-002: The explicit bootstrap operation is the only path that may create a fresh active session for a request with no session cookie. It creates the row before accepting product work. It must not silently replace an unknown or revoked cookie.\", \"RESET-001: POST /v1/demo/session/reset is the only reset endpoint. It accepts a strict body containing one UUID operationId, requires the current session or the narrow replay exception, and returns 202 with a successor-session cookie and the durable reset-operation projection before purge completes.\", \"RESET-002: Under one database lock and transaction, the first reset operation creates exactly one successor session, records the operation and purge job outside the old identity graph, and revokes the old session before the 202 response. A replay with the same operationId returns the same successor. A different operationId for the same old session returns 409 and creates nothing.\", \"RESET-003: The reset endpoint may recognize a revoked old session only to replay its already recorded operationId. That exception cannot authorize chat, source, memory, document, stream, debug, or mutation requests.\", \"RESET-004: Reset exists only as a localized confirmed command-palette action. No header icon, route button, account switcher, hidden shortcut, archive action, or new-chat action may call it.\", \"RESET-005: After a successful 202, the client closes streams, runs the sole registered-storage clearer, clears in-memory query, chat, locale-dependent, and mutation state, installs the successor cookie through the response, and performs a hard reload. Bootstrap must recover a durable pending reset if the response or reload was interrupted.\", \"RESET-006: Revocation and session-generation checks fence all late writes, stream chunks, source toggles, message mutations, memories, exports, and job results associated with the old identity. Client-side clearing alone is never the security boundary.\", \"RESET-007: The purge job is restart-safe and has no maximum total row cap. It may use bounded batches, but it must continue until every row in the old identity graph is gone, retain global public-source catalog data, and never traverse into the successor session.\", \"I18N-001: Every shipped or dormant label, aria string, count, error, suggestion, reset confirmation, publisher fixture, and visualization fixture must be keyed in both schema-checked fr-FR.json and en-US.json catalogs. Inline user-facing literals and the ui-playground translator cannot ship.\", \"DESIGN-001: packages/ui must use the complete tracked ui-playground token set as its sole default: the reference hex values, 2px radius, typography, spacing, component states, overlays, tables, chat, publisher controls, and visualization parts. The prior active OKLCH palette and 0.5px default must not remain as an alternate theme or fallback.\", \"ACCESS-001: All reachable and direct dormant fixtures must support keyboard-only operation, visible focus, correct accessible names, valid dialog focus management, and reduced-motion behavior. Disabled visualization controls must remain discoverable but cannot dispatch an action.\" ], \"dependencyBoundaries\": [ \"DEP-001: ui-playground remains outside the root apps/"
+                    - emphasis [ref=e2187] [box=724,-1271,92,15]: and packages/
+                    - text: "workspaces and keeps its own package-lock.json. No root workspace manifest may add it.\", \"DEP-002: No production source, test helper used by production, package manifest, TypeScript path alias, Vite alias, CSS import, asset URL, copy task, code-generation task, dynamic import, or runtime file read may reference ui-playground. Ported code becomes owned packages/ui code with no sync or fallback path.\", \"DEP-003: The production build graph for apps/demo must reach packages/ui but must not reach a publisher entry, gallery entry, ui-playground, @hartlib/demo-data, or @hartlib/backend-domain/product-chats.\", \"DEP-004: packages/ui may depend on React-facing UI libraries but cannot fetch product data, open SSE, read demo routes, read product browser storage, call API clients, or import from apps/demo.\", \"DEP-005: apps/demo owns route and locale state, commands, fetch and SSE controllers, web-search preference, reset orchestration, and browser storage. It cannot own reusable design-system primitives or duplicate shared HTTP codecs.\", \"DEP-006: Shared request, response, SSE, run-status, citation, session, reset, and message-mutation codecs have one owner under packages/shared. API, worker, API client, demo, docs generation, and tests import those codecs rather than defining parallel shapes.\", \"DEP-007: apps/api and its tests must not import @hartlib/backend-domain/product-chats. Remove the product-chats module and its barrel exports once all callers are removed.\", \"DEP-008: apps/demo must not depend on @hartlib/demo-data. Delete that workspace package and all fake account, plan, issue, PDF, and publication consumers.\", \"DEP-009: Backend code must not add a visualization route, visualization persistence model, fake generation service, or placeholder provider. Live visualization state remains an honest empty input to the UI.\", \"DEP-010: Publisher and visualization parity fixtures may depend on packages/ui and locale catalogs only. They must remain test-only entry points and must not appear in a production bundle metafile.\", \"DEP-011: Add only UI packages imported by the final owned port. This includes cmdk, react-resizable-panels, rehype-highlight, and the exact overlay primitives actually imported. Every direct import must have one declared dependency, and every newly declared dependency must have at least one final import.\", \"DEP-012: New backend work must use Effect 4.0.0-beta.92 patterns from docs/references/effect-smol. It must not import the Smithers-only effect3 alias, use JavaScript try/catch around yielded effects, or add an older Effect compatibility layer.\", \"DEP-013: Reusable Effect functions use Effect.fnUntraced, services use class-based Context.Service, terminal effects use return yield*, scoped work owns its resources, and time-sensitive tests use TestClock.\", \"DEP-014: The two locale JSON catalogs remain the only product string source. No reference translator, third catalog, generated fallback catalog, or inline English fallback may enter the graph.\", \"DEP-015: packages/docs keeps standalone UI-owned CSS and font declarations. It must not import the demo app, packages/ui runtime components, or ui-playground to render /docs.\", \"DEP-016: One browser-storage registry owns every demo key and its clearer. Feature modules may register typed entries but may not call localStorage.clear, indexedDB.deleteDatabase, or maintain a second reset list.\", \"DEP-017: apps/web has no blanket retention. P1 must assign every retained apps/web file or export to a named required-infrastructure use. Explicit-chat, publisher, client, platform, or support code with no named retained caller must be deleted.\", \"DEP-018: Deterministic providers may remain only where already required for isolated regression tests. They cannot prove live behavior, ship in the demo runtime, back a fallback route, or substitute for a requested real-provider gate. Add no new mock.\" ], \"retainedFiles\": [ \"RET-001: Retain all 69 tracked authored files returned by git ls-files under ui-playground byte-for-byte against artifacts/implement-ui-playground-demo-cutover/baseline/ui-playground-manifest.json, including its README, package-lock.json, gallery, i18n, services, mocks, visual generators, publisher pages, and source.\", \"RET-002: Protect only the tracked ui-playground authored set for byte equality. Ignore node_modules, build output, .smithers, test results, SQLite files, and tsconfig.tsbuildinfo when computing the reference-retention digest; their presence or absence is not authored-source drift.\", \"RET-003: Retain every SQL migration from 0001 through 0073 byte-for-byte, including 0061 and 0071. Their obsolete behavior is boot history and must be removed from live schema by 0074, not by rewriting history.\", \"RET-004: Retain docs/design.spec.md, docs/design-system.md, docs/engineering.spec.md, docs/ai-chat-runtime.spec.md, docs/data-access.spec.md, docs/localization.spec.md, docs/expansion.spec.md, and docs/public-source-marketplace.research.md as canonical files, then update their stale claims during P9.\", \"RET-005: Retain docs/references/effect-smol/** unchanged as the local Effect v4 reference.\", \"RET-006: Retain packages/docs/src/html.ts and the DOCS_HTML export, but update stale endpoint and event content under RESOLUTION-001.\", \"RET-007: Retain the API route registry and the real health, demo-session, public-source, public-document, memory, identity and billing webhook, billing, export, membership, and required infrastructure route modules. Remove only obsolete registrations and callers.\", \"RET-008: Retain the existing real public-source list, toggle, secure-document, memory list, memory revision, memory revert, and memory delete implementations, subject to active-session authorization and the new reset fence.\", \"RET-009: Retain the provider, durable SSE event, run-debug, citation, source-exposure, source-use, usage, memory, and worker infrastructure needed by the singular chat. Extend it for stopped and supersession rather than introducing a second implementation.\", \"RET-010: Retain apps/demo as the sole shipped demo application and packages/ui as the sole shipped design-system package. Rewrite their current entries in place where practical; do not create parallel cutover applications.\", \"RET-011: Retain the canonical fr-FR.json and en-US.json catalog files and their schema checker. Add all new and dormant keys to both.\", \"RET-012: Retain tests/e2e/chat.spec.ts and its exact live baseline title real provider internal retrieval persists a cited answer. Delete its obsolete cases and add the required cutover flows.\", \"RET-013: Retain root workspace manifests, Bun lock data, TypeScript, Vite, Vitest, and Playwright infrastructure. Modify dependency entries only where the final import graph requires it.\", \"RET-014: Retain artifacts/implement-ui-playground-demo-cutover/baseline/starting-worktree.json, baseline/ui-playground-manifest.json, and preflight/preflight.json as input evidence; do not treat them as complete final proof.\", \"RET-015: Preserve the 34 protected untracked Smithers workflow files under .smithers and the workflow artifact/UI paths. Capture their names and content hashes before implementation and require the same protected-set hashes at handoff.\", \"RET-016: Preserve unrelated upstream work represented by main at fe405755b98c2c8170635282a1f0fea1013d2dd1 and its two commits over origin/main. Implementation may add conventional commits but must not rewrite, discard, or fold those commits.\", \"RET-017: Retain apps/web files only when the P1 named-use manifest ties each file to reachable demo behavior, a direct dormant fixture, or required shared infrastructure. The manifest is the exclusive retention allowlist for that app.\" ], \"deletionMap\": [ \"DEL-001: Delete API registration and implementation for GET /v1/chats, POST /v1/chats, GET /v1/chats/:chatId, POST /v1/chats/:chatId/messages, share, unshare, delete-chat, and reset-chat.\", \"DEL-002: Delete apps/api product-chat route modules and every route-registry import or export that exists only for list, create, explicit-chat, share, unshare, archive, delete-chat, or reset-chat behavior.\", \"DEL-003: Delete packages/backend-domain/src/product-chats.ts, its package/barrel exports, and its dedicated tests after removing all imports.\", \"DEL-004: Delete API-client listChats, createChat, readChatById, sendMessageByChatId, shareChat, unshareChat, archiveChat, deleteChat, and resetChat methods. Delete product-client.ts if no retained method remains.\", \"DEL-005: Delete shared list/create/reset chat schemas, collection query schemas, share/archive/delete-chat contracts, explicit-chat access branches, optional chatId fields, and their exports and decoder tests.\", \"DEL-006: Delete every demo and web caller, hook, query key, route builder, controller, menu item, command, link, cache, and state field for multiple chats, explicit chat IDs, sharing, unsharing, archive, delete-chat, reset-chat, or new-chat replacement.\", \"DEL-007: Delete tests/platform-e2e/product-chat.spec.ts and all unit or integration tests whose only purpose is the removed product-chat contract.\", \"DEL-008: Delete the seven archive-reset cases from tests/e2e/chat.spec.ts and every fixture, selector, or helper used only by those cases.\", \"DEL-009: Delete the @hartlib/demo-data workspace package, its dependency declarations, barrel exports, fake accounts, fake plans, seeded issues, seeded publications, fake metrics, and all consumers.\", \"DEL-010: Delete all four checked-in demo fixture PDFs and all product code that loads static or IndexedDB PDFs, mirrors publication state locally, or clears those stores ad hoc.\", \"DEL-011: Delete the visible header reset button, its icon-only action, archive-and-replace controller, selected-storage clearing, and old reset API call.\", \"DEL-012: Delete product publisher route variants, path builders, resolvers, account switching, links, navigation, command entries, and production lazy imports. Keep only the unreachable packages/ui composition and its direct fixture entry.\", \"DEL-013: Delete gallery routes and production gallery imports. Keep the tracked ui-playground gallery only inside the permanent reference.\", \"DEL-014: Delete shipped reference mocks, service shims, translator code, visual generators, copied fixture data, and any runtime fallback that reads ui-playground. The original reference files remain untouched in ui-playground.\", \"DEL-015: Delete LegacyCitationRecord and every legacy citation transform, union branch, test case, documentation example, and accepted string or omitted quote form.\", \"DEL-016: Delete the active Pressroom OKLCH token values, 0.5px default radius, alternate old-theme selector, and any fallback that can restore those defaults.\", \"DEL-017: Delete scopePublicContentToMarket logic that removes subscribed:false sources or their publications, and replace the test that requires that behavior.\", \"DEL-018: Delete source invitations, invitation wording, seeded source rows, fake issue rows, fake source metrics, and Read/Unread state and controls.\", \"DEL-019: Delete any Regenerate or attachment UI, route, schema, dependency, storage, test, documentation, or hidden action found by the P1 audit. Do not replace them.\", \"DEL-020: Delete syntactic demo-cookie authentication and every helper or test that treats an arbitrary cookie-safe slug such as demo-user as an authenticated session.\", \"DEL-021: Delete old docs text, examples, fields, and links for /v1/chats, explicit chat IDs, multiple chats, share/archive/delete/reset, no Stop, done/error-only terminal events, legacy citations, routable publishers, fixture documents, invitations, and the old design defaults.\", \"DEL-022: Delete @hartlib/demo-data and product-chats dependency edges from package manifests and lock data. Delete each old-only UI dependency after the final import graph proves it unused.\", \"DEL-023: Delete any compatibility endpoint, alias export, compatibility view, repair function, old decoder, dual write, dual read, feature flag, or fallback that preserves removed behavior.\", \"DEL-024: Delete any apps/web file or export absent from the P1 named-use allowlist. A directory name, prior product role, or existing test does not count as a retained use.\", \"DEL-025: Do not delete or edit migrations 0001 through 0073 to perform this map. Migration 0074 must remove obsolete live objects and rows.\" ], \"migrationRules\": [ \"MIG-001: Add exactly one immutable migration with basename 0074_demo_product_cutover.sql in the existing migration directory. The loader must find it through the normal Effect Migrator path; no manual startup SQL may duplicate it.\", \"MIG-002: Verify SHA-256 hashes for every migration 0001 through 0073 before and after implementation. The known missing 0065 number remains a valid historical gap and must not be filled.\", \"MIG-003: Migration 0074 performs a hard cutover. It may drop and recreate affected live tables, types, constraints, indexes, triggers, and projections and must delete old demo rows. It must not backfill old chat data or create a compatibility view, alias, repair function, dual schema, or legacy decoder.\", \"MIG-004: The post-0074 live schema permits at most one internal chat row per active demo session through a database uniqueness constraint. No public collection, share, archive, replacement-chat lineage, or user-selectable chat identifier remains.\", \"MIG-005: Create durable demo-session state with opaque server-generated IDs, active and revoked state, creation and revocation timestamps, and the data needed to fence writes. Authentication must query this state rather than validate cookie syntax.\", \"MIG-006: Create durable reset-operation state keyed by operationId and old session, with a uniqueness rule that allows exactly one successor per old session. Store the successor link, operation status, attempt data, and timestamps outside the rows purged with the old identity.\", \"MIG-007: Create or adapt a restart-safe purge job keyed to the reset operation. Its ownership and foreign keys must not cascade from the old session, user, company, membership, or chat.\", \"MIG-008: Add message-projection state needed to hide one visible row without deleting its pair or derived rows, and revision or supersession state needed to edit the last visible user question while keeping prior evidence.\", \"MIG-009: Add the stopped terminal run state to every durable run-status constraint or database type and add durable stop-intent and write-fence data. Public projection, debug, SSE, and worker queries must derive from the same stored state.\", \"MIG-010: Enforce one terminal transition per run with database constraints and compare-and-set updates. succeeded, failed, and stopped are mutually exclusive and cannot receive later chunks or terminal events.\", \"MIG-011: Preserve the current canonical citation storage shape only. Migration 0074 must not translate legacy citation rows because old demo rows are discarded.\", \"MIG-012: Remove live share, archive, deleted-chat, replacement-chat lineage, collection-ordering, and explicit-chat objects where they exist. Their names may survive only inside immutable historical migration text.\", \"MIG-013: Audit every foreign key and queued job reachable from the old identity. The purge must cover chat messages, runs, run events, observations, source exposures, source uses, usage, memories, memory revisions, subscription bindings, exports, identity-scoped documents, jobs, chats, memberships, companies, users, and the old session wherever those rows belong to that identity.\", \"MIG-014: Retain global public-source catalog and publication rows. Purge only identity-owned enablement, access, chat, memory, usage, export, and session data.\", \"MIG-015: Purge may process bounded batches but must persist its cursor and retry state and continue until no old-identity row remains. No constant may cap total rows, attempts, pages, or elapsed restarts in a way that leaves data behind.\", \"MIG-016: Apply 0074 transactionally through Effect's PostgreSQL and Migrator APIs where PostgreSQL permits. Any non-transactional operation must have an explicit restart-safe guard and an integration test; a JavaScript catch-and-continue path is forbidden.\", \"MIG-017: Test both a fresh database applying 0001 through 0074 and an upgrade database populated with representative pre-0074 multi-chat, archive, citation, source, memory, usage, job, and identity rows. Both paths must end at the same asserted schema and empty old demo graph.\", \"MIG-018: Record 0074 once in the migration ledger with its real checksum. A second application must be a no-op through the migrator, not through custom existence fallbacks.\" ], \"verificationGates\": [ \"GATE-001: Before implementation, capture HEAD, branch, upstream, ahead/behind counts, staged diff, unstaged diff, untracked names, hashes of the 34 protected untracked files, and the upstream commit diff. The incomplete starting-worktree artifact alone cannot satisfy this gate.\", \"GATE-002: Complete the P1 named-use audit before deleting mixed files. Produce one row per retained apps/web, API, shared, API-client, backend-domain, demo-data, packages/ui, and apps/demo export, naming its reachable-demo, dormant-fixture, or required-infrastructure caller. Any unlisted old-product export must be deleted.\", \"GATE-003: Hash the exact git ls-files -z ui-playground set before and after work and require all 69 path/hash pairs to match baseline/ui-playground-manifest.json. Do not include ignored or generated files in either digest domain.\", \"GATE-004: Require git diff --exit-code over every pre-0074 migration and require exactly one tracked file named 0074_demo_product_cutover.sql.\", \"GATE-005: Run 0074 through the real Effect migrator against fresh and populated PostgreSQL databases. Assert tables, types, constraints, indexes, foreign keys, migration ledger, row removal, singular-chat uniqueness, session revocation, terminal-state exclusivity, and second-run idempotence by database queries rather than SQL text search.\", \"GATE-006: Enumerate the API route registry and shared/client exports. Fail if any removed /v1/chats route, share, unshare, archive, delete-chat, reset-chat, list/create chat method, explicit-chat path, optional chatId, or compatibility alias remains.\", \"GATE-007: Exercise strict request decoding. Unknown fields and chatId must fail for singular send and mutation requests; legacy citation forms must fail; canonical requests and citations must pass.\", \"GATE-008: Build the full root workspace and apps/demo. Inspect dependency graphs and bundler metafiles and fail on ui-playground, @hartlib/demo-data, product-chats, publisher entry, gallery entry, reference translator, shipped mock, or test-fixture reachability.\", \"GATE-009: Compare all new dependency declarations with final static and dynamic imports. Fail on undeclared direct imports, unused newly added dependencies, duplicate versions introduced without need, or changes to ui-playground/package-lock.json.\", \"GATE-010: Run targeted unit tests for route parsing, branded not-found selection, strict schemas, run terminal transitions, stop idempotence, completion/stop races, message visibility, last-question edit validation, source visibility, stale-response fencing, storage registration, localization parity, and Effect TestClock behavior.\", \"GATE-011: Run API, worker, and PostgreSQL integration tests for first stop, repeated stop, stop before provider start, stop during text, stop with citations, completion winning, failure winning, SSE reconnect after stopped, and rejection of foreign runs. Assert one durable terminal event and no memory after stopped.\", \"GATE-012: Test DELETE on user and assistant rows. Assert only the selected row disappears after reload, its pair remains, every derived row count remains unchanged, and a repeated, missing, or foreign delete returns 404.\", \"GATE-013: Test PATCH on the last visible user question. Assert a stable question identity, stored revision, hidden old answer, retained old derived rows, one replacement run, cancellation and fencing of any active old run, and 409 for assistant or non-last questions.\", \"GATE-014: Test active-session authentication with no cookie, a valid active row, an arbitrary cookie-safe slug, an unknown ID, and a revoked ID. Only explicit bootstrap may create a session for the no-cookie case.\", \"GATE-015: Test reset with concurrent identical requests, a replay after revocation, a different operationId, response loss, server restart, worker restart, old-cookie reads and writes, late stream chunks, and hard reload. Assert one successor, immediate revocation, stable replay, 409 for the competing operation, and no old-session write after revocation.\", \"GATE-016: Populate every audited old-identity table with more rows than each purge batch size, run reset, restart the purge worker between batches, and require zero remaining old-graph rows with successor and global source rows intact. A small fixture below the former cap does not pass.\", \"GATE-017: Test source lists with enabled and disabled authorized rows. Both must remain visible through reload. Test per-row pending state, rollback and localized error on failure, and a delayed stale response that cannot overwrite newer state.\", \"GATE-018: Test webSearchEnabled with absent, valid true, valid false, and invalid stored data. Assert default true, schema-checked persistence through the one registry, inclusion in send requests, and server EffectiveWebPolicy authority.\", \"GATE-019: Keep and run the exact live baseline with real credentials: HARTLIB_E2E_LIVE_PROVIDER=1 HARTLIB_E2E_STACK=1 bun --env-file=.env x --bun playwright test tests/e2e/chat.spec.ts --project=hartlib-ai-chat-runtime -g \\\"real provider internal retrieval persists a cited answer\\\".\", \"GATE-020: Add and run flow-specific Playwright tests with the live stack and real provider for a stopped partial answer and last-question edit replacement. Each must exercise UI submission, API, worker, provider, durable database result, SSE, and reload. A deterministic provider cannot satisfy this gate.\", \"GATE-021: Run full-stack Playwright reset, message-delete, source-toggle, docs, routing, and persistence flows with real credentials where a provider is involved. Every required test must report passed; skipped, flaky-retried-only, or missing-credential exits do not pass.\", \"GATE-022: Allocate a free HARTLIB_E2E_PORT_BASE, pass it to every stack command, and run shared-state or shared-port full-stack suites serially with one worker. Do not run competing stack builds or Playwright suites in parallel.\", \"GATE-023: Render the live client, /docs, branded 404, direct dormant publisher fixture, and direct visualization fixtures at every viewport declared by the tracked ui-playground visual generator. Compare them with the permanent reference using the same locale, data, fonts, and motion settings.\", \"GATE-024: Record visual differences and approve only settled differences: no reachable publisher/gallery, real rather than mock data, honest empty live visualization, singular chat, new Stop/mutation/reset controls, and updated docs. Unlisted visual drift fails.\", \"GATE-025: Verify the live visualization shows the complete presentation with zero versions, disabled version-dependent actions, correct message association, and no visualization network request. Verify direct fixtures cover populated, empty, loading, disabled, and error presentation states without entering a production chunk.\", \"GATE-026: Run keyboard and automated accessibility checks on client, command palette and reset confirmation, source rows, chat actions, visualization, publisher fixture, docs, and 404. Fail on serious violations, missing accessible names, focus loss, inaccessible pending/error state, or reduced-motion violations.\", \"GATE-027: Validate fr-FR.json and en-US.json against the catalog schema and require identical key sets. Scan shipped and dormant UI source for inline user-facing strings and any reference translator import.\", \"GATE-028: Request /docs and assert 200, English lang, deny-by-default CSP, only required font grants, standalone styling, current singular routes, Stop, stopped SSE/debug state, message mutations, and absence of every /v1/chats or legacy-citation claim.\", \"GATE-029: Request known client routes, malformed client routes, publisher paths, gallery paths, and arbitrary paths. Assert only the client allowlist resolves to client views and all others render the branded 404 without a client-root fallback.\", \"GATE-030: Scan source, manifests, generated route lists, docs output, build output, and tests for removed endpoint strings, @hartlib/demo-data, product-chats, LegacyCitationRecord, localStorage.clear, IndexedDB PDF code, Regenerate, attachment contracts, invitation state, old reset, compatibility aliases, fallback paths, dual implementations, and added mocks. Any executable occurrence fails; immutable migration history may contain old SQL terms.\", \"GATE-031: Run the repository's distinct formatting, lint, type-check, unit, integration, build, and E2E commands. Do not label two identical bun run test invocations as separate unit and integration proof.\", \"GATE-032: Re-run all gates after P9 documentation sync and after the final production build. Final approval requires every mandatory gate to pass in that final tree.\" ], \"evidenceRequirements\": [ \"EVIDENCE-001: Store evidence under artifacts/implement-ui-playground-demo-cutover with a stable index that maps every AUTHORITY, RESOLUTION, behavior, dependency, retention, deletion, migration, and verification ID to one or more concrete artifacts.\", \"EVIDENCE-002: For each command, record the exact command, working directory, UTC timestamp, exit code, duration, relevant tool versions, and untruncated stdout and stderr or their content-addressed artifact paths.\", \"EVIDENCE-003: Record only credential variable names and whether each required value was present. Never read, print, hash, screenshot, or copy ZAI_API_KEY, cookies, bearer tokens, database passwords, or other secret values.\", \"EVIDENCE-004: Preserve the fixed plan identity with its path, 438-line and 77040-byte inventory, and a content hash. Record the repository start HEAD fe405755b98c2c8170635282a1f0fea1013d2dd1, upstream 568e919c4b48d95ee24adeafc80a53e1c06e5529, and complete starting-state evidence.\", \"EVIDENCE-005: Produce source-to-target and named-use manifests for every ported component and every retained mixed-file export. Each row must name the final owner, production reachability, direct-fixture reachability, locale ownership, and dependency reason.\", \"EVIDENCE-006: Produce a deletion manifest listing each removed file, symbol, route, schema, dependency, test, doc claim, fixture, and caller. Pair it with negative scans of source, manifests, docs output, route output, and build output.\", \"EVIDENCE-007: Produce a retention manifest for the 69 tracked ui-playground files, migrations 0001 through 0073, protected Smithers files, canonical docs, and unrelated starting commits. Use the same path and hash domain before and after each comparison.\", \"EVIDENCE-008: Do not compare currentRepositoryDigest with a manifest-only digest or expect the whole repository digest to remain equal after implementation. Compare protected subsets for equality and record the implementation diff separately.\", \"EVIDENCE-009: Produce dependency evidence from workspace manifests, lock data, import scans, TypeScript resolution, and production bundle metafiles. Compute reference and dormant dependency counts from actual graphs; do not hard-code zero.\", \"EVIDENCE-010: Produce migration evidence containing pre-0074 hashes, migrator output, migration-ledger rows, fresh and upgrade schema dumps, constraint and index queries, representative pre-cutover seed counts, post-cutover counts, and second-run results.\", \"EVIDENCE-011: Produce reset and purge evidence containing operation rows, session rows, job attempts and cursor changes, concurrency results, restart points, old-cookie HTTP results, fenced-write results, per-table before/after counts, and proof that the successor and global sources survived.\", \"EVIDENCE-012: Produce Stop evidence containing HTTP responses, durable run and event rows, provider cancellation timing, partial text and canonical citations, memory counts, debug projections, SSE transcripts including reconnect, and completion-versus-stop race outcomes.\", \"EVIDENCE-013: Produce message-mutation evidence containing pre/post visible projections, raw and derived row IDs and counts, replacement-run cardinality, revision data, reload results, and all 404 or 409 cases.\", \"EVIDENCE-014: Produce source-toggle evidence containing authorized enabled and disabled list responses, browser states, request-generation values, delayed response order, rollback state, localized error output, and persisted reload state.\", \"EVIDENCE-015: For every Playwright gate, retain the HTML report, machine-readable result, trace, screenshots, video when configured, server logs, API and worker logs, database identifiers, test title, project name, port base, and whether the live-provider flag was active.\", \"EVIDENCE-016: A mandatory live test counts only when Playwright reports passed with HARTLIB_E2E_LIVE_PROVIDER=1, HARTLIB_E2E_STACK=1, real credentials, and the requested full-stack path. Skipped, deterministic-only, mocked, manually inferred, or zero-exit-with-skip evidence is invalid.\", \"EVIDENCE-017: Produce visual evidence as matched reference and candidate images with viewport, locale, fixture, commit, font, and reduced-motion metadata, plus machine diff output and a reviewed list containing only the settled differences.\", \"EVIDENCE-018: Produce accessibility evidence with tool output and manual keyboard results for focus order, focus restoration, names, status announcements, pending and error states, and reduced motion. Screenshots alone do not prove accessibility.\", \"EVIDENCE-019: Produce localization evidence with schema results, key-set comparison, missing/extra key reports, and scans for inline labels and translator imports.\", \"EVIDENCE-020: Produce /docs and routing evidence from real HTTP responses, headers, rendered DOM, extracted links, route-manifest output, and direct browser navigation to client, bad, publisher, and gallery paths.\", \"EVIDENCE-021: Final testEvidence and visualEvidence arrays must be non-empty and enumerate every mandatory artifact. Missing artifacts fail the workflow even if a summary says tests passed.\", \"EVIDENCE-022: Set zeroActionableWork from the measured final diff and deletion manifest. It cannot be true for this unimplemented cutover and must never be hard-coded to satisfy retention.\", \"EVIDENCE-023: Treat the repository audit, preflight, and earlier report as inputs, not completion proof. Re-run every mutable check after implementation and after final docs sync.\", \"EVIDENCE-024: Record final HEAD, conventional commit subjects, branch and upstream relation, staged and unstaged diffs, untracked paths, protected-file hashes, implementation diff, test results, and outstanding failures. Claim completion only when every mandatory gate passes and no required work remains.\" ]}"
+          - generic [ref=e1290] [box=33,7717,1358,147]:
+            - generic [ref=e1291] [box=46,7730,1332,22]:
+              - generic [ref=e1292] [box=46,7731,1226,20]: plan_integration_waves
+              - generic [ref=e1294] [box=1280,7730,98,22]: Complete
+            - generic [ref=e1296] [box=46,7760,1332,91]:
+              - generic [ref=e2188] [box=648,7784,127,20]: No agent output yet
+              - generic [ref=e1297] [box=597,7809,230,17]: This node has not produced chat output.
+          - generic [ref=e1298] [box=33,7874,1358,250]:
+            - generic [ref=e1299] [box=46,7887,1332,36]:
+              - generic [ref=e1300] [box=46,7887,1226,36]:
+                - generic [ref=e1301] [box=46,7887,1226,20]: author_cutover_dashboard
+                - generic [ref=e2189] [box=46,7906,1226,17]: codex
+              - generic [ref=e1302] [box=1280,7894,98,22]: Complete
+            - log [ref=e2190] [box=46,7931,1332,180]:
+              - region "Conversation messages" [ref=e2192] [box=46,7931,1332,180]:
+                - generic [ref=e2193] [box=346,6955,720,1156]:
+                  - button "/bin/zsh -lc 'git status --short -- .smithers/ui/implement-ui-playground-demo-cutover.tsx && wc -l -c .smithers/ui/implement-ui-playground-demo-cutover.tsx && … Done" [ref=e2195] [cursor=pointer] [box=371,6992,670,38]:
+                    - generic [ref=e2196] [box=383,7002,8,18]: ›
+                    - generic [ref=e2197] [box=399,7002,555,18]: /bin/zsh -lc 'git status --short -- .smithers/ui/implement-ui-playground-demo-cutover.tsx && wc -l -c .smithers/ui/implement-ui-playground-demo-cutover.tsx && …
+                    - generic [ref=e2198] [box=962,7000,67,22]: Done
+                  - article [ref=e2201] [box=370,7049,672,906]:
+                    - paragraph [ref=e2205] [box=384,7059,510,886]: "{\"summary\":\"Implemented the workflow-owned Gateway dashboard at .smithers/ui/implement-ui-playground-demo-cutover.tsx with Gateway-only data, complete lifecycle panels, agent streams, output envelopes, artifacts, diffs, retention proof, approvals, and six visual widths.\",\"changedFiles\":[\".smithers/ui/implement-ui-playground-demo-cutover.tsx\"],\"panelsImplemented\":[\"Run selection and metadata\",\"Run overview, stage strip, and workflow graph\",\"Run tree, durable events, crash-resume, and checkpoints\",\"Agent fleet with NodeChatStream for every visible agent\",\"Frozen contracts and wave plan\",\"Retention, deletion, artifacts, and diff hunks\",\"Verification results with distinct passed, running, failed, skipped, and pending states\",\"Visual widths 320, 390, 1024, 1535, 1536, and 1920\",\"Live retrieval, Stop, and reset evidence\",\"Review, readiness, final result, blockers, and approval\",\"Complete Gateway output-envelope ledger\"],\"gatewayContractsUsed\":[\"createGatewayReactRoot\",\"useGatewayRuns\",\"useGatewayRun\",\"useGatewayRunTree\",\"useGatewayRunEvents\",\"useGatewayRunDiff\",\"useGatewayNodeOutput\",\"useGatewayApprovals\",\"useGatewayActions.cancelRun\",\"WorkflowUiShell\",\"RunMeta\",\"NodeStageStrip\",\"WorkflowGraph\",\"RunTree\",\"RunEventLog\",\"FleetTable\",\"NodeChatStream\",\"NodeOutputCard\",\"NodeOutputView\",\"ApprovalPanel\",\"Artifact\",\"DiffHunks\",\"TestResults\",\"Table\",\"StatusPill\"],\"validationCommands\":[\"bun run typecheck (cwd .smithers)\",\"bun build --target browser --format esm --outfile /tmp/implement-ui-playground-demo-cutover.js .smithers/ui/implement-ui-playground-demo-cutover.tsx\",\"bunx oxfmt --check ui/implement-ui-playground-demo-cutover.tsx (cwd .smithers)\",\"bun -e 'gradeWorkflowUiSource(...)' (cwd .smithers)\",\"bun run check\"]}{\"summary\":\"Implemented the workflow-owned Gateway dashboard at .smithers/ui/implement-ui-playground-demo-cutover.tsx with Gateway-only data, complete lifecycle panels, agent streams, output envelopes, artifacts, diffs, retention proof, approvals, and six visual widths.\",\"changedFiles\":[\".smithers/ui/implement-ui-playground-demo-cutover.tsx\"],\"panelsImplemented\":[\"Run selection and metadata\",\"Run overview, stage strip, and workflow graph\",\"Run tree, durable events, crash-resume, and checkpoints\",\"Agent fleet with NodeChatStream for every visible agent\",\"Frozen contracts and wave plan\",\"Retention, deletion, artifacts, and diff hunks\",\"Verification results with distinct passed, running, failed, skipped, and pending states\",\"Visual widths 320, 390, 1024, 1535, 1536, and 1920\",\"Live retrieval, Stop, and reset evidence\",\"Review, readiness, final result, blockers, and approval\",\"Complete Gateway output-envelope ledger\"],\"gatewayContractsUsed\":[\"createGatewayReactRoot\",\"useGatewayRuns\",\"useGatewayRun\",\"useGatewayRunTree\",\"useGatewayRunEvents\",\"useGatewayRunDiff\",\"useGatewayNodeOutput\",\"useGatewayApprovals\",\"useGatewayActions.cancelRun\",\"WorkflowUiShell\",\"RunMeta\",\"NodeStageStrip\",\"WorkflowGraph\",\"RunTree\",\"RunEventLog\",\"FleetTable\",\"NodeChatStream\",\"NodeOutputCard\",\"NodeOutputView\",\"ApprovalPanel\",\"Artifact\",\"DiffHunks\",\"TestResults\",\"Table\",\"StatusPill\"],\"validationCommands\":[\"bun run typecheck (cwd .smithers)\",\"bun build --target browser --format esm --outfile /tmp/implement-ui-playground-demo-cutover.js .smithers/ui/implement-ui-playground-demo-cutover.tsx\",\"bunx oxfmt --check ui/implement-ui-playground-demo-cutover.tsx (cwd .smithers)\",\"bun -e 'gradeWorkflowUiSource(...)' (cwd .smithers)\",\"bun run check\"]}"
+          - generic [ref=e1306] [box=33,8134,1358,250]:
+            - generic [ref=e1307] [box=46,8147,1332,36]:
+              - generic [ref=e1308] [box=46,8147,1226,36]:
+                - generic [ref=e1309] [box=46,8147,1226,20]: review_cutover_dashboard
+                - generic [ref=e2206] [box=46,8166,1226,17]: codex
+              - generic [ref=e1310] [box=1280,8154,98,22]: Complete
+            - log [ref=e2207] [box=46,8191,1332,180]:
+              - region "Conversation messages" [ref=e2209] [box=46,8191,1332,180]:
+                - generic [ref=e2210] [box=346,4332,720,4039]:
+                  - button "playwright.browser_resize Done" [ref=e2212] [cursor=pointer] [box=371,4369,670,38]:
+                    - generic [ref=e2213] [box=383,4379,8,18]: ›
+                    - generic [ref=e2214] [box=399,4379,555,18]: playwright.browser_resize
+                    - generic [ref=e2215] [box=962,4377,67,22]: Done
+                  - button "playwright.browser_evaluate Running" [ref=e2219] [cursor=pointer] [box=371,4427,670,38]:
+                    - generic [ref=e2220] [box=383,4437,8,18]: ›
+                    - generic [ref=e2221] [box=399,4437,534,18]: playwright.browser_evaluate
+                    - generic [ref=e2222] [box=940,4435,89,22]: Running
+                  - button "playwright.browser_evaluate Done" [ref=e2226] [cursor=pointer] [box=371,4485,670,38]:
+                    - generic [ref=e2227] [box=383,4495,8,18]: ›
+                    - generic [ref=e2228] [box=399,4495,555,18]: playwright.browser_evaluate
+                    - generic [ref=e2229] [box=962,4493,67,22]: Done
+                  - button "playwright.browser_resize Done" [ref=e2233] [cursor=pointer] [box=371,4543,670,38]:
+                    - generic [ref=e2234] [box=383,4553,8,18]: ›
+                    - generic [ref=e2235] [box=399,4553,555,18]: playwright.browser_resize
+                    - generic [ref=e2236] [box=962,4551,67,22]: Done
+                  - button "playwright.browser_resize Done" [ref=e2240] [cursor=pointer] [box=371,4601,670,38]:
+                    - generic [ref=e2241] [box=383,4611,8,18]: ›
+                    - generic [ref=e2242] [box=399,4611,555,18]: playwright.browser_resize
+                    - generic [ref=e2243] [box=962,4609,67,22]: Done
+                  - button "playwright.browser_evaluate Done" [ref=e2247] [cursor=pointer] [box=371,4659,670,38]:
+                    - generic [ref=e2248] [box=383,4669,8,18]: ›
+                    - generic [ref=e2249] [box=399,4669,555,18]: playwright.browser_evaluate
+                    - generic [ref=e2250] [box=962,4667,67,22]: Done
+                  - button "playwright.browser_resize Done" [ref=e2254] [cursor=pointer] [box=371,4717,670,38]:
+                    - generic [ref=e2255] [box=383,4727,8,18]: ›
+                    - generic [ref=e2256] [box=399,4727,555,18]: playwright.browser_resize
+                    - generic [ref=e2257] [box=962,4725,67,22]: Done
+                  - button "playwright.browser_evaluate Running" [ref=e2261] [cursor=pointer] [box=371,4775,670,38]:
+                    - generic [ref=e2262] [box=383,4785,8,18]: ›
+                    - generic [ref=e2263] [box=399,4785,534,18]: playwright.browser_evaluate
+                    - generic [ref=e2264] [box=940,4783,89,22]: Running
+                  - button "playwright.browser_evaluate Running" [ref=e2268] [cursor=pointer] [box=371,4833,670,38]:
+                    - generic [ref=e2269] [box=383,4843,8,18]: ›
+                    - generic [ref=e2270] [box=399,4843,534,18]: playwright.browser_evaluate
+                    - generic [ref=e2271] [box=940,4841,89,22]: Running
+                  - button "playwright.browser_resize Done" [ref=e2275] [cursor=pointer] [box=371,4891,670,38]:
+                    - generic [ref=e2276] [box=383,4901,8,18]: ›
+                    - generic [ref=e2277] [box=399,4901,555,18]: playwright.browser_resize
+                    - generic [ref=e2278] [box=962,4899,67,22]: Done
+                  - button "playwright.browser_evaluate Done" [ref=e2282] [cursor=pointer] [box=371,4949,670,38]:
+                    - generic [ref=e2283] [box=383,4959,8,18]: ›
+                    - generic [ref=e2284] [box=399,4959,555,18]: playwright.browser_evaluate
+                    - generic [ref=e2285] [box=962,4957,67,22]: Done
+                  - button "playwright.browser_resize Done" [ref=e2289] [cursor=pointer] [box=371,5007,670,38]:
+                    - generic [ref=e2290] [box=383,5017,8,18]: ›
+                    - generic [ref=e2291] [box=399,5017,555,18]: playwright.browser_resize
+                    - generic [ref=e2292] [box=962,5015,67,22]: Done
+                  - button "playwright.browser_network_requests Done" [ref=e2296] [cursor=pointer] [box=371,5065,670,38]:
+                    - generic [ref=e2297] [box=383,5075,8,18]: ›
+                    - generic [ref=e2298] [box=399,5075,555,18]: playwright.browser_network_requests
+                    - generic [ref=e2299] [box=962,5073,67,22]: Done
+                  - 'button "/bin/zsh -lc \"bun -e ''const p=\\\"/Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs\\\"; Bun.serve({hostname:\\\"1… Done" [ref=e2303] [cursor=pointer] [box=371,5123,670,38]':
+                    - generic [ref=e2304] [box=383,5133,8,18]: ›
+                    - generic [ref=e2305] [box=399,5133,555,18]: "/bin/zsh -lc \"bun -e 'const p=\\\"/Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs\\\"; Bun.serve({hostname:\\\"1…"
+                    - generic [ref=e2306] [box=962,5131,67,22]: Done
+                  - article [ref=e2309] [box=370,5180,672,3035]:
+                    - paragraph [ref=e2313] [box=384,5190,510,3015]: "{\"summary\":\"Failed. The live Gateway route loaded and all six widths were checked, but the dashboard mislabels pending nodes as failed, queries missing outcome nodes, shows inconsistent agent state, lacks required retention and crash-resume proof, overflows at three widths, and does not sync run selection to the route.\",\"passed\":false,\"findings\":[{\"id\":\"status-model-false-failures\",\"severity\":\"high\",\"detail\":\"The Verification tab reports 0/6 passed and 6 failed, while its table and the live run tree show all six checks as pending. Fifteen output cards report failure because the UI requests base node IDs such as check_migration_0074 instead of loop-qualified IDs such as check_migration_0074@@automation_review_stabilization=0. This also corrupts failed versus skipped, migration, and live-flow reporting.\",\"requiredFix\":\"Resolve output cards against the materialized node IDs from the live run tree. Treat absent or non-materialized nodes as pending, preserve skipped as a separate state, and mark a node failed only when Gateway stores a failed state or failure envelope.\"},{\"id\":\"missing-outcome-node-targets\",\"severity\":\"high\",\"detail\":\"The External blockers and Approval panels query emit_verification_blocked_result and emit_approval_denied_result, but neither node exists in the live graph. Both cards therefore show false Node not found failures even though the approvals endpoint returns successfully.\",\"requiredFix\":\"Bind each outcome card to a real graph node or derive its conditional state from the run tree and approval record. Do not convert a 404 for a nonexistent conditional node into a failed or denied result.\"},{\"id\":\"agent-fleet-chat-drift\",\"severity\":\"high\",\"detail\":\"plan_integration_waves is complete and has a successful output envelope, but its chat card says No agent output yet. The current review node appears as Sol review and RUNNING in the fleet while its stream header says codex and PENDING. Finished chat, ownership, and status do not share one live source.\",\"requiredFix\":\"Derive fleet rows and chat headers from the same Gateway node and agent metadata. Render the stored transcript for completed nodes, or show a source-specific transcript error instead of treating missing chat as an empty result.\"},{\"id\":\"retention-deletion-diff-proof-missing\",\"severity\":\"high\",\"detail\":\"The Retention tab shows FAILED but contains only the frozen baseline count and digest. Byte match, removed files, retained items, reachability findings, deletion proof, and integrated diff are blank or absent. The Retained bytes KPI displays the first 12 characters of a SHA digest rather than a byte count.\",\"requiredFix\":\"Keep this section pending until its source nodes run. Populate retention, deletion, ownership, and diff fields only from live output envelopes, and display byte counts and digests as separate correctly labeled values.\"},{\"id\":\"crash-resume-log-proof-missing\",\"severity\":\"medium\",\"detail\":\"The dashboard claims crash-resume state loaded in a KPI, but it provides no checkpoint or snapshot ID, restart boundary, resume event, or before-and-after state proof. The durable event list alone does not prove that this run crashed and resumed.\",\"requiredFix\":\"Show the latest durable checkpoint or frame, worker loss or restart event, resume timestamp, restored node state, and linked log entries. Label the state as unavailable or not exercised when Gateway has no such evidence.\"},{\"id\":\"responsive-outer-overflow\",\"severity\":\"medium\",\"detail\":\"The main workflow content overflows horizontally by 1056 px at 320 px, 986 px at 390 px, and 378 px at 1024 px. The wide preflight table expands the full dashboard instead of containing its own overflow. No outer overflow occurred at 1535, 1536, or 1920 px.\",\"requiredFix\":\"Contain wide tables in local scroll regions or switch them to stacked cards at widths up to 1024 px. Keep the outer workflow content within the viewport at every required width.\"},{\"id\":\"run-selection-route-drift\",\"severity\":\"medium\",\"detail\":\"Selecting cancelled run run-1787760762878 updated the visible dashboard, but location.href remained on runId=run-1787760837339. Reloading or sharing the page would open a different run from the one under review.\",\"requiredFix\":\"Update the runId query parameter whenever selection changes and initialize the selected run from that same route state.\"}],\"routeEvidence\":[\"GET http://127.0.0.1:53191/workflows/implement-ui-playground-demo-cutover?runId=run-1787760837339 returned 200 with title UI Playground Demo Cutover.\",\"Gateway identity: http://127.0.0.1:53191; workspace /Users/polarzero/code/projects/brief; backend sqlite; version 0.31.0; auth none.\",\"GET /v1/api/runs?workflow=implement-ui-playground-demo-cutover&limit=40 returned 200 and listed run-1787760837339 as running and run-1787760762878 as cancelled.\",\"GET /v1/api/runs/run-1787760837339, /tree, /events, /approvals, and /stream returned 200.\",\"Completed output envelopes for freeze_contracts, persist_frozen_baseline, and plan_integration_waves returned 200. Base or nonexistent output IDs used by failed cards returned 404.\",\"The route was checked at 320, 390, 1024, 1535, 1536, and 1920 px with a 900 px viewport height.\",\"Selecting run-1787760762878 showed its cancelled data while the route still contained runId=run-1787760837339.\"],\"screenshotArtifacts\":[\"/Users/polarzero/code/projects/brief/cutover-dashboard-320-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-390-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1024-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1535-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1536-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1920-top.png\",\"/Users/polarzero/code/projects/brief/cutover-verification-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-live-flows-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-retention-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-review-approval-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-contracts-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-waves-1536.png\"]}{\"summary\":\"Failed. The live Gateway route loaded and all six widths were checked, but the dashboard mislabels pending nodes as failed, queries missing outcome nodes, shows inconsistent agent state, lacks required retention and crash-resume proof, overflows at three widths, and does not sync run selection to the route.\",\"passed\":false,\"findings\":[{\"id\":\"status-model-false-failures\",\"severity\":\"high\",\"detail\":\"The Verification tab reports 0/6 passed and 6 failed, while its table and the live run tree show all six checks as pending. Fifteen output cards report failure because the UI requests base node IDs such as check_migration_0074 instead of loop-qualified IDs such as check_migration_0074@@automation_review_stabilization=0. This also corrupts failed versus skipped, migration, and live-flow reporting.\",\"requiredFix\":\"Resolve output cards against the materialized node IDs from the live run tree. Treat absent or non-materialized nodes as pending, preserve skipped as a separate state, and mark a node failed only when Gateway stores a failed state or failure envelope.\"},{\"id\":\"missing-outcome-node-targets\",\"severity\":\"high\",\"detail\":\"The External blockers and Approval panels query emit_verification_blocked_result and emit_approval_denied_result, but neither node exists in the live graph. Both cards therefore show false Node not found failures even though the approvals endpoint returns successfully.\",\"requiredFix\":\"Bind each outcome card to a real graph node or derive its conditional state from the run tree and approval record. Do not convert a 404 for a nonexistent conditional node into a failed or denied result.\"},{\"id\":\"agent-fleet-chat-drift\",\"severity\":\"high\",\"detail\":\"plan_integration_waves is complete and has a successful output envelope, but its chat card says No agent output yet. The current review node appears as Sol review and RUNNING in the fleet while its stream header says codex and PENDING. Finished chat, ownership, and status do not share one live source.\",\"requiredFix\":\"Derive fleet rows and chat headers from the same Gateway node and agent metadata. Render the stored transcript for completed nodes, or show a source-specific transcript error instead of treating missing chat as an empty result.\"},{\"id\":\"retention-deletion-diff-proof-missing\",\"severity\":\"high\",\"detail\":\"The Retention tab shows FAILED but contains only the frozen baseline count and digest. Byte match, removed files, retained items, reachability findings, deletion proof, and integrated diff are blank or absent. The Retained bytes KPI displays the first 12 characters of a SHA digest rather than a byte count.\",\"requiredFix\":\"Keep this section pending until its source nodes run. Populate retention, deletion, ownership, and diff fields only from live output envelopes, and display byte counts and digests as separate correctly labeled values.\"},{\"id\":\"crash-resume-log-proof-missing\",\"severity\":\"medium\",\"detail\":\"The dashboard claims crash-resume state loaded in a KPI, but it provides no checkpoint or snapshot ID, restart boundary, resume event, or before-and-after state proof. The durable event list alone does not prove that this run crashed and resumed.\",\"requiredFix\":\"Show the latest durable checkpoint or frame, worker loss or restart event, resume timestamp, restored node state, and linked log entries. Label the state as unavailable or not exercised when Gateway has no such evidence.\"},{\"id\":\"responsive-outer-overflow\",\"severity\":\"medium\",\"detail\":\"The main workflow content overflows horizontally by 1056 px at 320 px, 986 px at 390 px, and 378 px at 1024 px. The wide preflight table expands the full dashboard instead of containing its own overflow. No outer overflow occurred at 1535, 1536, or 1920 px.\",\"requiredFix\":\"Contain wide tables in local scroll regions or switch them to stacked cards at widths up to 1024 px. Keep the outer workflow content within the viewport at every required width.\"},{\"id\":\"run-selection-route-drift\",\"severity\":\"medium\",\"detail\":\"Selecting cancelled run run-1787760762878 updated the visible dashboard, but location.href remained on runId=run-1787760837339. Reloading or sharing the page would open a different run from the one under review.\",\"requiredFix\":\"Update the runId query parameter whenever selection changes and initialize the selected run from that same route state.\"}],\"routeEvidence\":[\"GET http://127.0.0.1:53191/workflows/implement-ui-playground-demo-cutover?runId=run-1787760837339 returned 200 with title UI Playground Demo Cutover.\",\"Gateway identity: http://127.0.0.1:53191; workspace /Users/polarzero/code/projects/brief; backend sqlite; version 0.31.0; auth none.\",\"GET /v1/api/runs?workflow=implement-ui-playground-demo-cutover&limit=40 returned 200 and listed run-1787760837339 as running and run-1787760762878 as cancelled.\",\"GET /v1/api/runs/run-1787760837339, /tree, /events, /approvals, and /stream returned 200.\",\"Completed output envelopes for freeze_contracts, persist_frozen_baseline, and plan_integration_waves returned 200. Base or nonexistent output IDs used by failed cards returned 404.\",\"The route was checked at 320, 390, 1024, 1535, 1536, and 1920 px with a 900 px viewport height.\",\"Selecting run-1787760762878 showed its cancelled data while the route still contained runId=run-1787760837339.\"],\"screenshotArtifacts\":[\"/Users/polarzero/code/projects/brief/cutover-dashboard-320-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-390-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1024-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1535-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1536-top.png\",\"/Users/polarzero/code/projects/brief/cutover-dashboard-1920-top.png\",\"/Users/polarzero/code/projects/brief/cutover-verification-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-live-flows-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-retention-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-review-approval-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-contracts-1536.png\",\"/Users/polarzero/code/projects/brief/cutover-waves-1536.png\"]}"
+          - generic [ref=e1314] [box=33,8394,1358,147]:
+            - generic [ref=e1315] [box=46,8407,1332,22]:
+              - generic [ref=e1316] [box=46,8408,1226,20]: repair_cutover_dashboard
+              - generic [ref=e1318] [box=1280,8407,98,22]: Complete
+            - generic [ref=e1320] [box=46,8437,1332,91]:
+              - generic [ref=e2314] [box=648,8461,127,20]: No agent output yet
+              - generic [ref=e1321] [box=597,8486,230,17]: This node has not produced chat output.
+          - generic [ref=e1322] [box=33,8550,1358,250]:
+            - generic [ref=e1323] [box=46,8563,1332,36]:
+              - generic [ref=e1324] [box=46,8563,1235,36]:
+                - generic [ref=e1325] [box=46,8563,1235,20]: recheck_cutover_dashboard
+                - generic [ref=e2315] [box=46,8583,1235,17]: codex
+              - generic [ref=e1326] [box=1289,8570,89,22]: Running
+            - log [ref=e2316] [box=46,8607,1332,180]:
+              - region "Conversation messages" [ref=e2318] [box=46,8607,1332,180]:
+                - generic [ref=e2319] [box=346,8096,720,691]:
+                  - button "/bin/zsh -lc \"sed -n '1,240p' /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/skills/control-in-app-browser/SKILL.md\" Done" [ref=e2321] [cursor=pointer] [box=371,8133,670,38]:
+                    - generic [ref=e2322] [box=383,8143,8,18]: ›
+                    - generic [ref=e2323] [box=399,8143,555,18]: /bin/zsh -lc "sed -n '1,240p' /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/skills/control-in-app-browser/SKILL.md"
+                    - generic [ref=e2324] [box=962,8141,67,22]: Done
+                  - button "node_repl.js Done" [ref=e2328] [cursor=pointer] [box=371,8191,670,38]:
+                    - generic [ref=e2329] [box=383,8201,8,18]: ›
+                    - generic [ref=e2330] [box=399,8201,555,18]: node_repl.js
+                    - generic [ref=e2331] [box=962,8199,67,22]: Done
+                  - button "/bin/zsh -lc \"sed -n '1,220p' /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs\" Done" [ref=e2335] [cursor=pointer] [box=371,8249,670,38]:
+                    - generic [ref=e2336] [box=383,8259,8,18]: ›
+                    - generic [ref=e2337] [box=399,8259,555,18]: /bin/zsh -lc "sed -n '1,220p' /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs"
+                    - generic [ref=e2338] [box=962,8257,67,22]: Done
+                  - button "/bin/zsh -lc \"rg -n \\\"node:process|from ['\\\\\\\"]node:|import\\\\(\\\" /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-clie… Done" [ref=e2342] [cursor=pointer] [box=371,8307,670,38]:
+                    - generic [ref=e2343] [box=383,8317,8,18]: ›
+                    - generic [ref=e2344] [box=399,8317,555,18]: /bin/zsh -lc "rg -n \"node:process|from ['\\\"]node:|import\\(\" /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-clie…
+                    - generic [ref=e2345] [box=962,8315,67,22]: Done
+                  - button "/bin/zsh -lc 'rg -o \"node:[a-zA-Z0-9_/.-]+\" /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs | sort -u' Done" [ref=e2349] [cursor=pointer] [box=371,8365,670,38]:
+                    - generic [ref=e2350] [box=383,8375,8,18]: ›
+                    - generic [ref=e2351] [box=399,8375,555,18]: /bin/zsh -lc 'rg -o "node:[a-zA-Z0-9_/.-]+" /Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-client.mjs | sort -u'
+                    - generic [ref=e2352] [box=962,8373,67,22]: Done
+                  - button "/bin/zsh -lc \"python3 - <<'PY' from pathlib import Path p=Path('/Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-clien… Done" [ref=e2356] [cursor=pointer] [box=371,8423,670,38]:
+                    - generic [ref=e2357] [box=383,8433,8,18]: ›
+                    - generic [ref=e2358] [box=399,8433,555,18]: /bin/zsh -lc "python3 - <<'PY' from pathlib import Path p=Path('/Users/polarzero/.codex/plugins/cache/openai-bundled/browser/26.721.41059/scripts/browser-clien…
+                    - generic [ref=e2359] [box=962,8431,67,22]: Done
+                  - button "node_repl.js Done" [ref=e2363] [cursor=pointer] [box=371,8481,670,38]:
+                    - generic [ref=e2364] [box=383,8491,8,18]: ›
+                    - generic [ref=e2365] [box=399,8491,555,18]: node_repl.js
+                    - generic [ref=e2366] [box=962,8489,67,22]: Done
+                  - button "playwright.browser_navigate Done" [ref=e2370] [cursor=pointer] [box=371,8539,670,38]:
+                    - generic [ref=e2371] [box=383,8549,8,18]: ›
+                    - generic [ref=e2372] [box=399,8549,555,18]: playwright.browser_navigate
+                    - generic [ref=e2373] [box=962,8547,67,22]: Done
+                  - article [ref=e2376] [box=370,8596,672,35]:
+                    - status [ref=e2377] [box=370,8596,61,35]:
+                      - generic [ref=e2378] [box=383,8614,1,1]: Smithers is thinking
+          - generic [ref=e1330] [box=33,8810,1358,147]:
+            - generic [ref=e1331] [box=46,8823,1332,22]:
+              - generic [ref=e1332] [box=46,8825,1241,20]: select_and_assign_wave
+              - generic [ref=e1334] [box=1295,8823,83,22]: Queued
+            - generic [ref=e1336] [box=46,8853,1332,91]:
+              - generic [ref=e2383] [box=648,8877,127,20]: No agent output yet
+              - generic [ref=e1337] [box=597,8903,230,17]: This node has not produced chat output.
+          - generic [ref=e1338] [box=33,8967,1358,147]:
+            - generic [ref=e1339] [box=46,8980,1332,22]:
+              - generic [ref=e1340] [box=46,8982,1237,20]: implement_wave_lane_a
+              - generic [ref=e1342] [box=1291,8980,87,22]: Pending
+            - generic [ref=e1344] [box=46,9010,1332,91]:
+              - generic [ref=e2384] [box=648,9034,127,20]: No agent output yet
+              - generic [ref=e1345] [box=597,9060,230,17]: This node has not produced chat output.
+          - generic [ref=e1346] [box=33,9124,1358,147]:
+            - generic [ref=e1347] [box=46,9137,1332,22]:
+              - generic [ref=e1348] [box=46,9138,1237,20]: implement_wave_lane_b
+              - generic [ref=e1350] [box=1291,9137,87,22]: Pending
+            - generic [ref=e1352] [box=46,9167,1332,91]:
+              - generic [ref=e2385] [box=648,9191,127,20]: No agent output yet
+              - generic [ref=e1353] [box=597,9217,230,17]: This node has not produced chat output.
+          - generic [ref=e1354] [box=33,9281,1358,147]:
+            - generic [ref=e1355] [box=46,9294,1332,22]:
+              - generic [ref=e1356] [box=46,9295,1237,20]: implement_wave_lane_c
+              - generic [ref=e1358] [box=1291,9294,87,22]: Pending
+            - generic [ref=e1360] [box=46,9324,1332,91]:
+              - generic [ref=e2386] [box=648,9348,127,20]: No agent output yet
+              - generic [ref=e1361] [box=597,9374,230,17]: This node has not produced chat output.
+          - generic [ref=e1362] [box=33,9438,1358,147]:
+            - generic [ref=e1363] [box=46,9451,1332,22]:
+              - generic [ref=e1364] [box=46,9452,1237,20]: review_wave_contract_compliance
+              - generic [ref=e1366] [box=1291,9451,87,22]: Pending
+            - generic [ref=e1368] [box=46,9481,1332,91]:
+              - generic [ref=e2387] [box=648,9505,127,20]: No agent output yet
+              - generic [ref=e1369] [box=597,9531,230,17]: This node has not produced chat output.
+          - generic [ref=e1370] [box=33,9595,1358,147]:
+            - generic [ref=e1371] [box=46,9608,1332,22]:
+              - generic [ref=e1372] [box=46,9609,1237,20]: repair_wave_contract_findings
+              - generic [ref=e1374] [box=1291,9608,87,22]: Pending
+            - generic [ref=e1376] [box=46,9638,1332,91]:
+              - generic [ref=e2388] [box=648,9662,127,20]: No agent output yet
+              - generic [ref=e1377] [box=597,9687,230,17]: This node has not produced chat output.
+          - generic [ref=e1378] [box=33,9752,1358,147]:
+            - generic [ref=e1379] [box=46,9765,1332,22]:
+              - generic [ref=e1380] [box=46,9766,1241,20]: integrate_wave
+              - generic [ref=e1382] [box=1295,9765,83,22]: Queued
+            - generic [ref=e1384] [box=46,9795,1332,91]:
+              - generic [ref=e2389] [box=648,9819,127,20]: No agent output yet
+              - generic [ref=e1385] [box=597,9844,230,17]: This node has not produced chat output.
+          - generic [ref=e1386] [box=33,9909,1358,147]:
+            - generic [ref=e1387] [box=46,9922,1332,22]:
+              - generic [ref=e1388] [box=46,9923,1237,20]: repair_wave_failures
+              - generic [ref=e1390] [box=1291,9922,87,22]: Pending
+            - generic [ref=e1392] [box=46,9952,1332,91]:
+              - generic [ref=e2390] [box=648,9976,127,20]: No agent output yet
+              - generic [ref=e1393] [box=597,10001,230,17]: This node has not produced chat output.
+          - generic [ref=e1394] [box=33,10066,1358,147]:
+            - generic [ref=e1395] [box=46,10079,1332,22]:
+              - generic [ref=e1396] [box=46,10080,1241,20]: cleanup_obsolete_surface
+              - generic [ref=e1398] [box=1295,10079,83,22]: Queued
+            - generic [ref=e1400] [box=46,10109,1332,91]:
+              - generic [ref=e2391] [box=648,10133,127,20]: No agent output yet
+              - generic [ref=e1401] [box=597,10158,230,17]: This node has not produced chat output.
+          - generic [ref=e1402] [box=33,10223,1358,147]:
+            - generic [ref=e1403] [box=46,10236,1332,22]:
+              - generic [ref=e1404] [box=46,10237,1241,20]: repair_retention_cleanup
+              - generic [ref=e1406] [box=1295,10236,83,22]: Queued
+            - generic [ref=e1408] [box=46,10266,1332,91]:
+              - generic [ref=e2392] [box=648,10290,127,20]: No agent output yet
+              - generic [ref=e1409] [box=597,10315,230,17]: This node has not produced chat output.
+          - generic [ref=e1410] [box=33,10379,1358,147]:
+            - generic [ref=e1411] [box=46,10392,1332,22]:
+              - generic [ref=e1412] [box=46,10394,1241,20]: sync_canonical_docs
+              - generic [ref=e1414] [box=1295,10392,83,22]: Queued
+            - generic [ref=e1416] [box=46,10422,1332,91]:
+              - generic [ref=e2393] [box=648,10446,127,20]: No agent output yet
+              - generic [ref=e1417] [box=597,10472,230,17]: This node has not produced chat output.
+          - generic [ref=e1418] [box=33,10536,1358,147]:
+            - generic [ref=e1419] [box=46,10549,1332,22]:
+              - generic [ref=e1420] [box=46,10551,1241,20]: review_docs_sync
+              - generic [ref=e1422] [box=1295,10549,83,22]: Queued
+            - generic [ref=e1424] [box=46,10579,1332,91]:
+              - generic [ref=e2394] [box=648,10603,127,20]: No agent output yet
+              - generic [ref=e1425] [box=597,10629,230,17]: This node has not produced chat output.
+          - generic [ref=e1426] [box=33,10693,1358,147]:
+            - generic [ref=e1427] [box=46,10706,1332,22]:
+              - generic [ref=e1428] [box=46,10707,1237,20]: repair_docs_sync
+              - generic [ref=e1430] [box=1291,10706,87,22]: Pending
+            - generic [ref=e1432] [box=46,10736,1332,91]:
+              - generic [ref=e2395] [box=648,10760,127,20]: No agent output yet
+              - generic [ref=e1433] [box=597,10786,230,17]: This node has not produced chat output.
+          - generic [ref=e1434] [box=33,10850,1358,147]:
+            - generic [ref=e1435] [box=46,10863,1332,22]:
+              - generic [ref=e1436] [box=46,10864,1241,20]: recheck_docs_sync
+              - generic [ref=e1438] [box=1295,10863,83,22]: Queued
+            - generic [ref=e1440] [box=46,10893,1332,91]:
+              - generic [ref=e2396] [box=648,10917,127,20]: No agent output yet
+              - generic [ref=e1441] [box=597,10943,230,17]: This node has not produced chat output.
+          - generic [ref=e1442] [box=33,11007,1358,147]:
+            - generic [ref=e1443] [box=46,11020,1332,22]:
+              - generic [ref=e1444] [box=46,11021,1241,20]: prepare_verification_matrix
+              - generic [ref=e1446] [box=1295,11020,83,22]: Queued
+            - generic [ref=e1448] [box=46,11050,1332,91]:
+              - generic [ref=e2397] [box=648,11074,127,20]: No agent output yet
+              - generic [ref=e1449] [box=597,11100,230,17]: This node has not produced chat output.
+          - generic [ref=e1450] [box=33,11164,1358,147]:
+            - generic [ref=e1451] [box=46,11177,1332,22]:
+              - generic [ref=e1452] [box=46,11178,1241,20]: review_verification_manifest
+              - generic [ref=e1454] [box=1295,11177,83,22]: Queued
+            - generic [ref=e1456] [box=46,11207,1332,91]:
+              - generic [ref=e2398] [box=648,11231,127,20]: No agent output yet
+              - generic [ref=e1457] [box=597,11256,230,17]: This node has not produced chat output.
+          - generic [ref=e1458] [box=33,11321,1358,147]:
+            - generic [ref=e1459] [box=46,11334,1332,22]:
+              - generic [ref=e1460] [box=46,11335,1237,20]: repair_verification_manifest
+              - generic [ref=e1462] [box=1291,11334,87,22]: Pending
+            - generic [ref=e1464] [box=46,11364,1332,91]:
+              - generic [ref=e2399] [box=648,11388,127,20]: No agent output yet
+              - generic [ref=e1465] [box=597,11413,230,17]: This node has not produced chat output.
+          - generic [ref=e1466] [box=33,11478,1358,147]:
+            - generic [ref=e1467] [box=46,11491,1332,22]:
+              - generic [ref=e1468] [box=46,11492,1241,20]: recheck_verification_manifest
+              - generic [ref=e1470] [box=1295,11491,83,22]: Queued
+            - generic [ref=e1472] [box=46,11521,1332,91]:
+              - generic [ref=e2400] [box=648,11545,127,20]: No agent output yet
+              - generic [ref=e1473] [box=597,11570,230,17]: This node has not produced chat output.
+          - generic [ref=e1474] [box=33,11635,1358,147]:
+            - generic [ref=e1475] [box=46,11648,1332,22]:
+              - generic [ref=e1476] [box=46,11649,1237,20]: repair_verification_failures
+              - generic [ref=e1478] [box=1291,11648,87,22]: Pending
+            - generic [ref=e1480] [box=46,11678,1332,91]:
+              - generic [ref=e2401] [box=648,11702,127,20]: No agent output yet
+              - generic [ref=e1481] [box=597,11727,230,17]: This node has not produced chat output.
+          - generic [ref=e1482] [box=33,11792,1358,147]:
+            - generic [ref=e1483] [box=46,11805,1332,22]:
+              - generic [ref=e1484] [box=46,11806,1237,20]: independent_final_review
+              - generic [ref=e1486] [box=1291,11805,87,22]: Pending
+            - generic [ref=e1488] [box=46,11835,1332,91]:
+              - generic [ref=e2402] [box=648,11859,127,20]: No agent output yet
+              - generic [ref=e1489] [box=597,11884,230,17]: This node has not produced chat output.
+          - generic [ref=e1490] [box=33,11948,1358,147]:
+            - generic [ref=e1491] [box=46,11961,1332,22]:
+              - generic [ref=e1492] [box=46,11963,1237,20]: remediate_review_findings
+              - generic [ref=e1494] [box=1291,11961,87,22]: Pending
+            - generic [ref=e1496] [box=46,11991,1332,91]:
+              - generic [ref=e2403] [box=648,12015,127,20]: No agent output yet
+              - generic [ref=e1497] [box=597,12041,230,17]: This node has not produced chat output.
+          - generic [ref=e1498] [box=33,12105,1358,147]:
+            - generic [ref=e1499] [box=46,12118,1332,22]:
+              - generic [ref=e1500] [box=46,12120,1237,20]: repair_review_regression_failures
+              - generic [ref=e1502] [box=1291,12118,87,22]: Pending
+            - generic [ref=e1504] [box=46,12148,1332,91]:
+              - generic [ref=e2404] [box=648,12172,127,20]: No agent output yet
+              - generic [ref=e1505] [box=597,12198,230,17]: This node has not produced chat output.
+    - generic [ref=e1506] [box=18,12279,981,37960]:
+      - tablist [ref=e1507] [box=18,12279,981,36]:
+        - tab "Contracts" [selected] [ref=e1508] [cursor=pointer] [box=18,12279,79,36]
+        - tab "Waves" [ref=e1509] [cursor=pointer] [box=99,12279,59,36]
+        - tab "Retention" [ref=e1510] [cursor=pointer] [box=160,12279,78,36]
+        - tab "Verification" [ref=e1511] [cursor=pointer] [box=239,12279,89,36]
+        - tab "Live flows" [ref=e1512] [cursor=pointer] [box=330,12279,79,36]
+        - tab "Review and approval" [ref=e1513] [cursor=pointer] [box=411,12279,142,36]
+      - tabpanel "Contracts" [ref=e1514] [box=18,12325,981,37914]:
+        - generic [ref=e1515] [box=18,12325,981,37914]:
+          - heading "Frozen contracts and retained maps" [level=2] [ref=e1517] [box=33,12340,228,18]
+          - generic [ref=e1518] [box=33,12368,951,37856]:
+            - generic [ref=e1519] [box=33,12368,951,8764]:
+              - generic [ref=e1520] [box=46,12381,925,36]:
+                - generic "Produced" [ref=e2405] [box=46,12390,18,18]: ✓
+                - generic [ref=e1522] [box=72,12381,107,36]:
+                  - generic [ref=e1523] [box=72,12381,107,20]: Frozen contracts
+                  - generic [ref=e1524] [box=72,12400,107,17]: Produced
+              - generic [ref=e1525] [box=46,12425,925,8694]: "{ \"summary\": \"The cutover contract is frozen by the rules below. It makes the singular demo chat, durable Stop, exact message mutations, real-source subscriptions, dormant publisher composition, empty live visualization, active database-backed sessions, replay-safe identity reset, strict citations, reference-default design system, and full deletion of the old product-chat and fixture paths mandatory. RESOLUTION entries settle every stale canonical claim, including the /docs conflict. No repository file was edited and no test or service was run.\", \"frozenContractsArtifact\": \"This JSON response is the authoritative cutover contract. It supersedes conflicting pre-cutover documentation and the earlier integration audit until P9 updates the canonical documents. No repository artifact was created because this task is read-only.\", \"behaviorRules\": [ \"AUTHORITY-001: Apply authority in this order: this frozen contract, settled decisions in artifacts/ui-playground-demo-implementation-plan.html, canonical docs after P9 sync, then current code and older reports as historical evidence only. A worker must stop if an implementation choice conflicts with a higher-ranked source.\", \"RESOLUTION-001: Resolve the /docs conflict in favor of the cutover API. Keep the /docs route, packages/docs/src/html.ts, DOCS_HTML, deny-by-default CSP, required font grants, English lang attribute, and standalone UI-owned styling. Change every body section, heading, field, example, and link that describes a deleted /v1/chats route, explicit chat ID, done/error-only SSE, missing Stop, or another stale contract. Unaffected content remains unchanged. The post-P9 DOCS_HTML snapshot, not its pre-cutover bytes, becomes exact.\", \"RESOLUTION-002: In docs/design.spec.md, replace two demo accounts, routable publisher views, fixture or IndexedDB documents, multi-chat sharing/archive/deletion, and archive-and-replace reset with one reachable client product, an unreachable publisher composition, real sources, one chat, and identity reset.\", \"RESOLUTION-003: In docs/design-system.md, replace the Pressroom OKLCH and 0.5px-radius defaults with the complete tracked ui-playground hex-token and 2px-radius defaults. packages/ui is the sole shipped owner.\", \"RESOLUTION-004: In docs/engineering.spec.md, remove publisher-fixture, explicit-chat-ID, chat-collection, and reset-chat requirements. Retain its strict-schema, migration, security, transaction, and Effect v4 rules.\", \"RESOLUTION-005: In docs/ai-chat-runtime.spec.md, replace multiple-chat and no-Stop claims with the singular-chat and durable-Stop contract. Delete the legacy citation allowance. Retain durable SSE, provider, source, memory, access, and failure rules where they do not conflict.\", \"RESOLUTION-006: In docs/data-access.spec.md, remove chat sharing, archive, chat deletion, archive reset, and legacy web-quote decoding. Retain derived-row, secure-document, memory, retention, and authorization rules where this contract keeps those features.\", \"RESOLUTION-007: Keep docs/localization.spec.md ownership of schema-checked fr-FR.json and en-US.json catalogs. Locale and market pairing cannot restore a publisher route, fixture source, legacy translator, or alternate catalog.\", \"RESOLUTION-008: Treat docs/expansion.spec.md publisher and market material as future context only. It cannot create a production publisher path, account switcher, command, link, navigation item, or chunk.\", \"RESOLUTION-009: In docs/public-source-marketplace.research.md, retain support for real official sources, authenticated content, and source enablement. Remove invitation, fake-source, seeded-publication, and Read/Unread product claims.\", \"RESOLUTION-010: The earlier artifacts/ui-playground-demo-integration-audit.html is background evidence only. Its publisher omission, empty-only visualization omission, unsupported Stop, archive/new-chat reset, and restored publisher fixtures do not apply.\", \"RESOLUTION-011: Existing tests, route registries, migrations, or exports that prove the old product do not preserve that product. Tests and callers must change or disappear; migrations 0001 through 0073 remain only as immutable boot history.\", \"ROUTE-001: The demo router may recognize only the pre-cutover client root, source, and publication route patterns. Unknown paths and every publisher or gallery path must select a branded not-found view. They must not redirect or normalize to the client root.\", \"ROUTE-002: Production routing, navigation, command search, links, switchers, and lazy-import maps must contain no publisher or gallery destination. Direct dormant rendering is allowed only from a test or visual-fixture entry that the production entry graph cannot reach.\", \"UI-001: packages/ui owns all shipped tokens, primitives, overlays, tables, chat presentation, visualization presentation, publisher presentation, and reusable states. apps/demo owns routes, controllers, fetches, SSE, locale and route state, command actions, and browser storage.\", \"UI-002: Port the complete publisher composition with honest empty inputs. Keep it buildable and directly testable, but expose no product URL, router import, navigation item, switcher, command, palette result, or production chunk that can reach it.\", \"UI-003: Port the complete visualization presentation, version controls, sandbox canvas, and message association. Reachable demo data must always contain zero real versions. The empty state must make version-dependent actions unavailable and must issue no visualization network request.\", \"UI-004: Test-only publisher and visualization fixtures may render non-empty states for parity checks, but they must use static fixture data, remain outside the production dependency graph, and create no service mock, backend route, persistence contract, or fallback.\", \"CHAT-001: The complete public chat route set is GET /v1/chat, POST /v1/chat/messages, GET /v1/ai-runs/:runId/stream, GET /v1/ai-runs/:runId/debug, POST /v1/ai-runs/:runId/stop, DELETE /v1/chat/messages/:messageId, and PATCH /v1/chat/messages/:messageId. No other /v1/chat or /v1/chats capability may ship.\", \"CHAT-002: GET /v1/chat resolves the sole chat through the active demo session. The public response and request path contain no chatId. The database may keep one internal chat UUID for joins, locks, runs, and purge order.\", \"CHAT-003: POST /v1/chat/messages accepts a strict JSON object with non-empty content and the required boolean webSearchEnabled. It rejects chatId and unknown fields, creates one user message and one queued run in one transaction, and returns 202 with the canonical queued-run projection.\", \"CHAT-004: Public run status is exactly queued, running, succeeded, failed, or stopped. Debug projections use the same set. SSE has exactly one terminal event: done for succeeded, error for failed, or stopped for stopped.\", \"STOP-001: POST /v1/ai-runs/:runId/stop accepts no request body. It requires an active session and a run owned by that session's internal chat. A missing or foreign run returns 404 rather than revealing ownership.\", \"STOP-002: The first stop request for a queued or running run durably records stop intent and returns 202. A repeat while cancellation is pending returns the same accepted projection. A request for an already terminal run returns 200 with its unchanged terminal projection.\", \"STOP-003: If stop wins, the worker cancels provider work, commits the generated text prefix and only citations that pass the strict citation schema, emits one stopped terminal event, exposes stopped through reload and debug, and creates no memory or later derived work. If zero text was generated, it creates no empty visible assistant row.\", \"STOP-004: Completion and stop use one database compare-and-set boundary. A committed succeeded or failed result wins over a later stop. A committed stop fences later provider chunks, finalizers, memories, and terminal events. No run may have two terminal states or terminal SSE events.\", \"STOP-005: SSE reconnection must replay the durable stopped terminal event with the existing durable event-ID rules. It must never synthesize done after stopped or depend on an in-memory cancellation flag for final truth.\", \"CITATION-001: PublicCitationRecord has one strict canonical representation. Delete LegacyCitationRecord and every omitted-field, string-quote, coercion, alternate decoder, repair, and fallback branch. Invalid provider citation data fails through the canonical typed failure path.\", \"MESSAGE-001: DELETE /v1/chat/messages/:messageId accepts no body. For an owned visible message it returns 204 and hides only that selected projection row. Its paired user or assistant row remains visible, and all raw events, runs, observations, source exposures, source uses, usage, citations, memories, and revisions remain stored.\", \"MESSAGE-002: DELETE returns 404 for a missing, foreign, or already hidden message. It must not invoke delete-chat behavior, cascade through the pair, rewrite history, or remove derived rows.\", \"MESSAGE-003: PATCH /v1/chat/messages/:messageId accepts only a strict JSON object containing non-empty content. It applies only when the target is the last visible user question; a missing or foreign target returns 404, and an assistant or non-last visible user message returns 409.\", \"MESSAGE-004: A successful PATCH keeps the question's public message identity, records the new question revision, excludes the prior run from the current projection, hides its old visible answer if present, retains all prior raw and derived rows, and creates exactly one replacement queued run in the same locked transaction. It returns 202 with the canonical queued-run projection.\", \"MESSAGE-005: An active old run superseded by PATCH must receive a durable write fence and cancellation signal. It cannot append text, citations, memories, or a terminal event to the current projection after the edit. Supersession does not add a compatibility route or a second public run-status vocabulary.\", \"FEATURE-001: Ship no Regenerate action, attachment picker, attachment request field, attachment storage, attachment route, hidden attachment trigger, or related dependency.\", \"FEATURE-002: Keep browser dictation. It may only place transcript text into the composer and must not create a second send path or upload audio.\", \"FEATURE-003: Show suggestions only after a successful run when visible chat history is empty. Suggestions must come from the locale catalogs and must not appear during queued, running, failed, or stopped states.\", \"WEB-001: Persist webSearchEnabled through the one browser-storage registry and default it to true when no valid stored value exists. The send schema must validate it. The server's EffectiveWebPolicy remains final and may deny web use despite the client preference; no client fallback may bypass it.\", \"SOURCE-001: Subscription screens list only real public-source rows that the active identity may access. A row with subscribed false remains visible and shows its disabled state. Source publications do not disappear merely because the source is disabled.\", \"SOURCE-002: Each source toggle has its own pending state. The UI may update that row optimistically, but on failure it restores the prior value and shows a localized visible error. A per-row request generation or equivalent token must prevent an older response from overwriting newer route, session, or mutation state.\", \"SOURCE-003: Keep the real source-list, toggle, and secure-document paths. Remove invitations, seeded issues, fixture PDFs, fake account or plan metrics, and Read/Unread state.\", \"SESSION-001: Every demo-product request except explicit session bootstrap and reset replay must resolve the cookie to an existing active database session. A cookie-safe slug, unknown ID, revoked session, or client-created value does not authenticate and receives 401.\", \"SESSION-002: The explicit bootstrap operation is the only path that may create a fresh active session for a request with no session cookie. It creates the row before accepting product work. It must not silently replace an unknown or revoked cookie.\", \"RESET-001: POST /v1/demo/session/reset is the only reset endpoint. It accepts a strict body containing one UUID operationId, requires the current session or the narrow replay exception, and returns 202 with a successor-session cookie and the durable reset-operation projection before purge completes.\", \"RESET-002: Under one database lock and transaction, the first reset operation creates exactly one successor session, records the operation and purge job outside the old identity graph, and revokes the old session before the 202 response. A replay with the same operationId returns the same successor. A different operationId for the same old session returns 409 and creates nothing.\", \"RESET-003: The reset endpoint may recognize a revoked old session only to replay its already recorded operationId. That exception cannot authorize chat, source, memory, document, stream, debug, or mutation requests.\", \"RESET-004: Reset exists only as a localized confirmed command-palette action. No header icon, route button, account switcher, hidden shortcut, archive action, or new-chat action may call it.\", \"RESET-005: After a successful 202, the client closes streams, runs the sole registered-storage clearer, clears in-memory query, chat, locale-dependent, and mutation state, installs the successor cookie through the response, and performs a hard reload. Bootstrap must recover a durable pending reset if the response or reload was interrupted.\", \"RESET-006: Revocation and session-generation checks fence all late writes, stream chunks, source toggles, message mutations, memories, exports, and job results associated with the old identity. Client-side clearing alone is never the security boundary.\", \"RESET-007: The purge job is restart-safe and has no maximum total row cap. It may use bounded batches, but it must continue until every row in the old identity graph is gone, retain global public-source catalog data, and never traverse into the successor session.\", \"I18N-001: Every shipped or dormant label, aria string, count, error, suggestion, reset confirmation, publisher fixture, and visualization fixture must be keyed in both schema-checked fr-FR.json and en-US.json catalogs. Inline user-facing literals and the ui-playground translator cannot ship.\", \"DESIGN-001: packages/ui must use the complete tracked ui-playground token set as its sole default: the reference hex values, 2px radius, typography, spacing, component states, overlays, tables, chat, publisher controls, and visualization parts. The prior active OKLCH palette and 0.5px default must not remain as an alternate theme or fallback.\", \"ACCESS-001: All reachable and direct dormant fixtures must support keyboard-only operation, visible focus, correct accessible names, valid dialog focus management, and reduced-motion behavior. Disabled visualization controls must remain discoverable but cannot dispatch an action.\" ], \"dependencyBoundaries\": [ \"DEP-001: ui-playground remains outside the root apps/* and packages/* workspaces and keeps its own package-lock.json. No root workspace manifest may add it.\", \"DEP-002: No production source, test helper used by production, package manifest, TypeScript path alias, Vite alias, CSS import, asset URL, copy task, code-generation task, dynamic import, or runtime file read may reference ui-playground. Ported code becomes owned packages/ui code with no sync or fallback path.\", \"DEP-003: The production build graph for apps/demo must reach packages/ui but must not reach a publisher entry, gallery entry, ui-playground, @hartlib/demo-data, or @hartlib/backend-domain/product-chats.\", \"DEP-004: packages/ui may depend on React-facing UI libraries but cannot fetch product data, open SSE, read demo routes, read product browser storage, call API clients, or import from apps/demo.\", \"DEP-005: apps/demo owns route and locale state, commands, fetch and SSE controllers, web-search preference, reset orchestration, and browser storage. It cannot own reusable design-system primitives or duplicate shared HTTP codecs.\", \"DEP-006: Shared request, response, SSE, run-status, citation, session, reset, and message-mutation codecs have one owner under packages/shared. API, worker, API client, demo, docs generation, and tests import those codecs rather than defining parallel shapes.\", \"DEP-007: apps/api and its tests must not import @hartlib/backend-domain/product-chats. Remove the product-chats module and its barrel exports once all callers are removed.\", \"DEP-008: apps/demo must not depend on @hartlib/demo-data. Delete that workspace package and all fake account, plan, issue, PDF, and publication consumers.\", \"DEP-009: Backend code must not add a visualization route, visualization persistence model, fake generation service, or placeholder provider. Live visualization state remains an honest empty input to the UI.\", \"DEP-010: Publisher and visualization parity fixtures may depend on packages/ui and locale catalogs only. They must remain test-only entry points and must not appear in a production bundle metafile.\", \"DEP-011: Add only UI packages imported by the final owned port. This includes cmdk, react-resizable-panels, rehype-highlight, and the exact overlay primitives actually imported. Every direct import must have one declared dependency, and every newly declared dependency must have at least one final import.\", \"DEP-012: New backend work must use Effect 4.0.0-beta.92 patterns from docs/references/effect-smol. It must not import the Smithers-only effect3 alias, use JavaScript try/catch around yielded effects, or add an older Effect compatibility layer.\", \"DEP-013: Reusable Effect functions use Effect.fnUntraced, services use class-based Context.Service, terminal effects use return yield*, scoped work owns its resources, and time-sensitive tests use TestClock.\", \"DEP-014: The two locale JSON catalogs remain the only product string source. No reference translator, third catalog, generated fallback catalog, or inline English fallback may enter the graph.\", \"DEP-015: packages/docs keeps standalone UI-owned CSS and font declarations. It must not import the demo app, packages/ui runtime components, or ui-playground to render /docs.\", \"DEP-016: One browser-storage registry owns every demo key and its clearer. Feature modules may register typed entries but may not call localStorage.clear, indexedDB.deleteDatabase, or maintain a second reset list.\", \"DEP-017: apps/web has no blanket retention. P1 must assign every retained apps/web file or export to a named required-infrastructure use. Explicit-chat, publisher, client, platform, or support code with no named retained caller must be deleted.\", \"DEP-018: Deterministic providers may remain only where already required for isolated regression tests. They cannot prove live behavior, ship in the demo runtime, back a fallback route, or substitute for a requested real-provider gate. Add no new mock.\" ], \"retainedFiles\": [ \"RET-001: Retain all 69 tracked authored files returned by git ls-files under ui-playground byte-for-byte against artifacts/implement-ui-playground-demo-cutover/baseline/ui-playground-manifest.json, including its README, package-lock.json, gallery, i18n, services, mocks, visual generators, publisher pages, and source.\", \"RET-002: Protect only the tracked ui-playground authored set for byte equality. Ignore node_modules, build output, .smithers, test results, SQLite files, and tsconfig.tsbuildinfo when computing the reference-retention digest; their presence or absence is not authored-source drift.\", \"RET-003: Retain every SQL migration from 0001 through 0073 byte-for-byte, including 0061 and 0071. Their obsolete behavior is boot history and must be removed from live schema by 0074, not by rewriting history.\", \"RET-004: Retain docs/design.spec.md, docs/design-system.md, docs/engineering.spec.md, docs/ai-chat-runtime.spec.md, docs/data-access.spec.md, docs/localization.spec.md, docs/expansion.spec.md, and docs/public-source-marketplace.research.md as canonical files, then update their stale claims during P9.\", \"RET-005: Retain docs/references/effect-smol/** unchanged as the local Effect v4 reference.\", \"RET-006: Retain packages/docs/src/html.ts and the DOCS_HTML export, but update stale endpoint and event content under RESOLUTION-001.\", \"RET-007: Retain the API route registry and the real health, demo-session, public-source, public-document, memory, identity and billing webhook, billing, export, membership, and required infrastructure route modules. Remove only obsolete registrations and callers.\", \"RET-008: Retain the existing real public-source list, toggle, secure-document, memory list, memory revision, memory revert, and memory delete implementations, subject to active-session authorization and the new reset fence.\", \"RET-009: Retain the provider, durable SSE event, run-debug, citation, source-exposure, source-use, usage, memory, and worker infrastructure needed by the singular chat. Extend it for stopped and supersession rather than introducing a second implementation.\", \"RET-010: Retain apps/demo as the sole shipped demo application and packages/ui as the sole shipped design-system package. Rewrite their current entries in place where practical; do not create parallel cutover applications.\", \"RET-011: Retain the canonical fr-FR.json and en-US.json catalog files and their schema checker. Add all new and dormant keys to both.\", \"RET-012: Retain tests/e2e/chat.spec.ts and its exact live baseline title real provider internal retrieval persists a cited answer. Delete its obsolete cases and add the required cutover flows.\", \"RET-013: Retain root workspace manifests, Bun lock data, TypeScript, Vite, Vitest, and Playwright infrastructure. Modify dependency entries only where the final import graph requires it.\", \"RET-014: Retain artifacts/implement-ui-playground-demo-cutover/baseline/starting-worktree.json, baseline/ui-playground-manifest.json, and preflight/preflight.json as input evidence; do not treat them as complete final proof.\", \"RET-015: Preserve the 34 protected untracked Smithers workflow files under .smithers and the workflow artifact/UI paths. Capture their names and content hashes before implementation and require the same protected-set hashes at handoff.\", \"RET-016: Preserve unrelated upstream work represented by main at fe405755b98c2c8170635282a1f0fea1013d2dd1 and its two commits over origin/main. Implementation may add conventional commits but must not rewrite, discard, or fold those commits.\", \"RET-017: Retain apps/web files only when the P1 named-use manifest ties each file to reachable demo behavior, a direct dormant fixture, or required shared infrastructure. The manifest is the exclusive retention allowlist for that app.\" ], \"deletionMap\": [ \"DEL-001: Delete API registration and implementation for GET /v1/chats, POST /v1/chats, GET /v1/chats/:chatId, POST /v1/chats/:chatId/messages, share, unshare, delete-chat, and reset-chat.\", \"DEL-002: Delete apps/api product-chat route modules and every route-registry import or export that exists only for list, create, explicit-chat, share, unshare, archive, delete-chat, or reset-chat behavior.\", \"DEL-003: Delete packages/backend-domain/src/product-chats.ts, its package/barrel exports, and its dedicated tests after removing all imports.\", \"DEL-004: Delete API-client listChats, createChat, readChatById, sendMessageByChatId, shareChat, unshareChat, archiveChat, deleteChat, and resetChat methods. Delete product-client.ts if no retained method remains.\", \"DEL-005: Delete shared list/create/reset chat schemas, collection query schemas, share/archive/delete-chat contracts, explicit-chat access branches, optional chatId fields, and their exports and decoder tests.\", \"DEL-006: Delete every demo and web caller, hook, query key, route builder, controller, menu item, command, link, cache, and state field for multiple chats, explicit chat IDs, sharing, unsharing, archive, delete-chat, reset-chat, or new-chat replacement.\", \"DEL-007: Delete tests/platform-e2e/product-chat.spec.ts and all unit or integration tests whose only purpose is the removed product-chat contract.\", \"DEL-008: Delete the seven archive-reset cases from tests/e2e/chat.spec.ts and every fixture, selector, or helper used only by those cases.\", \"DEL-009: Delete the @hartlib/demo-data workspace package, its dependency declarations, barrel exports, fake accounts, fake plans, seeded issues, seeded publications, fake metrics, and all consumers.\", \"DEL-010: Delete all four checked-in demo fixture PDFs and all product code that loads static or IndexedDB PDFs, mirrors publication state locally, or clears those stores ad hoc.\", \"DEL-011: Delete the visible header reset button, its icon-only action, archive-and-replace controller, selected-storage clearing, and old reset API call.\", \"DEL-012: Delete product publisher route variants, path builders, resolvers, account switching, links, navigation, command entries, and production lazy imports. Keep only the unreachable packages/ui composition and its direct fixture entry.\", \"DEL-013: Delete gallery routes and production gallery imports. Keep the tracked ui-playground gallery only inside the permanent reference.\", \"DEL-014: Delete shipped reference mocks, service shims, translator code, visual generators, copied fixture data, and any runtime fallback that reads ui-playground. The original reference files remain untouched in ui-playground.\", \"DEL-015: Delete LegacyCitationRecord and every legacy citation transform, union branch, test case, documentation example, and accepted string or omitted quote form.\", \"DEL-016: Delete the active Pressroom OKLCH token values, 0.5px default radius, alternate old-theme selector, and any fallback that can restore those defaults.\", \"DEL-017: Delete scopePublicContentToMarket logic that removes subscribed:false sources or their publications, and replace the test that requires that behavior.\", \"DEL-018: Delete source invitations, invitation wording, seeded source rows, fake issue rows, fake source metrics, and Read/Unread state and controls.\", \"DEL-019: Delete any Regenerate or attachment UI, route, schema, dependency, storage, test, documentation, or hidden action found by the P1 audit. Do not replace them.\", \"DEL-020: Delete syntactic demo-cookie authentication and every helper or test that treats an arbitrary cookie-safe slug such as demo-user as an authenticated session.\", \"DEL-021: Delete old docs text, examples, fields, and links for /v1/chats, explicit chat IDs, multiple chats, share/archive/delete/reset, no Stop, done/error-only terminal events, legacy citations, routable publishers, fixture documents, invitations, and the old design defaults.\", \"DEL-022: Delete @hartlib/demo-data and product-chats dependency edges from package manifests and lock data. Delete each old-only UI dependency after the final import graph proves it unused.\", \"DEL-023: Delete any compatibility endpoint, alias export, compatibility view, repair function, old decoder, dual write, dual read, feature flag, or fallback that preserves removed behavior.\", \"DEL-024: Delete any apps/web file or export absent from the P1 named-use allowlist. A directory name, prior product role, or existing test does not count as a retained use.\", \"DEL-025: Do not delete or edit migrations 0001 through 0073 to perform this map. Migration 0074 must remove obsolete live objects and rows.\" ], \"migrationRules\": [ \"MIG-001: Add exactly one immutable migration with basename 0074_demo_product_cutover.sql in the existing migration directory. The loader must find it through the normal Effect Migrator path; no manual startup SQL may duplicate it.\", \"MIG-002: Verify SHA-256 hashes for every migration 0001 through 0073 before and after implementation. The known missing 0065 number remains a valid historical gap and must not be filled.\", \"MIG-003: Migration 0074 performs a hard cutover. It may drop and recreate affected live tables, types, constraints, indexes, triggers, and projections and must delete old demo rows. It must not backfill old chat data or create a compatibility view, alias, repair function, dual schema, or legacy decoder.\", \"MIG-004: The post-0074 live schema permits at most one internal chat row per active demo session through a database uniqueness constraint. No public collection, share, archive, replacement-chat lineage, or user-selectable chat identifier remains.\", \"MIG-005: Create durable demo-session state with opaque server-generated IDs, active and revoked state, creation and revocation timestamps, and the data needed to fence writes. Authentication must query this state rather than validate cookie syntax.\", \"MIG-006: Create durable reset-operation state keyed by operationId and old session, with a uniqueness rule that allows exactly one successor per old session. Store the successor link, operation status, attempt data, and timestamps outside the rows purged with the old identity.\", \"MIG-007: Create or adapt a restart-safe purge job keyed to the reset operation. Its ownership and foreign keys must not cascade from the old session, user, company, membership, or chat.\", \"MIG-008: Add message-projection state needed to hide one visible row without deleting its pair or derived rows, and revision or supersession state needed to edit the last visible user question while keeping prior evidence.\", \"MIG-009: Add the stopped terminal run state to every durable run-status constraint or database type and add durable stop-intent and write-fence data. Public projection, debug, SSE, and worker queries must derive from the same stored state.\", \"MIG-010: Enforce one terminal transition per run with database constraints and compare-and-set updates. succeeded, failed, and stopped are mutually exclusive and cannot receive later chunks or terminal events.\", \"MIG-011: Preserve the current canonical citation storage shape only. Migration 0074 must not translate legacy citation rows because old demo rows are discarded.\", \"MIG-012: Remove live share, archive, deleted-chat, replacement-chat lineage, collection-ordering, and explicit-chat objects where they exist. Their names may survive only inside immutable historical migration text.\", \"MIG-013: Audit every foreign key and queued job reachable from the old identity. The purge must cover chat messages, runs, run events, observations, source exposures, source uses, usage, memories, memory revisions, subscription bindings, exports, identity-scoped documents, jobs, chats, memberships, companies, users, and the old session wherever those rows belong to that identity.\", \"MIG-014: Retain global public-source catalog and publication rows. Purge only identity-owned enablement, access, chat, memory, usage, export, and session data.\", \"MIG-015: Purge may process bounded batches but must persist its cursor and retry state and continue until no old-identity row remains. No constant may cap total rows, attempts, pages, or elapsed restarts in a way that leaves data behind.\", \"MIG-016: Apply 0074 transactionally through Effect's PostgreSQL and Migrator APIs where PostgreSQL permits. Any non-transactional operation must have an explicit restart-safe guard and an integration test; a JavaScript catch-and-continue path is forbidden.\", \"MIG-017: Test both a fresh database applying 0001 through 0074 and an upgrade database populated with representative pre-0074 multi-chat, archive, citation, source, memory, usage, job, and identity rows. Both paths must end at the same asserted schema and empty old demo graph.\", \"MIG-018: Record 0074 once in the migration ledger with its real checksum. A second application must be a no-op through the migrator, not through custom existence fallbacks.\" ], \"verificationGates\": [ \"GATE-001: Before implementation, capture HEAD, branch, upstream, ahead/behind counts, staged diff, unstaged diff, untracked names, hashes of the 34 protected untracked files, and the upstream commit diff. The incomplete starting-worktree artifact alone cannot satisfy this gate.\", \"GATE-002: Complete the P1 named-use audit before deleting mixed files. Produce one row per retained apps/web, API, shared, API-client, backend-domain, demo-data, packages/ui, and apps/demo export, naming its reachable-demo, dormant-fixture, or required-infrastructure caller. Any unlisted old-product export must be deleted.\", \"GATE-003: Hash the exact git ls-files -z ui-playground set before and after work and require all 69 path/hash pairs to match baseline/ui-playground-manifest.json. Do not include ignored or generated files in either digest domain.\", \"GATE-004: Require git diff --exit-code over every pre-0074 migration and require exactly one tracked file named 0074_demo_product_cutover.sql.\", \"GATE-005: Run 0074 through the real Effect migrator against fresh and populated PostgreSQL databases. Assert tables, types, constraints, indexes, foreign keys, migration ledger, row removal, singular-chat uniqueness, session revocation, terminal-state exclusivity, and second-run idempotence by database queries rather than SQL text search.\", \"GATE-006: Enumerate the API route registry and shared/client exports. Fail if any removed /v1/chats route, share, unshare, archive, delete-chat, reset-chat, list/create chat method, explicit-chat path, optional chatId, or compatibility alias remains.\", \"GATE-007: Exercise strict request decoding. Unknown fields and chatId must fail for singular send and mutation requests; legacy citation forms must fail; canonical requests and citations must pass.\", \"GATE-008: Build the full root workspace and apps/demo. Inspect dependency graphs and bundler metafiles and fail on ui-playground, @hartlib/demo-data, product-chats, publisher entry, gallery entry, reference translator, shipped mock, or test-fixture reachability.\", \"GATE-009: Compare all new dependency declarations with final static and dynamic imports. Fail on undeclared direct imports, unused newly added dependencies, duplicate versions introduced without need, or changes to ui-playground/package-lock.json.\", \"GATE-010: Run targeted unit tests for route parsing, branded not-found selection, strict schemas, run terminal transitions, stop idempotence, completion/stop races, message visibility, last-question edit validation, source visibility, stale-response fencing, storage registration, localization parity, and Effect TestClock behavior.\", \"GATE-011: Run API, worker, and PostgreSQL integration tests for first stop, repeated stop, stop before provider start, stop during text, stop with citations, completion winning, failure winning, SSE reconnect after stopped, and rejection of foreign runs. Assert one durable terminal event and no memory after stopped.\", \"GATE-012: Test DELETE on user and assistant rows. Assert only the selected row disappears after reload, its pair remains, every derived row count remains unchanged, and a repeated, missing, or foreign delete returns 404.\", \"GATE-013: Test PATCH on the last visible user question. Assert a stable question identity, stored revision, hidden old answer, retained old derived rows, one replacement run, cancellation and fencing of any active old run, and 409 for assistant or non-last questions.\", \"GATE-014: Test active-session authentication with no cookie, a valid active row, an arbitrary cookie-safe slug, an unknown ID, and a revoked ID. Only explicit bootstrap may create a session for the no-cookie case.\", \"GATE-015: Test reset with concurrent identical requests, a replay after revocation, a different operationId, response loss, server restart, worker restart, old-cookie reads and writes, late stream chunks, and hard reload. Assert one successor, immediate revocation, stable replay, 409 for the competing operation, and no old-session write after revocation.\", \"GATE-016: Populate every audited old-identity table with more rows than each purge batch size, run reset, restart the purge worker between batches, and require zero remaining old-graph rows with successor and global source rows intact. A small fixture below the former cap does not pass.\", \"GATE-017: Test source lists with enabled and disabled authorized rows. Both must remain visible through reload. Test per-row pending state, rollback and localized error on failure, and a delayed stale response that cannot overwrite newer state.\", \"GATE-018: Test webSearchEnabled with absent, valid true, valid false, and invalid stored data. Assert default true, schema-checked persistence through the one registry, inclusion in send requests, and server EffectiveWebPolicy authority.\", \"GATE-019: Keep and run the exact live baseline with real credentials: HARTLIB_E2E_LIVE_PROVIDER=1 HARTLIB_E2E_STACK=1 bun --env-file=.env x --bun playwright test tests/e2e/chat.spec.ts --project=hartlib-ai-chat-runtime -g \\\"real provider internal retrieval persists a cited answer\\\".\", \"GATE-020: Add and run flow-specific Playwright tests with the live stack and real provider for a stopped partial answer and last-question edit replacement. Each must exercise UI submission, API, worker, provider, durable database result, SSE, and reload. A deterministic provider cannot satisfy this gate.\", \"GATE-021: Run full-stack Playwright reset, message-delete, source-toggle, docs, routing, and persistence flows with real credentials where a provider is involved. Every required test must report passed; skipped, flaky-retried-only, or missing-credential exits do not pass.\", \"GATE-022: Allocate a free HARTLIB_E2E_PORT_BASE, pass it to every stack command, and run shared-state or shared-port full-stack suites serially with one worker. Do not run competing stack builds or Playwright suites in parallel.\", \"GATE-023: Render the live client, /docs, branded 404, direct dormant publisher fixture, and direct visualization fixtures at every viewport declared by the tracked ui-playground visual generator. Compare them with the permanent reference using the same locale, data, fonts, and motion settings.\", \"GATE-024: Record visual differences and approve only settled differences: no reachable publisher/gallery, real rather than mock data, honest empty live visualization, singular chat, new Stop/mutation/reset controls, and updated docs. Unlisted visual drift fails.\", \"GATE-025: Verify the live visualization shows the complete presentation with zero versions, disabled version-dependent actions, correct message association, and no visualization network request. Verify direct fixtures cover populated, empty, loading, disabled, and error presentation states without entering a production chunk.\", \"GATE-026: Run keyboard and automated accessibility checks on client, command palette and reset confirmation, source rows, chat actions, visualization, publisher fixture, docs, and 404. Fail on serious violations, missing accessible names, focus loss, inaccessible pending/error state, or reduced-motion violations.\", \"GATE-027: Validate fr-FR.json and en-US.json against the catalog schema and require identical key sets. Scan shipped and dormant UI source for inline user-facing strings and any reference translator import.\", \"GATE-028: Request /docs and assert 200, English lang, deny-by-default CSP, only required font grants, standalone styling, current singular routes, Stop, stopped SSE/debug state, message mutations, and absence of every /v1/chats or legacy-citation claim.\", \"GATE-029: Request known client routes, malformed client routes, publisher paths, gallery paths, and arbitrary paths. Assert only the client allowlist resolves to client views and all others render the branded 404 without a client-root fallback.\", \"GATE-030: Scan source, manifests, generated route lists, docs output, build output, and tests for removed endpoint strings, @hartlib/demo-data, product-chats, LegacyCitationRecord, localStorage.clear, IndexedDB PDF code, Regenerate, attachment contracts, invitation state, old reset, compatibility aliases, fallback paths, dual implementations, and added mocks. Any executable occurrence fails; immutable migration history may contain old SQL terms.\", \"GATE-031: Run the repository's distinct formatting, lint, type-check, unit, integration, build, and E2E commands. Do not label two identical bun run test invocations as separate unit and integration proof.\", \"GATE-032: Re-run all gates after P9 documentation sync and after the final production build. Final approval requires every mandatory gate to pass in that final tree.\" ], \"evidenceRequirements\": [ \"EVIDENCE-001: Store evidence under artifacts/implement-ui-playground-demo-cutover with a stable index that maps every AUTHORITY, RESOLUTION, behavior, dependency, retention, deletion, migration, and verification ID to one or more concrete artifacts.\", \"EVIDENCE-002: For each command, record the exact command, working directory, UTC timestamp, exit code, duration, relevant tool versions, and untruncated stdout and stderr or their content-addressed artifact paths.\", \"EVIDENCE-003: Record only credential variable names and whether each required value was present. Never read, print, hash, screenshot, or copy ZAI_API_KEY, cookies, bearer tokens, database passwords, or other secret values.\", \"EVIDENCE-004: Preserve the fixed plan identity with its path, 438-line and 77040-byte inventory, and a content hash. Record the repository start HEAD fe405755b98c2c8170635282a1f0fea1013d2dd1, upstream 568e919c4b48d95ee24adeafc80a53e1c06e5529, and complete starting-state evidence.\", \"EVIDENCE-005: Produce source-to-target and named-use manifests for every ported component and every retained mixed-file export. Each row must name the final owner, production reachability, direct-fixture reachability, locale ownership, and dependency reason.\", \"EVIDENCE-006: Produce a deletion manifest listing each removed file, symbol, route, schema, dependency, test, doc claim, fixture, and caller. Pair it with negative scans of source, manifests, docs output, route output, and build output.\", \"EVIDENCE-007: Produce a retention manifest for the 69 tracked ui-playground files, migrations 0001 through 0073, protected Smithers files, canonical docs, and unrelated starting commits. Use the same path and hash domain before and after each comparison.\", \"EVIDENCE-008: Do not compare currentRepositoryDigest with a manifest-only digest or expect the whole repository digest to remain equal after implementation. Compare protected subsets for equality and record the implementation diff separately.\", \"EVIDENCE-009: Produce dependency evidence from workspace manifests, lock data, import scans, TypeScript resolution, and production bundle metafiles. Compute reference and dormant dependency counts from actual graphs; do not hard-code zero.\", \"EVIDENCE-010: Produce migration evidence containing pre-0074 hashes, migrator output, migration-ledger rows, fresh and upgrade schema dumps, constraint and index queries, representative pre-cutover seed counts, post-cutover counts, and second-run results.\", \"EVIDENCE-011: Produce reset and purge evidence containing operation rows, session rows, job attempts and cursor changes, concurrency results, restart points, old-cookie HTTP results, fenced-write results, per-table before/after counts, and proof that the successor and global sources survived.\", \"EVIDENCE-012: Produce Stop evidence containing HTTP responses, durable run and event rows, provider cancellation timing, partial text and canonical citations, memory counts, debug projections, SSE transcripts including reconnect, and completion-versus-stop race outcomes.\", \"EVIDENCE-013: Produce message-mutation evidence containing pre/post visible projections, raw and derived row IDs and counts, replacement-run cardinality, revision data, reload results, and all 404 or 409 cases.\", \"EVIDENCE-014: Produce source-toggle evidence containing authorized enabled and disabled list responses, browser states, request-generation values, delayed response order, rollback state, localized error output, and persisted reload state.\", \"EVIDENCE-015: For every Playwright gate, retain the HTML report, machine-readable result, trace, screenshots, video when configured, server logs, API and worker logs, database identifiers, test title, project name, port base, and whether the live-provider flag was active.\", \"EVIDENCE-016: A mandatory live test counts only when Playwright reports passed with HARTLIB_E2E_LIVE_PROVIDER=1, HARTLIB_E2E_STACK=1, real credentials, and the requested full-stack path. Skipped, deterministic-only, mocked, manually inferred, or zero-exit-with-skip evidence is invalid.\", \"EVIDENCE-017: Produce visual evidence as matched reference and candidate images with viewport, locale, fixture, commit, font, and reduced-motion metadata, plus machine diff output and a reviewed list containing only the settled differences.\", \"EVIDENCE-018: Produce accessibility evidence with tool output and manual keyboard results for focus order, focus restoration, names, status announcements, pending and error states, and reduced motion. Screenshots alone do not prove accessibility.\", \"EVIDENCE-019: Produce localization evidence with schema results, key-set comparison, missing/extra key reports, and scans for inline labels and translator imports.\", \"EVIDENCE-020: Produce /docs and routing evidence from real HTTP responses, headers, rendered DOM, extracted links, route-manifest output, and direct browser navigation to client, bad, publisher, and gallery paths.\", \"EVIDENCE-021: Final testEvidence and visualEvidence arrays must be non-empty and enumerate every mandatory artifact. Missing artifacts fail the workflow even if a summary says tests passed.\", \"EVIDENCE-022: Set zeroActionableWork from the measured final diff and deletion manifest. It cannot be true for this unimplemented cutover and must never be hard-coded to satisfy retention.\", \"EVIDENCE-023: Treat the repository audit, preflight, and earlier report as inputs, not completion proof. Re-run every mutable check after implementation and after final docs sync.\", \"EVIDENCE-024: Record final HEAD, conventional commit subjects, branch and upstream relation, staged and unstaged diffs, untracked paths, protected-file hashes, implementation diff, test results, and outstanding failures. Claim completion only when every mandatory gate passes and no required work remains.\" ] }"
+            - generic [ref=e1526] [box=33,21140,951,214]:
+              - generic [ref=e1527] [box=46,21153,925,36]:
+                - generic "Produced" [ref=e2407] [box=46,21162,18,18]: ✓
+                - generic [ref=e1529] [box=72,21153,99,36]:
+                  - generic [ref=e1530] [box=72,21153,99,20]: Frozen baseline
+                  - generic [ref=e1531] [box=72,21172,99,17]: Produced
+              - generic [ref=e1532] [box=46,21197,925,144]: "{ \"summary\": \"Persisted the frozen contracts, ownership, deletion, and retained-reference baseline.\", \"frozenManifestArtifact\": \"artifacts/implement-ui-playground-demo-cutover/baseline/frozen-manifest.json\", \"ownershipArtifact\": \"artifacts/implement-ui-playground-demo-cutover/baseline/ownership.json\", \"deletionMapArtifact\": \"artifacts/implement-ui-playground-demo-cutover/baseline/frozen-manifest.json\", \"retainedReferenceManifest\": \"artifacts/implement-ui-playground-demo-cutover/baseline/ui-playground-manifest.json\", \"checkpointId\": \"persist_frozen_baseline-7f5740a1734a9e30\" }"
+            - generic [ref=e1533] [box=33,21362,951,28862]: "{ \"summary\": \"Twenty-eight disjoint work items form nine ordered waves. Dedicated integration owners control all barrels, manifests, route registries, and lock data. The plan protects the reference tree and historical migrations, uses only static data in isolated visual fixtures, and requires real PostgreSQL, real services, live provider credentials, durable state, serial full-stack runs, and exact failure checks. No item uses a mock, placeholder, compatibility path, fallback, or best-effort proof.\", \"wavePlan\": [ { \"id\": \"W0_AUDIT\", \"purpose\": \"Capture the complete start state, protected hashes, named-use allowlist, source-to-target map, dependency inventory, and exact mutation ownership before implementation.\", \"workItemIds\": [ \"P1_AUDIT\" ] }, { \"id\": \"W1_FOUNDATIONS\", \"purpose\": \"Land the strict shared contracts, the sole 0074 migration, and the reference-default UI foundation as independent parallel work.\", \"workItemIds\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P2_UI_FOUNDATION\" ] }, { \"id\": \"W2_SESSIONS_AND_UI\", \"purpose\": \"Create database-backed sessions and port the client chat, visualization, and dormant publisher presentation into package-owned UI lanes.\", \"workItemIds\": [ \"P3_ACTIVE_SESSIONS\", \"P3_UI_CHAT\", \"P3_UI_VISUALIZATION\", \"P3_UI_PUBLISHER\", \"P3_UI_INTEGRATION\" ] }, { \"id\": \"W3_BACKEND_LIFECYCLE\", \"purpose\": \"Cut over the singular chat, real sources, durable Stop and supersession, replay-safe reset and purge, package exports, API client, and exact route registry.\", \"workItemIds\": [ \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\", \"P4_WORKER_LIFECYCLE\", \"P5_RESET_PURGE\", \"P5_BACKEND_PACKAGE_INTEGRATION\", \"P5_API_CLIENT\", \"P5_API_REGISTRY\" ] }, { \"id\": \"W4_DEMO_INTEGRATION\", \"purpose\": \"Wire one storage registry, session and reset control, chat control, real-source routing, complete catalogs, isolated parity fixtures, empty live visualization, and branded not-found behavior.\", \"workItemIds\": [ \"P6_DEMO_STORAGE\", \"P6_DEMO_CHAT\", \"P6_DEMO_ROUTING\", \"P6_LOCALIZATION\", \"P6_VISUAL_FIXTURES\", \"P6_DEMO_SHELL\" ] }, { \"id\": \"W5_CLEANUP\", \"purpose\": \"Delete every obsolete product-chat, fixture, publisher route, gallery, demo-data, old reset, platform UI, and unused dependency path after its replacement is integrated.\", \"workItemIds\": [ \"P7_CLEANUP\" ] }, { \"id\": \"W6_TESTS_AND_DOCS\", \"purpose\": \"Author exact database, API, worker, UI, routing, storage, localization, bundle, and accessibility checks while P9 replaces every stale canonical claim and DOCS_HTML section.\", \"workItemIds\": [ \"P8_BACKEND_TESTS\", \"P8_FRONTEND_TESTS\", \"P9_DOCS\" ] }, { \"id\": \"W7_FULL_STACK\", \"purpose\": \"Run the live-provider and real-stack Playwright flows serially on a free port range, including Stop, edit, delete, reset, sources, routing, docs, persistence, visuals, and accessibility.\", \"workItemIds\": [ \"P10_FULL_STACK\" ] }, { \"id\": \"W8_FINAL_PROOF\", \"purpose\": \"Rebuild and rerun every gate after P9, compare protected subsets, inspect final graphs and bundles, and publish indexed test, visual, lifecycle, migration, and repository evidence.\", \"workItemIds\": [ \"P11_FINAL_EVIDENCE\" ] } ], \"workItems\": [ { \"id\": \"P1_AUDIT\", \"files\": [ \"artifacts/implement-ui-playground-demo-cutover/preflight/full-starting-state.json\", \"artifacts/implement-ui-playground-demo-cutover/preflight/plan-identity.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/named-use.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/source-to-target.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/mutation-ownership.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/dependency-inventory.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/database-fk-inventory.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/ui-reference-before.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/migrations-0001-0073-before.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/smithers-before.json\", \"artifacts/implement-ui-playground-demo-cutover/commands/preflight.jsonl\" ], \"dependsOn\": [] }, { \"id\": \"P2_SHARED_CONTRACTS\", \"files\": [ \"packages/shared/src/api.ts\", \"packages/shared/src/chat.ts\", \"packages/shared/src/content.ts\", \"packages/shared/src/demo-session.ts\", \"packages/shared/src/http-contracts.ts\", \"packages/shared/src/index.ts\", \"packages/shared/src/message-mutations.ts\", \"packages/shared/src/reset.ts\", \"packages/shared/src/run.ts\" ], \"dependsOn\": [ \"P1_AUDIT\" ] }, { \"id\": \"P2_MIGRATION_0074\", \"files\": [ \"db/migrations/0074_demo_product_cutover.sql\" ], \"dependsOn\": [ \"P1_AUDIT\" ] }, { \"id\": \"P2_UI_FOUNDATION\", \"files\": [ \"packages/ui/src/lib/announce.tsx\", \"packages/ui/src/lib/format.ts\", \"packages/ui/src/lib/utils.ts\", \"packages/ui/src/styles/tokens.css\", \"packages/ui/src/components/navigation/breadcrumbs.tsx\", \"packages/ui/src/components/publications/table-utils.ts\", \"packages/ui/src/components/ui/badge.tsx\", \"packages/ui/src/components/ui/button.tsx\", \"packages/ui/src/components/ui/card.tsx\", \"packages/ui/src/components/ui/combobox.tsx\", \"packages/ui/src/components/ui/command.tsx\", \"packages/ui/src/components/ui/confirming-delete-button.tsx\", \"packages/ui/src/components/ui/controls.tsx\", \"packages/ui/src/components/ui/data-table.tsx\", \"packages/ui/src/components/ui/datepicker.tsx\", \"packages/ui/src/components/ui/dialog.tsx\", \"packages/ui/src/components/ui/file-upload.tsx\", \"packages/ui/src/components/ui/form-field.tsx\", \"packages/ui/src/components/ui/index.ts\", \"packages/ui/src/components/ui/inline-editable-field.tsx\", \"packages/ui/src/components/ui/input.tsx\", \"packages/ui/src/components/ui/label.tsx\", \"packages/ui/src/components/ui/overlays.tsx\", \"packages/ui/src/components/ui/section-header.tsx\", \"packages/ui/src/components/ui/select.tsx\", \"packages/ui/src/components/ui/separator.tsx\", \"packages/ui/src/components/ui/sheet.tsx\", \"packages/ui/src/components/ui/states.tsx\", \"packages/ui/src/components/ui/table.tsx\", \"packages/ui/src/components/ui/tabs.tsx\", \"packages/ui/src/components/ui/textarea.tsx\", \"packages/ui/src/components/ui/toast.tsx\", \"packages/ui/src/components/ui/tooltip.tsx\" ], \"dependsOn\": [ \"P1_AUDIT\" ] }, { \"id\": \"P3_ACTIVE_SESSIONS\", \"files\": [ \"packages/backend-domain/src/demo-sessions.ts\", \"apps/api/src/auth.ts\", \"apps/api/src/demo-session.ts\", \"apps/api/src/domain/demo-session.ts\", \"apps/api/src/index.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\" ] }, { \"id\": \"P3_UI_CHAT\", \"files\": [ \"packages/ui/src/components/chat/authenticated-document.ts\", \"packages/ui/src/components/chat/citation-tags.ts\", \"packages/ui/src/components/chat/citations.tsx\", \"packages/ui/src/components/chat/composer.tsx\", \"packages/ui/src/components/chat/debug-drawer.tsx\", \"packages/ui/src/components/chat/debug-sheet.tsx\", \"packages/ui/src/components/chat/markdown.tsx\", \"packages/ui/src/components/chat/memories-panel.tsx\", \"packages/ui/src/components/chat/memory-provenance.ts\", \"packages/ui/src/components/chat/message.tsx\", \"packages/ui/src/components/chat/run-rail.tsx\", \"packages/ui/src/components/chat/sources-disclosure.tsx\", \"packages/ui/src/components/chat/virtualized-chat-transcript.tsx\", \"packages/ui/src/components/client/client-chat.tsx\", \"packages/ui/src/components/client/source-subscriptions.tsx\", \"packages/ui/src/components/layout/app-shell.tsx\", \"packages/ui/src/components/navigation/command-palette.tsx\", \"packages/ui/src/components/publications/client-feeds-table.tsx\", \"packages/ui/src/components/publications/client-publications-table.tsx\", \"packages/ui/src/components/publications/publication-detail.tsx\", \"packages/ui/src/components/publications/sources-table.tsx\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_UI_FOUNDATION\" ] }, { \"id\": \"P3_UI_VISUALIZATION\", \"files\": [ \"packages/ui/src/components/visualization/message-association.tsx\", \"packages/ui/src/components/visualization/sandbox-canvas.tsx\", \"packages/ui/src/components/visualization/states.tsx\", \"packages/ui/src/components/visualization/types.ts\", \"packages/ui/src/components/visualization/version-controls.tsx\", \"packages/ui/src/components/visualization/viz-pane.tsx\" ], \"dependsOn\": [ \"P2_UI_FOUNDATION\" ] }, { \"id\": \"P3_UI_PUBLISHER\", \"files\": [ \"packages/ui/src/components/navigation/notification-bell.tsx\", \"packages/ui/src/components/publications/documents-table.tsx\", \"packages/ui/src/components/publications/publications-table.tsx\", \"packages/ui/src/components/publications/scheduled-publication-icon.tsx\", \"packages/ui/src/components/subscribers/subscribers-table.tsx\", \"packages/ui/src/components/publisher/publisher-issue-wizard.tsx\", \"packages/ui/src/components/publisher/publisher-notifications.tsx\", \"packages/ui/src/components/publisher/publisher-workspace.tsx\" ], \"dependsOn\": [ \"P2_UI_FOUNDATION\" ] }, { \"id\": \"P3_UI_INTEGRATION\", \"files\": [ \"packages/ui/package.json\", \"packages/ui/tsconfig.json\", \"packages/ui/src/index.ts\", \"packages/ui/src/publisher.ts\" ], \"dependsOn\": [ \"P3_UI_CHAT\", \"P3_UI_VISUALIZATION\", \"P3_UI_PUBLISHER\" ] }, { \"id\": \"P4_CHAT_BACKEND\", \"files\": [ \"packages/backend-domain/src/chat-mutations.ts\", \"packages/backend-domain/src/chat-response.ts\", \"packages/backend-domain/src/chat-runtime.ts\", \"apps/api/src/domain/chat.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P3_ACTIVE_SESSIONS\" ] }, { \"id\": \"P4_SOURCE_BACKEND\", \"files\": [ \"packages/backend-domain/src/public-sources.ts\", \"packages/backend-domain/src/publisher-documents.ts\", \"apps/api/src/domain/public-sources.ts\", \"apps/api/src/domain/publisher-documents.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P3_ACTIVE_SESSIONS\" ] }, { \"id\": \"P4_WORKER_LIFECYCLE\", \"files\": [ \"apps/worker/src/ai/evaluation/pipeline.ts\", \"apps/worker/src/ai/product-state/citations.ts\", \"apps/worker/src/ai/product-state/database.ts\", \"apps/worker/src/ai/product-state/events.ts\", \"apps/worker/src/ai/product-state/finalization.ts\", \"apps/worker/src/ai/product-state/memory.ts\", \"apps/worker/src/ai/product-state/observability.ts\", \"apps/worker/src/ai/product-state/repository.ts\", \"apps/worker/src/ai/product-state/retention.ts\", \"apps/worker/src/ai/product-state/run-control.ts\", \"apps/worker/src/ai/runtime/task-cancellation.ts\", \"apps/worker/src/ai/workflow/ai-chat.tsx\", \"apps/worker/src/ai/workflow/operations.ts\", \"apps/worker/src/ai/workflow/phase-logging.ts\", \"apps/worker/src/ai/workflow/types.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P3_ACTIVE_SESSIONS\", \"P4_CHAT_BACKEND\" ] }, { \"id\": \"P5_RESET_PURGE\", \"files\": [ \"packages/backend-domain/src/demo-session-reset.ts\", \"packages/backend-domain/src/exports.ts\", \"packages/backend-domain/src/memories.ts\", \"apps/api/src/domain/demo-session-reset.ts\", \"apps/api/src/domain/exports.ts\", \"apps/api/src/domain/memories.ts\", \"apps/worker/src/index.ts\", \"apps/worker/src/jobs/demo-session-purge.ts\", \"apps/worker/src/jobs/failure.ts\", \"apps/worker/src/jobs/handlers.ts\", \"apps/worker/src/jobs/maintenance.ts\", \"apps/worker/src/jobs/repository.ts\", \"apps/worker/src/jobs/runner.ts\", \"apps/worker/src/jobs/sql.ts\", \"apps/worker/src/jobs/types.ts\", \"apps/worker/src/platform/exports.ts\", \"apps/worker/src/platform/jobs.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P3_ACTIVE_SESSIONS\", \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\", \"P4_WORKER_LIFECYCLE\" ] }, { \"id\": \"P5_BACKEND_PACKAGE_INTEGRATION\", \"files\": [ \"packages/backend-domain/package.json\", \"packages/backend-domain/src/index.ts\" ], \"dependsOn\": [ \"P3_ACTIVE_SESSIONS\", \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\", \"P5_RESET_PURGE\" ] }, { \"id\": \"P5_API_CLIENT\", \"files\": [ \"packages/api-client/package.json\", \"packages/api-client/src/index.ts\", \"packages/api-client/src/product-client.ts\", \"packages/api-client/src/stream.ts\", \"packages/api-client/src/transport.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\", \"P5_RESET_PURGE\" ] }, { \"id\": \"P5_API_REGISTRY\", \"files\": [ \"apps/api/src/domain/administrative-audit-matrix.ts\", \"apps/api/src/http.ts\", \"apps/api/src/routes/index.ts\" ], \"dependsOn\": [ \"P3_ACTIVE_SESSIONS\", \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\", \"P5_RESET_PURGE\", \"P5_BACKEND_PACKAGE_INTEGRATION\" ] }, { \"id\": \"P6_DEMO_STORAGE\", \"files\": [ \"apps/demo/src/config.ts\", \"apps/demo/src/locale-bootstrap.ts\", \"apps/demo/src/reset-controller.ts\", \"apps/demo/src/session-controller.ts\", \"apps/demo/src/storage-registry.ts\", \"apps/demo/src/stream-registry.ts\", \"apps/demo/src/web-search-preference.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P3_ACTIVE_SESSIONS\", \"P5_RESET_PURGE\", \"P5_API_CLIENT\" ] }, { \"id\": \"P6_DEMO_CHAT\", \"files\": [ \"apps/demo/src/chat-api.ts\", \"apps/demo/src/chat-controller.ts\", \"apps/demo/src/chat-stream.ts\", \"apps/demo/src/chat-transcript.ts\", \"apps/demo/src/dictation.ts\", \"apps/demo/src/suggestions.ts\" ], \"dependsOn\": [ \"P3_UI_INTEGRATION\", \"P4_CHAT_BACKEND\", \"P4_WORKER_LIFECYCLE\", \"P5_API_CLIENT\", \"P6_DEMO_STORAGE\" ] }, { \"id\": \"P6_DEMO_ROUTING\", \"files\": [ \"apps/demo/src/market-content.ts\", \"apps/demo/src/publication-controller.ts\", \"apps/demo/src/routing.ts\", \"apps/demo/src/source-controller.ts\" ], \"dependsOn\": [ \"P3_UI_INTEGRATION\", \"P4_SOURCE_BACKEND\", \"P5_API_CLIENT\", \"P6_DEMO_STORAGE\" ] }, { \"id\": \"P6_LOCALIZATION\", \"files\": [ \"packages/i18n/src/locales/en-US.json\", \"packages/i18n/src/locales/fr-FR.json\" ], \"dependsOn\": [ \"P3_UI_CHAT\", \"P3_UI_VISUALIZATION\", \"P3_UI_PUBLISHER\", \"P6_DEMO_STORAGE\", \"P6_DEMO_CHAT\", \"P6_DEMO_ROUTING\" ] }, { \"id\": \"P6_VISUAL_FIXTURES\", \"files\": [ \"apps/demo/tests/visual-fixtures/index.html\", \"apps/demo/tests/visual-fixtures/tsconfig.json\", \"apps/demo/tests/visual-fixtures/vite.config.ts\", \"apps/demo/tests/visual-fixtures/fixture-catalog.ts\", \"apps/demo/tests/visual-fixtures/fixture-entry.tsx\", \"apps/demo/tests/visual-fixtures/publisher-states.tsx\", \"apps/demo/tests/visual-fixtures/reference-viewports.ts\", \"apps/demo/tests/visual-fixtures/visualization-states.tsx\" ], \"dependsOn\": [ \"P3_UI_INTEGRATION\", \"P3_UI_VISUALIZATION\", \"P3_UI_PUBLISHER\", \"P6_LOCALIZATION\" ] }, { \"id\": \"P6_DEMO_SHELL\", \"files\": [ \"apps/demo/index.html\", \"apps/demo/package.json\", \"apps/demo/tsconfig.json\", \"apps/demo/tsconfig.node.json\", \"apps/demo/vite.config.ts\", \"apps/demo/src/branded-not-found.tsx\", \"apps/demo/src/client-app.tsx\", \"apps/demo/src/main.tsx\", \"apps/demo/src/styles.css\" ], \"dependsOn\": [ \"P3_UI_INTEGRATION\", \"P5_API_REGISTRY\", \"P6_DEMO_STORAGE\", \"P6_DEMO_CHAT\", \"P6_DEMO_ROUTING\", \"P6_LOCALIZATION\" ] }, { \"id\": \"P7_CLEANUP\", \"files\": [ \"PRODUCT.md\", \"UI-DEMO-PROMPT.md\", \"package.json\", \"bun.lock\", \"tsconfig.json\", \"tsconfig.base.json\", \"vitest.config.ts\", \"apps/api/src/domain/product-chats.ts\", \"apps/demo/public/demo/pdfs/atlas-energy-2026-05-market.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-17.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-24-annexes.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-24-note.pdf\", \"apps/demo/src/chat-reset.test.ts\", \"apps/demo/src/chat-reset.ts\", \"apps/demo/src/demo-state.test.ts\", \"apps/demo/src/demo-state.ts\", \"apps/demo/src/docs-document.tsx\", \"apps/worker/src/e2e/public-source-corpus.test.ts\", \"apps/worker/src/e2e/public-source-corpus.ts\", \"apps/web/docs-vite-plugin.test.ts\", \"apps/web/docs-vite-plugin.ts\", \"apps/web/index.html\", \"apps/web/package.json\", \"apps/web/src/auth-config.test.ts\", \"apps/web/src/auth-config.ts\", \"apps/web/src/components/admin/platform-operations-page.tsx\", \"apps/web/src/components/auth/api-auth-bridge.tsx\", \"apps/web/src/components/auth/auth-boundary.tsx\", \"apps/web/src/components/chat/chat-permissions.test.ts\", \"apps/web/src/components/chat/chat-permissions.ts\", \"apps/web/src/components/chat/chat-route-state.test.ts\", \"apps/web/src/components/chat/chat-route-state.ts\", \"apps/web/src/components/chat/chat-workspace-page.test.tsx\", \"apps/web/src/components/chat/chat-workspace-page.tsx\", \"apps/web/src/components/chat/product-chat-page.tsx\", \"apps/web/src/components/chat/product-chat-stream.test.ts\", \"apps/web/src/components/chat/product-chat-stream.ts\", \"apps/web/src/components/client/client-archive-page.test.ts\", \"apps/web/src/components/client/client-archive-page.tsx\", \"apps/web/src/components/client/client-billing-page.tsx\", \"apps/web/src/components/client/client-notifications-page.test.ts\", \"apps/web/src/components/client/client-notifications-page.tsx\", \"apps/web/src/components/client/client-settings-page.tsx\", \"apps/web/src/components/errors/application-error-boundary.tsx\", \"apps/web/src/components/layout/app-shell.tsx\", \"apps/web/src/components/layout/locale-switcher.tsx\", \"apps/web/src/components/layout/workspace-page.tsx\", \"apps/web/src/components/layout/workspace-switcher.tsx\", \"apps/web/src/components/publisher/publisher-issue-page.tsx\", \"apps/web/src/components/publisher/publisher-settings-page.tsx\", \"apps/web/src/components/publisher/publisher-workspace-page.tsx\", \"apps/web/src/components/team/workspace-team-pages.tsx\", \"apps/web/src/lib/api-auth.test.ts\", \"apps/web/src/lib/api-auth.ts\", \"apps/web/src/lib/api.test.ts\", \"apps/web/src/lib/api.ts\", \"apps/web/src/lib/billing-usage.test.ts\", \"apps/web/src/lib/billing-usage.ts\", \"apps/web/src/lib/chat-form.test.ts\", \"apps/web/src/lib/chat-form.ts\", \"apps/web/src/lib/db.test.ts\", \"apps/web/src/lib/db.ts\", \"apps/web/src/lib/form-validation.test.ts\", \"apps/web/src/lib/form-validation.ts\", \"apps/web/src/lib/platform-api.test.ts\", \"apps/web/src/lib/platform-api.ts\", \"apps/web/src/lib/query-client.ts\", \"apps/web/src/lib/workspace-labels.ts\", \"apps/web/src/locale-bootstrap.ts\", \"apps/web/src/main.tsx\", \"apps/web/src/observability.test.ts\", \"apps/web/src/observability.ts\", \"apps/web/src/router.tsx\", \"apps/web/src/styles.css\", \"apps/web/src/vite-env.d.ts\", \"apps/web/tsconfig.json\", \"apps/web/tsconfig.node.json\", \"apps/web/vite.config.ts\", \"packages/api-client/src/platform-client.test.ts\", \"packages/api-client/src/platform-client.ts\", \"packages/backend-domain/src/product-chats.integration.test.ts\", \"packages/backend-domain/src/product-chats.ts\", \"packages/demo-data/package.json\", \"packages/demo-data/src/content.test.ts\", \"packages/demo-data/src/index.ts\", \"packages/demo-data/tsconfig.json\", \"packages/shared/src/platform.ts\", \"packages/workspace/src/common.ts\", \"packages/workspace/src/memberships.ts\", \"tests/e2e/s3-fixture-server.ts\", \"tests/platform-e2e/product-chat.spec.ts\", \"tests/platform-e2e/public-archive.spec.ts\", \"tests/platform-e2e/publisher-pdf.spec.ts\" ], \"dependsOn\": [ \"P5_BACKEND_PACKAGE_INTEGRATION\", \"P5_API_CLIENT\", \"P5_API_REGISTRY\", \"P6_VISUAL_FIXTURES\", \"P6_DEMO_SHELL\" ] }, { \"id\": \"P8_BACKEND_TESTS\", \"files\": [ \"packages/shared/src/chat.test.ts\", \"packages/shared/src/demo-session.test.ts\", \"packages/shared/src/message-mutations.test.ts\", \"packages/shared/src/platform.test.ts\", \"packages/shared/src/reset.test.ts\", \"packages/shared/src/run.test.ts\", \"packages/backend-domain/src/chat-response.test.ts\", \"packages/backend-domain/src/chat-runtime.integration.test.ts\", \"packages/backend-domain/src/demo-session-reset.integration.test.ts\", \"packages/backend-domain/src/demo-sessions.integration.test.ts\", \"packages/backend-domain/src/message-mutations.integration.test.ts\", \"packages/backend-domain/src/public-sources.integration.test.ts\", \"packages/workspace/src/boundary.test.ts\", \"packages/workspace/src/policies.test.ts\", \"apps/api/src/auth.test.ts\", \"apps/api/src/authorization.integration.test.ts\", \"apps/api/src/demo-session.test.ts\", \"apps/api/src/domain/adapter-boundary.test.ts\", \"apps/api/src/domain/administrative-audit-matrix.test.ts\", \"apps/api/src/domain/http-contracts.test.ts\", \"apps/api/src/domain/path-parameter-policy.test.ts\", \"apps/api/src/http.test.ts\", \"apps/api/src/routes/chat.integration.test.ts\", \"apps/api/src/routes/chat.test.ts\", \"apps/api/src/routes/demo-session-reset.integration.test.ts\", \"apps/api/src/routes/message-mutations.integration.test.ts\", \"apps/api/src/routes/platform.integration.test.ts\", \"apps/api/src/routes/public-sources.test.ts\", \"apps/api/src/routes/run-stop.integration.test.ts\", \"apps/api/src/routes/workspace-platform.integration.test.ts\", \"apps/worker/src/ai/evaluation/pipeline.integration.test.ts\", \"apps/worker/src/ai/evaluation/pipeline.reconciliation.test.ts\", \"apps/worker/src/ai/product-state/citations.test.ts\", \"apps/worker/src/ai/product-state/database.test.ts\", \"apps/worker/src/ai/product-state/product-state.test.ts\", \"apps/worker/src/ai/product-state/run-control.integration.test.ts\", \"apps/worker/src/ai/product-state/run-control.test.ts\", \"apps/worker/src/ai/product-state/source-map.test.ts\", \"apps/worker/src/ai/runtime/task-cancellation.test.ts\", \"apps/worker/src/ai/workflow/ai-chat.test.ts\", \"apps/worker/src/ai/workflow/operations.integration.test.ts\", \"apps/worker/src/ai/workflow/operations.test.ts\", \"apps/worker/src/ai/workflow/phase-logging.test.ts\", \"apps/worker/src/db/demo-product-cutover.integration.test.ts\", \"apps/worker/src/db/migrations.test.ts\", \"apps/worker/src/jobs/demo-session-purge.integration.test.ts\", \"apps/worker/src/jobs/failure.test.ts\", \"apps/worker/src/jobs/handlers.test.ts\", \"apps/worker/src/jobs/maintenance.test.ts\", \"apps/worker/src/jobs/repository.test.ts\", \"apps/worker/src/jobs/runner.test.ts\", \"apps/worker/src/platform/exports-ordering.test.ts\", \"apps/worker/src/platform/jobs.test.ts\", \"apps/worker/src/platform/legal-hold-retention.integration.test.ts\", \"apps/worker/src/platform/platform-services.integration.test.ts\" ], \"dependsOn\": [ \"P2_MIGRATION_0074\", \"P5_RESET_PURGE\", \"P7_CLEANUP\" ] }, { \"id\": \"P8_FRONTEND_TESTS\", \"files\": [ \"packages/api-client/src/product-client.test.ts\", \"packages/api-client/src/stream.test.ts\", \"packages/api-client/src/transport.test.ts\", \"packages/i18n/src/catalogs.test.ts\", \"packages/i18n/src/redirect.test.ts\", \"packages/ui/src/components/chat/authenticated-document.test.ts\", \"packages/ui/src/components/chat/citation-tags.test.ts\", \"packages/ui/src/components/chat/composer.test.tsx\", \"packages/ui/src/components/chat/markdown.test.tsx\", \"packages/ui/src/components/chat/memory-provenance.test.ts\", \"packages/ui/src/components/chat/message.test.tsx\", \"packages/ui/src/components/chat/run-rail.test.tsx\", \"packages/ui/src/components/chat/sources-disclosure.test.tsx\", \"packages/ui/src/components/chat/virtualized-chat-transcript.test.ts\", \"packages/ui/src/components/client/source-subscriptions.test.tsx\", \"packages/ui/src/components/navigation/command-palette.test.tsx\", \"packages/ui/src/components/publications/client-publications-table.test.ts\", \"packages/ui/src/components/publisher/publisher-workspace.test.tsx\", \"packages/ui/src/components/visualization/version-controls.test.tsx\", \"packages/ui/src/components/visualization/viz-pane.test.tsx\", \"apps/demo/docs-vite-plugin.test.ts\", \"apps/demo/src/branded-not-found.test.tsx\", \"apps/demo/src/chat-api.test.ts\", \"apps/demo/src/chat-controller.test.ts\", \"apps/demo/src/chat-stream.test.ts\", \"apps/demo/src/chat-transcript.test.ts\", \"apps/demo/src/client-app.test.tsx\", \"apps/demo/src/config.test.ts\", \"apps/demo/src/dictation.test.ts\", \"apps/demo/src/docs-path.test.ts\", \"apps/demo/src/locale-bootstrap.test.ts\", \"apps/demo/src/market-content.test.ts\", \"apps/demo/src/publication-controller.test.ts\", \"apps/demo/src/reset-controller.test.ts\", \"apps/demo/src/routing.test.ts\", \"apps/demo/src/session-controller.test.ts\", \"apps/demo/src/source-controller.test.ts\", \"apps/demo/src/storage-registry.test.ts\", \"apps/demo/src/stream-registry.test.ts\", \"apps/demo/src/suggestions.test.ts\", \"apps/demo/src/web-search-preference.test.ts\", \"scripts/verify-cutover.ts\", \"scripts/verify-demo-bundle.ts\", \"scripts/verify-localization.ts\", \"scripts/verify-protected-subsets.ts\" ], \"dependsOn\": [ \"P3_UI_INTEGRATION\", \"P6_LOCALIZATION\", \"P6_VISUAL_FIXTURES\", \"P6_DEMO_SHELL\", \"P7_CLEANUP\" ] }, { \"id\": \"P9_DOCS\", \"files\": [ \"docs/ai-chat-runtime.spec.md\", \"docs/data-access.spec.md\", \"docs/design-system.md\", \"docs/design.spec.md\", \"docs/engineering.spec.md\", \"docs/expansion.spec.md\", \"docs/localization.spec.md\", \"docs/public-source-marketplace.research.md\", \"packages/docs/src/html.ts\", \"apps/demo/docs-vite-plugin.ts\" ], \"dependsOn\": [ \"P2_SHARED_CONTRACTS\", \"P4_WORKER_LIFECYCLE\", \"P5_RESET_PURGE\", \"P6_DEMO_SHELL\", \"P7_CLEANUP\" ] }, { \"id\": \"P10_FULL_STACK\", \"files\": [ \"playwright.config.ts\", \"apps/worker/src/e2e/setup-cli.ts\", \"tests/e2e/accessibility.spec.ts\", \"tests/e2e/chat.spec.ts\", \"tests/e2e/db.ts\", \"tests/e2e/docs.spec.ts\", \"tests/e2e/global-setup.ts\", \"tests/e2e/message-mutations.spec.ts\", \"tests/e2e/ports.test.ts\", \"tests/e2e/ports.ts\", \"tests/e2e/public-sources.spec.ts\", \"tests/e2e/routing.spec.ts\", \"tests/e2e/session-reset.spec.ts\", \"tests/e2e/storage.spec.ts\", \"tests/e2e/test-context.ts\", \"tests/e2e/visualization.spec.ts\", \"tests/visual/accessibility.spec.ts\", \"tests/visual/parity.spec.ts\" ], \"dependsOn\": [ \"P8_BACKEND_TESTS\", \"P8_FRONTEND_TESTS\", \"P9_DOCS\" ] }, { \"id\": \"P11_FINAL_EVIDENCE\", \"files\": [ \"artifacts/implement-ui-playground-demo-cutover/index.json\", \"artifacts/implement-ui-playground-demo-cutover/commands/final.jsonl\", \"artifacts/implement-ui-playground-demo-cutover/manifests/deletions.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/dependencies-final.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/retention-final.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/ui-reference-after.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/migrations-0001-0073-after.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/smithers-after.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/fresh-migrator.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/upgrade-migrator.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/migration-ledger.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/fresh-schema.sql\", \"artifacts/implement-ui-playground-demo-cutover/migrations/upgrade-schema.sql\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/stop.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/message-mutations.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/reset-purge.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/source-toggle.json\", \"artifacts/implement-ui-playground-demo-cutover/localization/report.json\", \"artifacts/implement-ui-playground-demo-cutover/routing/report.json\", \"artifacts/implement-ui-playground-demo-cutover/docs/report.json\", \"artifacts/implement-ui-playground-demo-cutover/build/demo-metafile.json\", \"artifacts/implement-ui-playground-demo-cutover/build/dependency-report.json\", \"artifacts/implement-ui-playground-demo-cutover/build/workspace-build.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/test-evidence.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-results.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-report.zip\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-artifacts.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/tests/server-logs.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/visual/visual-evidence.json\", \"artifacts/implement-ui-playground-demo-cutover/visual/diff-results.json\", \"artifacts/implement-ui-playground-demo-cutover/visual/images.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/accessibility/report.json\", \"artifacts/implement-ui-playground-demo-cutover/final-state.json\" ], \"dependsOn\": [ \"P10_FULL_STACK\" ] } ], \"dependencyGraph\": [ \"P1_AUDIT -> P2_SHARED_CONTRACTS\", \"P1_AUDIT -> P2_MIGRATION_0074\", \"P1_AUDIT -> P2_UI_FOUNDATION\", \"P2_SHARED_CONTRACTS -> P3_ACTIVE_SESSIONS\", \"P2_MIGRATION_0074 -> P3_ACTIVE_SESSIONS\", \"P2_SHARED_CONTRACTS -> P3_UI_CHAT\", \"P2_UI_FOUNDATION -> P3_UI_CHAT\", \"P2_UI_FOUNDATION -> P3_UI_VISUALIZATION\", \"P2_UI_FOUNDATION -> P3_UI_PUBLISHER\", \"P3_UI_CHAT -> P3_UI_INTEGRATION\", \"P3_UI_VISUALIZATION -> P3_UI_INTEGRATION\", \"P3_UI_PUBLISHER -> P3_UI_INTEGRATION\", \"P2_SHARED_CONTRACTS -> P4_CHAT_BACKEND\", \"P2_MIGRATION_0074 -> P4_CHAT_BACKEND\", \"P3_ACTIVE_SESSIONS -> P4_CHAT_BACKEND\", \"P2_SHARED_CONTRACTS -> P4_SOURCE_BACKEND\", \"P2_MIGRATION_0074 -> P4_SOURCE_BACKEND\", \"P3_ACTIVE_SESSIONS -> P4_SOURCE_BACKEND\", \"P2_SHARED_CONTRACTS -> P4_WORKER_LIFECYCLE\", \"P2_MIGRATION_0074 -> P4_WORKER_LIFECYCLE\", \"P3_ACTIVE_SESSIONS -> P4_WORKER_LIFECYCLE\", \"P4_CHAT_BACKEND -> P4_WORKER_LIFECYCLE\", \"P2_SHARED_CONTRACTS -> P5_RESET_PURGE\", \"P2_MIGRATION_0074 -> P5_RESET_PURGE\", \"P3_ACTIVE_SESSIONS -> P5_RESET_PURGE\", \"P4_CHAT_BACKEND -> P5_RESET_PURGE\", \"P4_SOURCE_BACKEND -> P5_RESET_PURGE\", \"P4_WORKER_LIFECYCLE -> P5_RESET_PURGE\", \"P3_ACTIVE_SESSIONS -> P5_BACKEND_PACKAGE_INTEGRATION\", \"P4_CHAT_BACKEND -> P5_BACKEND_PACKAGE_INTEGRATION\", \"P4_SOURCE_BACKEND -> P5_BACKEND_PACKAGE_INTEGRATION\", \"P5_RESET_PURGE -> P5_BACKEND_PACKAGE_INTEGRATION\", \"P2_SHARED_CONTRACTS -> P5_API_CLIENT\", \"P4_CHAT_BACKEND -> P5_API_CLIENT\", \"P4_SOURCE_BACKEND -> P5_API_CLIENT\", \"P5_RESET_PURGE -> P5_API_CLIENT\", \"P3_ACTIVE_SESSIONS -> P5_API_REGISTRY\", \"P4_CHAT_BACKEND -> P5_API_REGISTRY\", \"P4_SOURCE_BACKEND -> P5_API_REGISTRY\", \"P5_RESET_PURGE -> P5_API_REGISTRY\", \"P5_BACKEND_PACKAGE_INTEGRATION -> P5_API_REGISTRY\", \"P2_SHARED_CONTRACTS -> P6_DEMO_STORAGE\", \"P3_ACTIVE_SESSIONS -> P6_DEMO_STORAGE\", \"P5_RESET_PURGE -> P6_DEMO_STORAGE\", \"P5_API_CLIENT -> P6_DEMO_STORAGE\", \"P3_UI_INTEGRATION -> P6_DEMO_CHAT\", \"P4_CHAT_BACKEND -> P6_DEMO_CHAT\", \"P4_WORKER_LIFECYCLE -> P6_DEMO_CHAT\", \"P5_API_CLIENT -> P6_DEMO_CHAT\", \"P6_DEMO_STORAGE -> P6_DEMO_CHAT\", \"P3_UI_INTEGRATION -> P6_DEMO_ROUTING\", \"P4_SOURCE_BACKEND -> P6_DEMO_ROUTING\", \"P5_API_CLIENT -> P6_DEMO_ROUTING\", \"P6_DEMO_STORAGE -> P6_DEMO_ROUTING\", \"P3_UI_CHAT -> P6_LOCALIZATION\", \"P3_UI_VISUALIZATION -> P6_LOCALIZATION\", \"P3_UI_PUBLISHER -> P6_LOCALIZATION\", \"P6_DEMO_STORAGE -> P6_LOCALIZATION\", \"P6_DEMO_CHAT -> P6_LOCALIZATION\", \"P6_DEMO_ROUTING -> P6_LOCALIZATION\", \"P3_UI_INTEGRATION -> P6_VISUAL_FIXTURES\", \"P3_UI_VISUALIZATION -> P6_VISUAL_FIXTURES\", \"P3_UI_PUBLISHER -> P6_VISUAL_FIXTURES\", \"P6_LOCALIZATION -> P6_VISUAL_FIXTURES\", \"P3_UI_INTEGRATION -> P6_DEMO_SHELL\", \"P5_API_REGISTRY -> P6_DEMO_SHELL\", \"P6_DEMO_STORAGE -> P6_DEMO_SHELL\", \"P6_DEMO_CHAT -> P6_DEMO_SHELL\", \"P6_DEMO_ROUTING -> P6_DEMO_SHELL\", \"P6_LOCALIZATION -> P6_DEMO_SHELL\", \"P5_BACKEND_PACKAGE_INTEGRATION -> P7_CLEANUP\", \"P5_API_CLIENT -> P7_CLEANUP\", \"P5_API_REGISTRY -> P7_CLEANUP\", \"P6_VISUAL_FIXTURES -> P7_CLEANUP\", \"P6_DEMO_SHELL -> P7_CLEANUP\", \"P2_MIGRATION_0074 -> P8_BACKEND_TESTS\", \"P5_RESET_PURGE -> P8_BACKEND_TESTS\", \"P7_CLEANUP -> P8_BACKEND_TESTS\", \"P3_UI_INTEGRATION -> P8_FRONTEND_TESTS\", \"P6_LOCALIZATION -> P8_FRONTEND_TESTS\", \"P6_VISUAL_FIXTURES -> P8_FRONTEND_TESTS\", \"P6_DEMO_SHELL -> P8_FRONTEND_TESTS\", \"P7_CLEANUP -> P8_FRONTEND_TESTS\", \"P2_SHARED_CONTRACTS -> P9_DOCS\", \"P4_WORKER_LIFECYCLE -> P9_DOCS\", \"P5_RESET_PURGE -> P9_DOCS\", \"P6_DEMO_SHELL -> P9_DOCS\", \"P7_CLEANUP -> P9_DOCS\", \"P8_BACKEND_TESTS -> P10_FULL_STACK\", \"P8_FRONTEND_TESTS -> P10_FULL_STACK\", \"P9_DOCS -> P10_FULL_STACK\", \"P10_FULL_STACK -> P11_FINAL_EVIDENCE\" ], \"fileOwnershipRecord\": [ { \"workItemId\": \"P1_AUDIT\", \"files\": [ \"artifacts/implement-ui-playground-demo-cutover/preflight/full-starting-state.json\", \"artifacts/implement-ui-playground-demo-cutover/preflight/plan-identity.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/named-use.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/source-to-target.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/mutation-ownership.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/dependency-inventory.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/database-fk-inventory.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/ui-reference-before.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/migrations-0001-0073-before.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/smithers-before.json\", \"artifacts/implement-ui-playground-demo-cutover/commands/preflight.jsonl\" ] }, { \"workItemId\": \"P2_SHARED_CONTRACTS\", \"files\": [ \"packages/shared/src/api.ts\", \"packages/shared/src/chat.ts\", \"packages/shared/src/content.ts\", \"packages/shared/src/demo-session.ts\", \"packages/shared/src/http-contracts.ts\", \"packages/shared/src/index.ts\", \"packages/shared/src/message-mutations.ts\", \"packages/shared/src/reset.ts\", \"packages/shared/src/run.ts\" ] }, { \"workItemId\": \"P2_MIGRATION_0074\", \"files\": [ \"db/migrations/0074_demo_product_cutover.sql\" ] }, { \"workItemId\": \"P2_UI_FOUNDATION\", \"files\": [ \"packages/ui/src/lib/announce.tsx\", \"packages/ui/src/lib/format.ts\", \"packages/ui/src/lib/utils.ts\", \"packages/ui/src/styles/tokens.css\", \"packages/ui/src/components/navigation/breadcrumbs.tsx\", \"packages/ui/src/components/publications/table-utils.ts\", \"packages/ui/src/components/ui/badge.tsx\", \"packages/ui/src/components/ui/button.tsx\", \"packages/ui/src/components/ui/card.tsx\", \"packages/ui/src/components/ui/combobox.tsx\", \"packages/ui/src/components/ui/command.tsx\", \"packages/ui/src/components/ui/confirming-delete-button.tsx\", \"packages/ui/src/components/ui/controls.tsx\", \"packages/ui/src/components/ui/data-table.tsx\", \"packages/ui/src/components/ui/datepicker.tsx\", \"packages/ui/src/components/ui/dialog.tsx\", \"packages/ui/src/components/ui/file-upload.tsx\", \"packages/ui/src/components/ui/form-field.tsx\", \"packages/ui/src/components/ui/index.ts\", \"packages/ui/src/components/ui/inline-editable-field.tsx\", \"packages/ui/src/components/ui/input.tsx\", \"packages/ui/src/components/ui/label.tsx\", \"packages/ui/src/components/ui/overlays.tsx\", \"packages/ui/src/components/ui/section-header.tsx\", \"packages/ui/src/components/ui/select.tsx\", \"packages/ui/src/components/ui/separator.tsx\", \"packages/ui/src/components/ui/sheet.tsx\", \"packages/ui/src/components/ui/states.tsx\", \"packages/ui/src/components/ui/table.tsx\", \"packages/ui/src/components/ui/tabs.tsx\", \"packages/ui/src/components/ui/textarea.tsx\", \"packages/ui/src/components/ui/toast.tsx\", \"packages/ui/src/components/ui/tooltip.tsx\" ] }, { \"workItemId\": \"P3_ACTIVE_SESSIONS\", \"files\": [ \"packages/backend-domain/src/demo-sessions.ts\", \"apps/api/src/auth.ts\", \"apps/api/src/demo-session.ts\", \"apps/api/src/domain/demo-session.ts\", \"apps/api/src/index.ts\" ] }, { \"workItemId\": \"P3_UI_CHAT\", \"files\": [ \"packages/ui/src/components/chat/authenticated-document.ts\", \"packages/ui/src/components/chat/citation-tags.ts\", \"packages/ui/src/components/chat/citations.tsx\", \"packages/ui/src/components/chat/composer.tsx\", \"packages/ui/src/components/chat/debug-drawer.tsx\", \"packages/ui/src/components/chat/debug-sheet.tsx\", \"packages/ui/src/components/chat/markdown.tsx\", \"packages/ui/src/components/chat/memories-panel.tsx\", \"packages/ui/src/components/chat/memory-provenance.ts\", \"packages/ui/src/components/chat/message.tsx\", \"packages/ui/src/components/chat/run-rail.tsx\", \"packages/ui/src/components/chat/sources-disclosure.tsx\", \"packages/ui/src/components/chat/virtualized-chat-transcript.tsx\", \"packages/ui/src/components/client/client-chat.tsx\", \"packages/ui/src/components/client/source-subscriptions.tsx\", \"packages/ui/src/components/layout/app-shell.tsx\", \"packages/ui/src/components/navigation/command-palette.tsx\", \"packages/ui/src/components/publications/client-feeds-table.tsx\", \"packages/ui/src/components/publications/client-publications-table.tsx\", \"packages/ui/src/components/publications/publication-detail.tsx\", \"packages/ui/src/components/publications/sources-table.tsx\" ] }, { \"workItemId\": \"P3_UI_VISUALIZATION\", \"files\": [ \"packages/ui/src/components/visualization/message-association.tsx\", \"packages/ui/src/components/visualization/sandbox-canvas.tsx\", \"packages/ui/src/components/visualization/states.tsx\", \"packages/ui/src/components/visualization/types.ts\", \"packages/ui/src/components/visualization/version-controls.tsx\", \"packages/ui/src/components/visualization/viz-pane.tsx\" ] }, { \"workItemId\": \"P3_UI_PUBLISHER\", \"files\": [ \"packages/ui/src/components/navigation/notification-bell.tsx\", \"packages/ui/src/components/publications/documents-table.tsx\", \"packages/ui/src/components/publications/publications-table.tsx\", \"packages/ui/src/components/publications/scheduled-publication-icon.tsx\", \"packages/ui/src/components/subscribers/subscribers-table.tsx\", \"packages/ui/src/components/publisher/publisher-issue-wizard.tsx\", \"packages/ui/src/components/publisher/publisher-notifications.tsx\", \"packages/ui/src/components/publisher/publisher-workspace.tsx\" ] }, { \"workItemId\": \"P3_UI_INTEGRATION\", \"files\": [ \"packages/ui/package.json\", \"packages/ui/tsconfig.json\", \"packages/ui/src/index.ts\", \"packages/ui/src/publisher.ts\" ] }, { \"workItemId\": \"P4_CHAT_BACKEND\", \"files\": [ \"packages/backend-domain/src/chat-mutations.ts\", \"packages/backend-domain/src/chat-response.ts\", \"packages/backend-domain/src/chat-runtime.ts\", \"apps/api/src/domain/chat.ts\" ] }, { \"workItemId\": \"P4_SOURCE_BACKEND\", \"files\": [ \"packages/backend-domain/src/public-sources.ts\", \"packages/backend-domain/src/publisher-documents.ts\", \"apps/api/src/domain/public-sources.ts\", \"apps/api/src/domain/publisher-documents.ts\" ] }, { \"workItemId\": \"P4_WORKER_LIFECYCLE\", \"files\": [ \"apps/worker/src/ai/evaluation/pipeline.ts\", \"apps/worker/src/ai/product-state/citations.ts\", \"apps/worker/src/ai/product-state/database.ts\", \"apps/worker/src/ai/product-state/events.ts\", \"apps/worker/src/ai/product-state/finalization.ts\", \"apps/worker/src/ai/product-state/memory.ts\", \"apps/worker/src/ai/product-state/observability.ts\", \"apps/worker/src/ai/product-state/repository.ts\", \"apps/worker/src/ai/product-state/retention.ts\", \"apps/worker/src/ai/product-state/run-control.ts\", \"apps/worker/src/ai/runtime/task-cancellation.ts\", \"apps/worker/src/ai/workflow/ai-chat.tsx\", \"apps/worker/src/ai/workflow/operations.ts\", \"apps/worker/src/ai/workflow/phase-logging.ts\", \"apps/worker/src/ai/workflow/types.ts\" ] }, { \"workItemId\": \"P5_RESET_PURGE\", \"files\": [ \"packages/backend-domain/src/demo-session-reset.ts\", \"packages/backend-domain/src/exports.ts\", \"packages/backend-domain/src/memories.ts\", \"apps/api/src/domain/demo-session-reset.ts\", \"apps/api/src/domain/exports.ts\", \"apps/api/src/domain/memories.ts\", \"apps/worker/src/index.ts\", \"apps/worker/src/jobs/demo-session-purge.ts\", \"apps/worker/src/jobs/failure.ts\", \"apps/worker/src/jobs/handlers.ts\", \"apps/worker/src/jobs/maintenance.ts\", \"apps/worker/src/jobs/repository.ts\", \"apps/worker/src/jobs/runner.ts\", \"apps/worker/src/jobs/sql.ts\", \"apps/worker/src/jobs/types.ts\", \"apps/worker/src/platform/exports.ts\", \"apps/worker/src/platform/jobs.ts\" ] }, { \"workItemId\": \"P5_BACKEND_PACKAGE_INTEGRATION\", \"files\": [ \"packages/backend-domain/package.json\", \"packages/backend-domain/src/index.ts\" ] }, { \"workItemId\": \"P5_API_CLIENT\", \"files\": [ \"packages/api-client/package.json\", \"packages/api-client/src/index.ts\", \"packages/api-client/src/product-client.ts\", \"packages/api-client/src/stream.ts\", \"packages/api-client/src/transport.ts\" ] }, { \"workItemId\": \"P5_API_REGISTRY\", \"files\": [ \"apps/api/src/domain/administrative-audit-matrix.ts\", \"apps/api/src/http.ts\", \"apps/api/src/routes/index.ts\" ] }, { \"workItemId\": \"P6_DEMO_STORAGE\", \"files\": [ \"apps/demo/src/config.ts\", \"apps/demo/src/locale-bootstrap.ts\", \"apps/demo/src/reset-controller.ts\", \"apps/demo/src/session-controller.ts\", \"apps/demo/src/storage-registry.ts\", \"apps/demo/src/stream-registry.ts\", \"apps/demo/src/web-search-preference.ts\" ] }, { \"workItemId\": \"P6_DEMO_CHAT\", \"files\": [ \"apps/demo/src/chat-api.ts\", \"apps/demo/src/chat-controller.ts\", \"apps/demo/src/chat-stream.ts\", \"apps/demo/src/chat-transcript.ts\", \"apps/demo/src/dictation.ts\", \"apps/demo/src/suggestions.ts\" ] }, { \"workItemId\": \"P6_DEMO_ROUTING\", \"files\": [ \"apps/demo/src/market-content.ts\", \"apps/demo/src/publication-controller.ts\", \"apps/demo/src/routing.ts\", \"apps/demo/src/source-controller.ts\" ] }, { \"workItemId\": \"P6_LOCALIZATION\", \"files\": [ \"packages/i18n/src/locales/en-US.json\", \"packages/i18n/src/locales/fr-FR.json\" ] }, { \"workItemId\": \"P6_VISUAL_FIXTURES\", \"files\": [ \"apps/demo/tests/visual-fixtures/index.html\", \"apps/demo/tests/visual-fixtures/tsconfig.json\", \"apps/demo/tests/visual-fixtures/vite.config.ts\", \"apps/demo/tests/visual-fixtures/fixture-catalog.ts\", \"apps/demo/tests/visual-fixtures/fixture-entry.tsx\", \"apps/demo/tests/visual-fixtures/publisher-states.tsx\", \"apps/demo/tests/visual-fixtures/reference-viewports.ts\", \"apps/demo/tests/visual-fixtures/visualization-states.tsx\" ] }, { \"workItemId\": \"P6_DEMO_SHELL\", \"files\": [ \"apps/demo/index.html\", \"apps/demo/package.json\", \"apps/demo/tsconfig.json\", \"apps/demo/tsconfig.node.json\", \"apps/demo/vite.config.ts\", \"apps/demo/src/branded-not-found.tsx\", \"apps/demo/src/client-app.tsx\", \"apps/demo/src/main.tsx\", \"apps/demo/src/styles.css\" ] }, { \"workItemId\": \"P7_CLEANUP\", \"files\": [ \"PRODUCT.md\", \"UI-DEMO-PROMPT.md\", \"package.json\", \"bun.lock\", \"tsconfig.json\", \"tsconfig.base.json\", \"vitest.config.ts\", \"apps/api/src/domain/product-chats.ts\", \"apps/demo/public/demo/pdfs/atlas-energy-2026-05-market.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-17.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-24-annexes.pdf\", \"apps/demo/public/demo/pdfs/atlas-regfin-2026-06-24-note.pdf\", \"apps/demo/src/chat-reset.test.ts\", \"apps/demo/src/chat-reset.ts\", \"apps/demo/src/demo-state.test.ts\", \"apps/demo/src/demo-state.ts\", \"apps/demo/src/docs-document.tsx\", \"apps/worker/src/e2e/public-source-corpus.test.ts\", \"apps/worker/src/e2e/public-source-corpus.ts\", \"apps/web/docs-vite-plugin.test.ts\", \"apps/web/docs-vite-plugin.ts\", \"apps/web/index.html\", \"apps/web/package.json\", \"apps/web/src/auth-config.test.ts\", \"apps/web/src/auth-config.ts\", \"apps/web/src/components/admin/platform-operations-page.tsx\", \"apps/web/src/components/auth/api-auth-bridge.tsx\", \"apps/web/src/components/auth/auth-boundary.tsx\", \"apps/web/src/components/chat/chat-permissions.test.ts\", \"apps/web/src/components/chat/chat-permissions.ts\", \"apps/web/src/components/chat/chat-route-state.test.ts\", \"apps/web/src/components/chat/chat-route-state.ts\", \"apps/web/src/components/chat/chat-workspace-page.test.tsx\", \"apps/web/src/components/chat/chat-workspace-page.tsx\", \"apps/web/src/components/chat/product-chat-page.tsx\", \"apps/web/src/components/chat/product-chat-stream.test.ts\", \"apps/web/src/components/chat/product-chat-stream.ts\", \"apps/web/src/components/client/client-archive-page.test.ts\", \"apps/web/src/components/client/client-archive-page.tsx\", \"apps/web/src/components/client/client-billing-page.tsx\", \"apps/web/src/components/client/client-notifications-page.test.ts\", \"apps/web/src/components/client/client-notifications-page.tsx\", \"apps/web/src/components/client/client-settings-page.tsx\", \"apps/web/src/components/errors/application-error-boundary.tsx\", \"apps/web/src/components/layout/app-shell.tsx\", \"apps/web/src/components/layout/locale-switcher.tsx\", \"apps/web/src/components/layout/workspace-page.tsx\", \"apps/web/src/components/layout/workspace-switcher.tsx\", \"apps/web/src/components/publisher/publisher-issue-page.tsx\", \"apps/web/src/components/publisher/publisher-settings-page.tsx\", \"apps/web/src/components/publisher/publisher-workspace-page.tsx\", \"apps/web/src/components/team/workspace-team-pages.tsx\", \"apps/web/src/lib/api-auth.test.ts\", \"apps/web/src/lib/api-auth.ts\", \"apps/web/src/lib/api.test.ts\", \"apps/web/src/lib/api.ts\", \"apps/web/src/lib/billing-usage.test.ts\", \"apps/web/src/lib/billing-usage.ts\", \"apps/web/src/lib/chat-form.test.ts\", \"apps/web/src/lib/chat-form.ts\", \"apps/web/src/lib/db.test.ts\", \"apps/web/src/lib/db.ts\", \"apps/web/src/lib/form-validation.test.ts\", \"apps/web/src/lib/form-validation.ts\", \"apps/web/src/lib/platform-api.test.ts\", \"apps/web/src/lib/platform-api.ts\", \"apps/web/src/lib/query-client.ts\", \"apps/web/src/lib/workspace-labels.ts\", \"apps/web/src/locale-bootstrap.ts\", \"apps/web/src/main.tsx\", \"apps/web/src/observability.test.ts\", \"apps/web/src/observability.ts\", \"apps/web/src/router.tsx\", \"apps/web/src/styles.css\", \"apps/web/src/vite-env.d.ts\", \"apps/web/tsconfig.json\", \"apps/web/tsconfig.node.json\", \"apps/web/vite.config.ts\", \"packages/api-client/src/platform-client.test.ts\", \"packages/api-client/src/platform-client.ts\", \"packages/backend-domain/src/product-chats.integration.test.ts\", \"packages/backend-domain/src/product-chats.ts\", \"packages/demo-data/package.json\", \"packages/demo-data/src/content.test.ts\", \"packages/demo-data/src/index.ts\", \"packages/demo-data/tsconfig.json\", \"packages/shared/src/platform.ts\", \"packages/workspace/src/common.ts\", \"packages/workspace/src/memberships.ts\", \"tests/e2e/s3-fixture-server.ts\", \"tests/platform-e2e/product-chat.spec.ts\", \"tests/platform-e2e/public-archive.spec.ts\", \"tests/platform-e2e/publisher-pdf.spec.ts\" ] }, { \"workItemId\": \"P8_BACKEND_TESTS\", \"files\": [ \"packages/shared/src/chat.test.ts\", \"packages/shared/src/demo-session.test.ts\", \"packages/shared/src/message-mutations.test.ts\", \"packages/shared/src/platform.test.ts\", \"packages/shared/src/reset.test.ts\", \"packages/shared/src/run.test.ts\", \"packages/backend-domain/src/chat-response.test.ts\", \"packages/backend-domain/src/chat-runtime.integration.test.ts\", \"packages/backend-domain/src/demo-session-reset.integration.test.ts\", \"packages/backend-domain/src/demo-sessions.integration.test.ts\", \"packages/backend-domain/src/message-mutations.integration.test.ts\", \"packages/backend-domain/src/public-sources.integration.test.ts\", \"packages/workspace/src/boundary.test.ts\", \"packages/workspace/src/policies.test.ts\", \"apps/api/src/auth.test.ts\", \"apps/api/src/authorization.integration.test.ts\", \"apps/api/src/demo-session.test.ts\", \"apps/api/src/domain/adapter-boundary.test.ts\", \"apps/api/src/domain/administrative-audit-matrix.test.ts\", \"apps/api/src/domain/http-contracts.test.ts\", \"apps/api/src/domain/path-parameter-policy.test.ts\", \"apps/api/src/http.test.ts\", \"apps/api/src/routes/chat.integration.test.ts\", \"apps/api/src/routes/chat.test.ts\", \"apps/api/src/routes/demo-session-reset.integration.test.ts\", \"apps/api/src/routes/message-mutations.integration.test.ts\", \"apps/api/src/routes/platform.integration.test.ts\", \"apps/api/src/routes/public-sources.test.ts\", \"apps/api/src/routes/run-stop.integration.test.ts\", \"apps/api/src/routes/workspace-platform.integration.test.ts\", \"apps/worker/src/ai/evaluation/pipeline.integration.test.ts\", \"apps/worker/src/ai/evaluation/pipeline.reconciliation.test.ts\", \"apps/worker/src/ai/product-state/citations.test.ts\", \"apps/worker/src/ai/product-state/database.test.ts\", \"apps/worker/src/ai/product-state/product-state.test.ts\", \"apps/worker/src/ai/product-state/run-control.integration.test.ts\", \"apps/worker/src/ai/product-state/run-control.test.ts\", \"apps/worker/src/ai/product-state/source-map.test.ts\", \"apps/worker/src/ai/runtime/task-cancellation.test.ts\", \"apps/worker/src/ai/workflow/ai-chat.test.ts\", \"apps/worker/src/ai/workflow/operations.integration.test.ts\", \"apps/worker/src/ai/workflow/operations.test.ts\", \"apps/worker/src/ai/workflow/phase-logging.test.ts\", \"apps/worker/src/db/demo-product-cutover.integration.test.ts\", \"apps/worker/src/db/migrations.test.ts\", \"apps/worker/src/jobs/demo-session-purge.integration.test.ts\", \"apps/worker/src/jobs/failure.test.ts\", \"apps/worker/src/jobs/handlers.test.ts\", \"apps/worker/src/jobs/maintenance.test.ts\", \"apps/worker/src/jobs/repository.test.ts\", \"apps/worker/src/jobs/runner.test.ts\", \"apps/worker/src/platform/exports-ordering.test.ts\", \"apps/worker/src/platform/jobs.test.ts\", \"apps/worker/src/platform/legal-hold-retention.integration.test.ts\", \"apps/worker/src/platform/platform-services.integration.test.ts\" ] }, { \"workItemId\": \"P8_FRONTEND_TESTS\", \"files\": [ \"packages/api-client/src/product-client.test.ts\", \"packages/api-client/src/stream.test.ts\", \"packages/api-client/src/transport.test.ts\", \"packages/i18n/src/catalogs.test.ts\", \"packages/i18n/src/redirect.test.ts\", \"packages/ui/src/components/chat/authenticated-document.test.ts\", \"packages/ui/src/components/chat/citation-tags.test.ts\", \"packages/ui/src/components/chat/composer.test.tsx\", \"packages/ui/src/components/chat/markdown.test.tsx\", \"packages/ui/src/components/chat/memory-provenance.test.ts\", \"packages/ui/src/components/chat/message.test.tsx\", \"packages/ui/src/components/chat/run-rail.test.tsx\", \"packages/ui/src/components/chat/sources-disclosure.test.tsx\", \"packages/ui/src/components/chat/virtualized-chat-transcript.test.ts\", \"packages/ui/src/components/client/source-subscriptions.test.tsx\", \"packages/ui/src/components/navigation/command-palette.test.tsx\", \"packages/ui/src/components/publications/client-publications-table.test.ts\", \"packages/ui/src/components/publisher/publisher-workspace.test.tsx\", \"packages/ui/src/components/visualization/version-controls.test.tsx\", \"packages/ui/src/components/visualization/viz-pane.test.tsx\", \"apps/demo/docs-vite-plugin.test.ts\", \"apps/demo/src/branded-not-found.test.tsx\", \"apps/demo/src/chat-api.test.ts\", \"apps/demo/src/chat-controller.test.ts\", \"apps/demo/src/chat-stream.test.ts\", \"apps/demo/src/chat-transcript.test.ts\", \"apps/demo/src/client-app.test.tsx\", \"apps/demo/src/config.test.ts\", \"apps/demo/src/dictation.test.ts\", \"apps/demo/src/docs-path.test.ts\", \"apps/demo/src/locale-bootstrap.test.ts\", \"apps/demo/src/market-content.test.ts\", \"apps/demo/src/publication-controller.test.ts\", \"apps/demo/src/reset-controller.test.ts\", \"apps/demo/src/routing.test.ts\", \"apps/demo/src/session-controller.test.ts\", \"apps/demo/src/source-controller.test.ts\", \"apps/demo/src/storage-registry.test.ts\", \"apps/demo/src/stream-registry.test.ts\", \"apps/demo/src/suggestions.test.ts\", \"apps/demo/src/web-search-preference.test.ts\", \"scripts/verify-cutover.ts\", \"scripts/verify-demo-bundle.ts\", \"scripts/verify-localization.ts\", \"scripts/verify-protected-subsets.ts\" ] }, { \"workItemId\": \"P9_DOCS\", \"files\": [ \"docs/ai-chat-runtime.spec.md\", \"docs/data-access.spec.md\", \"docs/design-system.md\", \"docs/design.spec.md\", \"docs/engineering.spec.md\", \"docs/expansion.spec.md\", \"docs/localization.spec.md\", \"docs/public-source-marketplace.research.md\", \"packages/docs/src/html.ts\", \"apps/demo/docs-vite-plugin.ts\" ] }, { \"workItemId\": \"P10_FULL_STACK\", \"files\": [ \"playwright.config.ts\", \"apps/worker/src/e2e/setup-cli.ts\", \"tests/e2e/accessibility.spec.ts\", \"tests/e2e/chat.spec.ts\", \"tests/e2e/db.ts\", \"tests/e2e/docs.spec.ts\", \"tests/e2e/global-setup.ts\", \"tests/e2e/message-mutations.spec.ts\", \"tests/e2e/ports.test.ts\", \"tests/e2e/ports.ts\", \"tests/e2e/public-sources.spec.ts\", \"tests/e2e/routing.spec.ts\", \"tests/e2e/session-reset.spec.ts\", \"tests/e2e/storage.spec.ts\", \"tests/e2e/test-context.ts\", \"tests/e2e/visualization.spec.ts\", \"tests/visual/accessibility.spec.ts\", \"tests/visual/parity.spec.ts\" ] }, { \"workItemId\": \"P11_FINAL_EVIDENCE\", \"files\": [ \"artifacts/implement-ui-playground-demo-cutover/index.json\", \"artifacts/implement-ui-playground-demo-cutover/commands/final.jsonl\", \"artifacts/implement-ui-playground-demo-cutover/manifests/deletions.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/dependencies-final.json\", \"artifacts/implement-ui-playground-demo-cutover/manifests/retention-final.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/ui-reference-after.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/migrations-0001-0073-after.json\", \"artifacts/implement-ui-playground-demo-cutover/retention/smithers-after.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/fresh-migrator.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/upgrade-migrator.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/migration-ledger.json\", \"artifacts/implement-ui-playground-demo-cutover/migrations/fresh-schema.sql\", \"artifacts/implement-ui-playground-demo-cutover/migrations/upgrade-schema.sql\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/stop.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/message-mutations.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/reset-purge.json\", \"artifacts/implement-ui-playground-demo-cutover/lifecycle/source-toggle.json\", \"artifacts/implement-ui-playground-demo-cutover/localization/report.json\", \"artifacts/implement-ui-playground-demo-cutover/routing/report.json\", \"artifacts/implement-ui-playground-demo-cutover/docs/report.json\", \"artifacts/implement-ui-playground-demo-cutover/build/demo-metafile.json\", \"artifacts/implement-ui-playground-demo-cutover/build/dependency-report.json\", \"artifacts/implement-ui-playground-demo-cutover/build/workspace-build.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/test-evidence.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-results.json\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-report.zip\", \"artifacts/implement-ui-playground-demo-cutover/tests/playwright-artifacts.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/tests/server-logs.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/visual/visual-evidence.json\", \"artifacts/implement-ui-playground-demo-cutover/visual/diff-results.json\", \"artifacts/implement-ui-playground-demo-cutover/visual/images.tar.zst\", \"artifacts/implement-ui-playground-demo-cutover/accessibility/report.json\", \"artifacts/implement-ui-playground-demo-cutover/final-state.json\" ] } ], \"parallelBatches\": [ [ \"P1_AUDIT\" ], [ \"P2_SHARED_CONTRACTS\", \"P2_MIGRATION_0074\", \"P2_UI_FOUNDATION\" ], [ \"P3_ACTIVE_SESSIONS\", \"P3_UI_CHAT\", \"P3_UI_VISUALIZATION\", \"P3_UI_PUBLISHER\" ], [ \"P3_UI_INTEGRATION\", \"P4_CHAT_BACKEND\", \"P4_SOURCE_BACKEND\" ], [ \"P4_WORKER_LIFECYCLE\" ], [ \"P5_RESET_PURGE\" ], [ \"P5_BACKEND_PACKAGE_INTEGRATION\", \"P5_API_CLIENT\" ], [ \"P5_API_REGISTRY\" ], [ \"P6_DEMO_STORAGE\" ], [ \"P6_DEMO_CHAT\", \"P6_DEMO_ROUTING\" ], [ \"P6_LOCALIZATION\" ], [ \"P6_VISUAL_FIXTURES\", \"P6_DEMO_SHELL\" ], [ \"P7_CLEANUP\" ], [ \"P8_BACKEND_TESTS\", \"P8_FRONTEND_TESTS\", \"P9_DOCS\" ], [ \"P10_FULL_STACK\" ], [ \"P11_FINAL_EVIDENCE\" ] ], \"sequentialEdges\": [ \"P1_AUDIT -> P2_SHARED_CONTRACTS\", \"P1_AUDIT -> P2_MIGRATION_0074\", \"P1_AUDIT -> P2_UI_FOUNDATION\", \"P2_SHARED_CONTRACTS -> P3_ACTIVE_SESSIONS\", \"P2_MIGRATION_0074 -> P3_ACTIVE_SESSIONS\", \"P2_UI_FOUNDATION -> P3_UI_CHAT\", \"P2_UI_FOUNDATION -> P3_UI_VISUALIZATION\", \"P2_UI_FOUNDATION -> P3_UI_PUBLISHER\", \"P3_UI_CHAT -> P3_UI_INTEGRATION\", \"P3_UI_VISUALIZATION -> P3_UI_INTEGRATION\", \"P3_UI_PUBLISHER -> P3_UI_INTEGRATION\", \"P3_ACTIVE_SESSIONS -> P4_CHAT_BACKEND\", \"P3_ACTIVE_SESSIONS -> P4_SOURCE_BACKEND\", \"P4_CHAT_BACKEND -> P4_WORKER_LIFECYCLE\", \"P4_CHAT_BACKEND -> P5_RESET_PURGE\", \"P4_SOURCE_BACKEND -> P5_RESET_PURGE\", \"P4_WORKER_LIFECYCLE -> P5_RESET_PURGE\", \"P5_RESET_PURGE -> P5_BACKEND_PACKAGE_INTEGRATION\", \"P5_RESET_PURGE -> P5_API_CLIENT\", \"P5_BACKEND_PACKAGE_INTEGRATION -> P5_API_REGISTRY\", \"P5_API_CLIENT -> P6_DEMO_STORAGE\", \"P5_API_REGISTRY -> P6_DEMO_SHELL\", \"P6_DEMO_STORAGE -> P6_DEMO_CHAT\", \"P6_DEMO_STORAGE -> P6_DEMO_ROUTING\", \"P6_DEMO_CHAT -> P6_LOCALIZATION\", \"P6_DEMO_ROUTING -> P6_LOCALIZATION\", \"P6_LOCALIZATION -> P6_VISUAL_FIXTURES\", \"P6_LOCALIZATION -> P6_DEMO_SHELL\", \"P6_VISUAL_FIXTURES -> P7_CLEANUP\", \"P6_DEMO_SHELL -> P7_CLEANUP\", \"P7_CLEANUP -> P8_BACKEND_TESTS\", \"P7_CLEANUP -> P8_FRONTEND_TESTS\", \"P7_CLEANUP -> P9_DOCS\", \"P8_BACKEND_TESTS -> P10_FULL_STACK\", \"P8_FRONTEND_TESTS -> P10_FULL_STACK\", \"P9_DOCS -> P10_FULL_STACK\", \"P10_FULL_STACK -> P11_FINAL_EVIDENCE\" ] }"
+    - generic [ref=e1535] [box=18,50251,981,553]:
+      - heading "External blockers and preflight" [level=2] [ref=e1537] [box=33,50266,194,18]
+      - generic [ref=e1538] [box=33,50293,951,495]:
+        - generic [ref=e1539] [box=33,50293,951,22]: Passed
+        - table [ref=e1542] [box=33,50323,1407,251]:
+          - rowgroup [ref=e1543] [box=33,50323,1407,33]:
+            - row [ref=e1544] [box=33,50323,1407,33]:
+              - columnheader "summary" [ref=e1545] [box=33,50323,114,33]
+              - columnheader "ready" [ref=e1546] [box=147,50323,60,33]
+              - columnheader "externalBlockers" [ref=e1547] [box=207,50323,147,33]
+              - columnheader "requiredCommands" [ref=e1548] [box=354,50323,216,33]
+              - columnheader "credentialsFound" [ref=e1549] [box=570,50323,544,33]
+              - columnheader "servicePlan" [ref=e1550] [box=1114,50323,325,33]
+          - rowgroup [ref=e1551] [box=33,50356,1407,217]:
+            - row [ref=e2409] [box=33,50356,1407,217]:
+              - cell [ref=e2410] [box=33,50356,114,217]:
+                - code [ref=e2411] [box=43,50367,94,135]: Preflight has all required commands, credentials, services, and paths.
+              - cell [ref=e2412] [box=147,50356,60,217]:
+                - code [ref=e2413] [box=157,50367,31,15]: "true"
+              - cell [ref=e2414] [box=207,50356,147,217]:
+                - code [ref=e2415] [box=217,50367,16,15]: "[]"
+              - cell [ref=e2416] [box=354,50356,216,217]:
+                - code [ref=e2417] [box=364,50367,196,15]: "[\"git\",\"bun\",\"bunx\",\"rg\"]"
+              - cell [ref=e2418] [box=570,50356,544,217]:
+                - code [ref=e2419] [box=580,50367,524,15]: "[\"ZAI_API_KEY\",\"HARTLIB_E2E_LIVE_PROVIDER=1\",\"HARTLIB_E2E_STACK=1\"]"
+              - cell [ref=e2420] [box=1114,50356,325,217]:
+                - code [ref=e2421] [box=1124,50367,305,195]: "[\"reserve isolated ports\",\"start repository Postgres through docker compose when required\",\"run API, worker, and demo services for live Playwright\",\"persist logs and screenshots under artifacts/implement-ui-playground-demo-cutover\",\"evidence:artifacts/implement-ui-playground-demo-cutover/preflight/preflight.json\"]"
+        - generic [ref=e1554] [box=33,50603,951,186]:
+          - generic [ref=e1555] [box=33,50603,951,88]:
+            - generic [ref=e1556] [box=46,50616,925,36]:
+              - generic "Pending" [ref=e1557] [box=46,50625,18,18]: ○
+              - generic [ref=e1558] [box=72,50616,148,36]:
+                - generic [ref=e1559] [box=72,50616,148,20]: Preflight blocked result
+                - generic [ref=e1560] [box=72,50635,148,17]: Pending
+            - generic [ref=e1561] [box=46,50660,925,18]: Output is not available yet.
+          - generic [ref=e1562] [box=33,50699,951,90]:
+            - generic [ref=e1563] [box=46,50712,925,36]:
+              - generic "Failed" [ref=e2423] [box=46,50721,18,18]: ✕
+              - generic [ref=e1565] [box=72,50712,166,36]:
+                - generic [ref=e1566] [box=72,50712,166,20]: Verification blocked result
+                - generic [ref=e1567] [box=72,50731,166,17]: Failed
+            - generic [ref=e1568] [box=46,50756,925,20]: "Node not found: emit_verification_blocked_result"
+    - generic [ref=e1569] [box=18,50815,981,295]:
+      - heading "Sole final parity approval" [level=2] [ref=e1571] [box=33,50830,157,18]
+      - generic [ref=e1572] [box=33,50858,951,237]:
+        - generic [ref=e2424] [box=33,50858,951,20]: No approvals waiting.
+        - generic [ref=e1573] [box=33,50885,951,88]:
+          - generic [ref=e1574] [box=46,50898,925,36]:
+            - generic "Pending" [ref=e1575] [box=46,50907,18,18]: ○
+            - generic [ref=e1576] [box=72,50898,105,36]:
+              - generic [ref=e1577] [box=72,50898,105,20]: Readiness result
+              - generic [ref=e1578] [box=72,50918,105,17]: Pending
+          - generic [ref=e1579] [box=46,50942,925,18]: Output is not available yet.
+        - generic [ref=e1580] [box=33,50981,951,90]:
+          - generic [ref=e1581] [box=46,50994,925,36]:
+            - generic "Failed" [ref=e2427] [box=46,51003,18,18]: ✕
+            - generic [ref=e1583] [box=72,50994,96,36]:
+              - generic [ref=e1584] [box=72,50994,96,20]: Approval result
+              - generic [ref=e1585] [box=72,51014,96,17]: Failed
+          - generic [ref=e1586] [box=46,51038,925,20]: "Node not found: emit_approval_denied_result"
+        - generic [ref=e1587] [box=33,51079,951,16]: Approval remains closed until final readiness reports all automated checks, no skips or warnings, clean review, retained byte parity, and zero actionable work.

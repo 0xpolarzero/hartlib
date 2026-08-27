@@ -1,0 +1,18 @@
+# Integrate one reviewed wave
+
+Use the merge queue to integrate only the reviewed wave. Preserve unrelated
+starting changes and every retained `ui-playground/` byte. Resolve conflicts
+only inside the wave's ownership and record the exact integrated and deleted
+paths. Do not use a compatibility bridge, temporary alias, mock, or best-effort
+resolution. Leave a reproducible integration artifact for the next checkpoint.
+
+Assignment:
+
+{JSON.stringify(props.assignment, null, 2)}
+
+Review:
+
+{JSON.stringify(props.review, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

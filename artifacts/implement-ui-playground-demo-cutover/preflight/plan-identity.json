@@ -1,0 +1,508 @@
+{
+  "schemaVersion": "1.0.0",
+  "waveId": "W0_AUDIT",
+  "workItemId": "P1_AUDIT",
+  "capturedAt": "2026-08-27T00:41:28.383Z",
+  "repositoryPath": "/Users/polarzero/code/projects/brief",
+  "kind": "plan-identity",
+  "plan": {
+    "path": "artifacts/ui-playground-demo-implementation-plan.html",
+    "lineCount": 438,
+    "physicalLineCountIncludingTrailingNewline": 439,
+    "byteLength": 77040,
+    "contentHash": "a1c3963a23de2f42209d7baea79c46c479ceea831eb49d59b5d680f4a573b9d1",
+    "fixed": true
+  },
+  "authorityOrder": [
+    "frozen cutover contract in baseline/frozen-manifest.json",
+    "settled decisions in artifacts/ui-playground-demo-implementation-plan.html",
+    "canonical docs after P9 sync",
+    "current code and older reports as historical evidence"
+  ],
+  "canonicalInputs": [
+    {
+      "path": "docs/design.spec.md",
+      "entryType": "file",
+      "byteLength": 43790,
+      "contentHash": "06b8d43ae4f7b92144a52d0391f333792c014e8c056746804cf85cda1cb1b363",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/design-system.md",
+      "entryType": "file",
+      "byteLength": 21838,
+      "contentHash": "e65125d3d92f232a7bc309abbe239f9845b0f639555a33e71cd462d2cee6c906",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/engineering.spec.md",
+      "entryType": "file",
+      "byteLength": 88645,
+      "contentHash": "7e75863f72aabb3ee53a60d4c804abc66dd348cfa3de3496233ccf80a8fec3e5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/ai-chat-runtime.spec.md",
+      "entryType": "file",
+      "byteLength": 213957,
+      "contentHash": "4bd70b502781234c4892bdf5154fed91116fedc4965c39295361a7bdd2a7c9d5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/data-access.spec.md",
+      "entryType": "file",
+      "byteLength": 45826,
+      "contentHash": "ef0d202e0297f9d6651712b8b320ddbd590236e63fa1c83d9b6a3a4cce40fa08",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/localization.spec.md",
+      "entryType": "file",
+      "byteLength": 5964,
+      "contentHash": "b4a1c1e79d27a5b153e69fedf2bbfea7fcbdd02ce99cc79f7d84e19f5c89b1b5",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/expansion.spec.md",
+      "entryType": "file",
+      "byteLength": 2207,
+      "contentHash": "492ed2298f1660f20d0719d084077f251b3947fb93fef17f7437c61f2ca9c545",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/public-source-marketplace.research.md",
+      "entryType": "file",
+      "byteLength": 19767,
+      "contentHash": "f6d24ec21693a9dc974b39b670524c8070b1116589768afe7e17a0597ec15f64",
+      "symlinkTarget": ""
+    }
+  ],
+  "instructionInputs": [
+    {
+      "path": "AGENTS.md",
+      "entryType": "file",
+      "byteLength": 4333,
+      "contentHash": "16edd04046dd86a9e03a7cf6d45a4e3d2f0f8aeef173f35232cf016db1f86729",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/references/effect-smol/AGENTS.md",
+      "entryType": "file",
+      "byteLength": 6270,
+      "contentHash": "c81eda188408ccdde0d12fb7a26d93cbedb2b9212fc348694746ee1bbb128e43",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/references/effect-smol/.patterns/effect.md",
+      "entryType": "file",
+      "byteLength": 2433,
+      "contentHash": "2bf36d3087c911c9d831e3b1cd0c00b888687b1b1d0174050e535442d414352f",
+      "symlinkTarget": ""
+    },
+    {
+      "path": "docs/references/effect-smol/.patterns/testing.md",
+      "entryType": "file",
+      "byteLength": 1013,
+      "contentHash": "4afe85c48326e2e27f07b9b2c453619bba9ffe183131e86505193b8d9b9438d3",
+      "symlinkTarget": ""
+    }
+  ],
+  "effectReference": {
+    "root": "docs/references/effect-smol",
+    "fileCount": 2061,
+    "filesSample": [
+      "docs/references/effect-smol/pnpm-lock.yaml",
+      "docs/references/effect-smol/LLMS.md",
+      "docs/references/effect-smol/docker-compose.yaml",
+      "docs/references/effect-smol/tsconfig.packages.json",
+      "docs/references/effect-smol/.envrc",
+      "docs/references/effect-smol/flake.lock",
+      "docs/references/effect-smol/jsdocs.config.json",
+      "docs/references/effect-smol/LICENSE",
+      "docs/references/effect-smol/tsconfig.base.json",
+      "docs/references/effect-smol/.changeset/fix-ai-text-toolkit-typing.md",
+      "docs/references/effect-smol/.changeset/shy-cycles-flow.md",
+      "docs/references/effect-smol/.changeset/eff-704-stream-merge-predicate.md",
+      "docs/references/effect-smol/.changeset/fix-openapi-generator-swagger2openapi.md",
+      "docs/references/effect-smol/.changeset/lazy-queens-rush.md",
+      "docs/references/effect-smol/.changeset/early-donuts-argue.md",
+      "docs/references/effect-smol/.changeset/eff-701-httpapierror-respondable.md",
+      "docs/references/effect-smol/.changeset/gold-readers-hug.md",
+      "docs/references/effect-smol/.changeset/tiny-rabbits-smile.md",
+      "docs/references/effect-smol/.changeset/graph-algorithm-fixes.md",
+      "docs/references/effect-smol/.changeset/fresh-monkeys-smoke.md"
+    ],
+    "requiredPatterns": [
+      "Effect.fnUntraced",
+      "Context.Service classes",
+      "return yield* terminal effects",
+      "TestClock",
+      "no JavaScript try/catch around yielded effects"
+    ]
+  },
+  "frozenContract": {
+    "path": "artifacts/implement-ui-playground-demo-cutover/baseline/frozen-manifest.json",
+    "entryType": "file",
+    "byteLength": 117242,
+    "contentHash": "0bb4952280b549a966520cd43e9915568676600a60c46ac6de41b16dcce347bc",
+    "symlinkTarget": ""
+  },
+  "ownershipBaseline": {
+    "path": "artifacts/implement-ui-playground-demo-cutover/baseline/ownership.json",
+    "entryType": "file",
+    "byteLength": 25368,
+    "contentHash": "65b134bc03feee7dc2eeb1d2bfcde1f88f9a9c3da6a36c7a3a1c2d9a7fa18a55",
+    "symlinkTarget": ""
+  },
+  "auditScope": {
+    "workItemId": "P1_AUDIT",
+    "assignedFileCount": 11,
+    "assignedFiles": [
+      "artifacts/implement-ui-playground-demo-cutover/preflight/full-starting-state.json",
+      "artifacts/implement-ui-playground-demo-cutover/preflight/plan-identity.json",
+      "artifacts/implement-ui-playground-demo-cutover/manifests/named-use.json",
+      "artifacts/implement-ui-playground-demo-cutover/manifests/source-to-target.json",
+      "artifacts/implement-ui-playground-demo-cutover/manifests/mutation-ownership.json",
+      "artifacts/implement-ui-playground-demo-cutover/manifests/dependency-inventory.json",
+      "artifacts/implement-ui-playground-demo-cutover/manifests/database-fk-inventory.json",
+      "artifacts/implement-ui-playground-demo-cutover/retention/ui-reference-before.json",
+      "artifacts/implement-ui-playground-demo-cutover/retention/migrations-0001-0073-before.json",
+      "artifacts/implement-ui-playground-demo-cutover/retention/smithers-before.json",
+      "artifacts/implement-ui-playground-demo-cutover/commands/preflight.jsonl"
+    ],
+    "implementationAttempted": false
+  },
+  "findings": [
+    {
+      "id": "F-001",
+      "area": "chat",
+      "current": "multi-chat, explicit IDs, archive/reset product routes remain",
+      "required": "singular /v1/chat contract with internal-only chat UUID",
+      "contractIds": [
+        "CHAT-001",
+        "CHAT-002",
+        "DEL-001"
+      ]
+    },
+    {
+      "id": "F-002",
+      "area": "lifecycle",
+      "current": "no durable Stop route or stopped terminal state",
+      "required": "durable stop intent, CAS, stopped SSE/debug projection",
+      "contractIds": [
+        "STOP-001",
+        "STOP-004",
+        "STOP-005"
+      ]
+    },
+    {
+      "id": "F-003",
+      "area": "sessions",
+      "current": "cookie-safe slug authenticates without active DB session",
+      "required": "opaque DB-backed active/revoked sessions",
+      "contractIds": [
+        "SESSION-001",
+        "SESSION-002"
+      ]
+    },
+    {
+      "id": "F-004",
+      "area": "reset",
+      "current": "archive-and-replace reset and ad-hoc storage clearing",
+      "required": "operationId successor/revocation/uncapped purge/reload",
+      "contractIds": [
+        "RESET-001",
+        "RESET-007"
+      ]
+    },
+    {
+      "id": "F-005",
+      "area": "routing",
+      "current": "unknown/publisher/gallery paths normalize to client",
+      "required": "client allowlist plus branded 404",
+      "contractIds": [
+        "ROUTE-001",
+        "ROUTE-002"
+      ]
+    },
+    {
+      "id": "F-006",
+      "area": "references",
+      "current": "tracked 69-file reference is clean; baseline manifest has 12406 entries",
+      "required": "protect exact tracked authored set only",
+      "contractIds": [
+        "RET-001",
+        "RET-002",
+        "GATE-003"
+      ]
+    },
+    {
+      "id": "F-007",
+      "area": "verification",
+      "current": "pre-cutover baseline lacks complete P1 manifests",
+      "required": "this artifact set supplies measured evidence",
+      "contractIds": [
+        "GATE-001",
+        "EVIDENCE-004",
+        "EVIDENCE-005"
+      ]
+    }
+  ],
+  "contradictions": [
+    [
+      "C-001",
+      "The fixed plan's /docs endpoint detail conflicts with deletion of every stale /v1/chats claim; RESOLUTION-001 keeps the route/style but requires cutover content.",
+      [
+        "RESOLUTION-001",
+        "D18",
+        "C2"
+      ]
+    ],
+    [
+      "C-002",
+      "The plan requires a singular chat while current routes, shared schemas, API client, backend domain, web callers, tests, and migrations still support multiple chats.",
+      [
+        "CHAT-001",
+        "CHAT-002",
+        "DEL-001",
+        "DEL-005",
+        "DEL-006"
+      ]
+    ],
+    [
+      "C-003",
+      "Durable Stop is required, but current code has no stop route, stop intent, stopped status, or durable stopped SSE/debug replay.",
+      [
+        "STOP-001",
+        "STOP-004",
+        "STOP-005"
+      ]
+    ],
+    [
+      "C-004",
+      "Message delete and last-question edit are required, but current code has no public mutation routes, revision schema, or supersession fence.",
+      [
+        "MESSAGE-001",
+        "MESSAGE-003",
+        "MESSAGE-005"
+      ]
+    ],
+    [
+      "C-005",
+      "Replay-safe reset is required, but current reset archives/replaces chat, clears selected browser state, and does not revoke or purge a database identity.",
+      [
+        "RESET-001",
+        "RESET-002",
+        "RESET-005",
+        "RESET-007",
+        "DEL-011"
+      ]
+    ],
+    [
+      "C-006",
+      "Active database sessions are required, but current demo auth accepts a cookie-safe slug without an active database row.",
+      [
+        "SESSION-001",
+        "SESSION-002",
+        "DEL-020"
+      ]
+    ],
+    [
+      "C-007",
+      "Publisher composition must be dormant and fixtures must be static, while current docs/routes/builders/demo-data/PDFs expose publisher behavior.",
+      [
+        "UI-002",
+        "ROUTE-002",
+        "DEL-009",
+        "DEL-010",
+        "DEL-012"
+      ]
+    ],
+    [
+      "C-008",
+      "Full visualization presentation with empty live input is required, while current demo visualization is incomplete and future-only.",
+      [
+        "UI-003",
+        "DEP-009",
+        "GATE-025"
+      ]
+    ],
+    [
+      "C-009",
+      "Disabled authorized sources must remain visible, while current market projection removes subscribed:false rows.",
+      [
+        "SOURCE-001",
+        "DEL-017"
+      ]
+    ],
+    [
+      "C-010",
+      "Branded not-found is required, while current routing normalizes malformed, publisher, and gallery paths to the client.",
+      [
+        "ROUTE-001",
+        "DEL-012",
+        "DEL-013"
+      ]
+    ],
+    [
+      "C-011",
+      "Reference hex tokens and 2px radius must be sole defaults, while packages/ui and docs still contain the old OKLCH/0.5px defaults.",
+      [
+        "DESIGN-001",
+        "DEL-016"
+      ]
+    ],
+    [
+      "C-012",
+      "Canonical citations must reject legacy forms, while shared decoding still includes LegacyCitationRecord.",
+      [
+        "CITATION-001",
+        "DEL-015"
+      ]
+    ],
+    [
+      "C-013",
+      "Current tests prove old product behavior and lack Stop, message mutation, reset purge, dormant fixture, and empty visualization gates.",
+      [
+        "GATE-010",
+        "GATE-011",
+        "GATE-013",
+        "GATE-025"
+      ]
+    ],
+    [
+      "C-014",
+      "The generated ui-playground baseline includes ignored/generated entries beyond the 69 authored files, so the tracked subset must be the retention domain.",
+      [
+        "RET-001",
+        "RET-002",
+        "GATE-003"
+      ]
+    ],
+    [
+      "C-015",
+      "The existing workflow's final retention comparison and hard-coded zero-actionable result cannot prove this unimplemented cutover.",
+      [
+        "EVIDENCE-008",
+        "EVIDENCE-022",
+        "EVIDENCE-023"
+      ]
+    ],
+    [
+      "C-016",
+      "The existing workflow's migration text scan, duplicate test command, parallel ports, and empty final evidence arrays cannot satisfy the frozen gates.",
+      [
+        "GATE-005",
+        "GATE-022",
+        "GATE-031",
+        "EVIDENCE-021"
+      ]
+    ]
+  ],
+  "settledOverrides": [
+    [
+      "O-001",
+      "Frozen contract outranks plan, canonical docs, current code, and historical reports.",
+      [
+        "AUTHORITY-001"
+      ]
+    ],
+    [
+      "O-002",
+      "Keep /docs route, standalone styling, English lang, deny-by-default CSP, and font grants; rewrite stale cutover claims under RESOLUTION-001.",
+      [
+        "RESOLUTION-001",
+        "DEP-015"
+      ]
+    ],
+    [
+      "O-003",
+      "Keep ui-playground byte-for-byte as a permanent reference but never import, copy, read, alias, or bundle it.",
+      [
+        "RET-001",
+        "RET-002",
+        "DEP-001",
+        "DEP-002"
+      ]
+    ],
+    [
+      "O-004",
+      "packages/ui owns shipped UI; apps/demo owns routes, controllers, fetch/SSE, locale state, commands, and storage.",
+      [
+        "UI-001",
+        "DEP-004",
+        "DEP-005"
+      ]
+    ],
+    [
+      "O-005",
+      "Port complete publisher and visualization compositions only to dormant/direct fixtures; live visualization receives zero versions and makes no request.",
+      [
+        "UI-002",
+        "UI-003",
+        "UI-004",
+        "DEP-009",
+        "DEP-010"
+      ]
+    ],
+    [
+      "O-006",
+      "Use one internal chat UUID only for joins/locks/runs/purge; remove every public collection and explicit-chat capability.",
+      [
+        "CHAT-001",
+        "CHAT-002",
+        "DEL-001",
+        "DEL-005",
+        "DEL-006"
+      ]
+    ],
+    [
+      "O-007",
+      "Add exactly one immutable 0074 cutover migration; leave 0001-0073 unchanged and add no alias, repair, compatibility, or legacy decoder.",
+      [
+        "MIG-001",
+        "MIG-003",
+        "MIG-011",
+        "MIG-018",
+        "DEL-023"
+      ]
+    ],
+    [
+      "O-008",
+      "Reset is a confirmed command-palette action with UUID operationId, successor session, immediate revocation, durable 202 replay, fenced writes, hard reload, and uncapped purge.",
+      [
+        "RESET-001",
+        "RESET-004",
+        "RESET-005",
+        "RESET-006",
+        "RESET-007"
+      ]
+    ],
+    [
+      "O-009",
+      "No regenerate or attachments; keep dictation, success-only suggestions, web preference default true, real sources, and disabled rows.",
+      [
+        "FEATURE-001",
+        "FEATURE-002",
+        "FEATURE-003",
+        "WEB-001",
+        "SOURCE-001",
+        "SOURCE-003"
+      ]
+    ]
+  ],
+  "contractRevisions": [],
+  "repair": {
+    "status": "complete",
+    "findingIds": [
+      "CF-001",
+      "CF-002",
+      "CF-003",
+      "CF-004",
+      "CF-005",
+      "CF-006"
+    ],
+    "completedAt": "2026-08-27T09:28:52.948Z",
+    "changedAssignedArtifactsOnly": true
+  }
+}

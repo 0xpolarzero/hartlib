@@ -1,0 +1,16 @@
+# Review canonical documentation sync
+
+Read every affected canonical document and compare it with the settled plan,
+current implementation, deletion map, retention proof, and real commands.
+Reject stale capability claims, history-only text, missing interfaces, and
+commands that do not exercise the repository. Do not edit files; list precise
+document findings and the required fix.
+
+Docs sync:
+
+{JSON.stringify(props.docsSync, null, 2)}
+
+Plan: `{props.planPath}`
+
+REQUIRED OUTPUT:
+{props.schema}
