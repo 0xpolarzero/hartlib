@@ -827,7 +827,7 @@ const runChecked: DevelopmentSetupCommandRunner = async (
 export const developmentChildren = (): readonly DevelopmentChild[] => [
   { label: "API", command: [process.execPath, "run", "dev:api"] },
   { label: "worker", command: [process.execPath, "run", "dev:worker"] },
-  { label: "demo", command: [process.execPath, "--filter", "@hartlib/demo", "dev"] },
+  { label: "demo", command: [process.execPath, "--filter", "@hartlib/web", "dev"] },
 ];
 
 export const runDevelopmentChildren = async (
@@ -976,7 +976,7 @@ if (import.meta.main) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[dev] ${message}`);
-    console.error("[dev] Fix the reported setup problem, then run bun run dev:demo again.");
+    console.error("[dev] Fix the reported setup problem, then run bun run dev:web again.");
     process.exitCode = developmentFailureExitCode(error);
   }
 }

@@ -12,7 +12,7 @@
     { "path": "./packages/shared" },
     { "path": "./packages/ui" },
     { "path": "./apps/api" },
-    { "path": "./apps/demo" },
+    { "path": "./apps/web" },
     { "path": "./apps/worker" }
   ]
 }

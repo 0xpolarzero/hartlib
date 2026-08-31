@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev.ts",
-    "dev:demo": "bun scripts/dev.ts",
+    "dev:web": "bun scripts/dev.ts",
     "dev:api": "bun --filter @hartlib/api dev",
     "dev:worker": "bun --filter @hartlib/worker dev",
     "build": "bun run --filter '*' build",

@@ -15,8 +15,8 @@ test.beforeAll(async () => {
     stdin: {
       contents: `
         import { createRoot } from "react-dom/client";
-        import { PublisherFixture } from "./apps/demo/src/fixtures/publisher.fixture.tsx";
-        import { VisualizationFixture } from "./apps/demo/src/fixtures/visualization.fixture.tsx";
+        import { PublisherFixture } from "./apps/web/src/fixtures/publisher.fixture.tsx";
+        import { VisualizationFixture } from "./apps/web/src/fixtures/visualization.fixture.tsx";
         const events = [];
         window.__hartlibFixtureEvents = events;
         const record = (event) => events.push(event);

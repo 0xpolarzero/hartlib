@@ -37,7 +37,7 @@ cp .env.example .env
 Set `ZAI_API_KEY` in `.env`, then run:
 
 ```sh
-bun run dev:demo
+bun run dev:web
 ```
 
 Open [http://localhost:5173](http://localhost:5173). Check the API at [http://localhost:3000/health](http://localhost:3000/health).

@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { e2ePortsFromBase, parseE2ePortBase } from "./ports";
 
 const repoRoot = new URL("../../", import.meta.url).pathname;
-const demoRoot = new URL("../../apps/demo/", import.meta.url).pathname;
+const demoRoot = new URL("../../apps/web/", import.meta.url).pathname;
 const databaseUrl =
   process.env.HARTLIB_E2E_DATABASE_URL ?? "postgres://hartlib:hartlib@localhost:5432/hartlib_e2e";
 const {

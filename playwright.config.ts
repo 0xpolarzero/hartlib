@@ -47,7 +47,7 @@ export default defineConfig({
     ? {}
     : {
         webServer: {
-          command: "bun run dev:demo",
+          command: "bun run dev:web",
           url: "http://localhost:5173",
           reuseExistingServer: true,
         },

@@ -3,11 +3,11 @@ import { createElement } from "react";
 import { readdirSync, readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
-import { PublisherFixture } from "../../apps/demo/src/fixtures/publisher.fixture";
-import { VisualizationFixture } from "../../apps/demo/src/fixtures/visualization.fixture";
+import { PublisherFixture } from "../../apps/web/src/fixtures/publisher.fixture";
+import { VisualizationFixture } from "../../apps/web/src/fixtures/visualization.fixture";
 
 const RESPONSIVE_WIDTHS = [320, 390, 1024, 1535, 1536, 1920] as const;
-const demoAssetDir = new URL("../../apps/demo/dist/assets/", import.meta.url);
+const demoAssetDir = new URL("../../apps/web/dist/assets/", import.meta.url);
 const demoStylesheet = readdirSync(demoAssetDir).find((name) => /^index-.*\.css$/u.test(name));
 if (demoStylesheet === undefined) {
   throw new Error("fixture visual checks require the production demo build first");

@@ -41,8 +41,8 @@
         "vitest": "4.1.9",
       },
     },
-    "apps/demo": {
-      "name": "@hartlib/demo",
+    "apps/web": {
+      "name": "@hartlib/web",
       "dependencies": {
         "@hartlib/api-client": "workspace:*",
         "@hartlib/config": "workspace:*",
@@ -549,7 +549,7 @@
 
     "@hartlib/database": ["@hartlib/database@workspace:packages/database"],
 
-    "@hartlib/demo": ["@hartlib/demo@workspace:apps/demo"],
+    "@hartlib/web": ["@hartlib/web@workspace:apps/web"],
 
     "@hartlib/docs": ["@hartlib/docs@workspace:packages/docs"],
 

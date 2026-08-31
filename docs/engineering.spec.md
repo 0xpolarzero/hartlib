@@ -22,7 +22,7 @@ copied, built, or used as a dependency.
 
 ## Local development startup
 
-`bun run dev` and `bun run dev:demo` use the same `scripts/dev.ts` process. Local
+`bun run dev` and `bun run dev:web` use the same `scripts/dev.ts` process. Local
 development orchestration supports macOS and Linux only; it rejects Windows and
 other platforms before starting any subprocess. The process starts the Compose
 PostgreSQL service and waits for its health check against the always-present
@@ -102,7 +102,7 @@ package is reintroduced as a compatibility layer.
 
 ## Applications
 
-`apps/demo` owns routes, locale and market selection, API calls, cookies,
+`apps/web` owns routes, locale and market selection, API calls, cookies,
 controllers, browser storage, stream lifecycle, reset recovery, and live
 composition. It passes empty data and no write callbacks to dormant publisher
 and visualization composition. `apps/api` authenticates the active demo

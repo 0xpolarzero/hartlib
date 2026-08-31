@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "@": new URL("./apps/demo/src", import.meta.url).pathname,
+      "@": new URL("./apps/web/src", import.meta.url).pathname,
     },
   },
   test: {
