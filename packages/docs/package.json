@@ -9,6 +9,9 @@
     "build": "tsc -b --noEmit",
     "test": "vitest run --passWithNoTests"
   },
+  "dependencies": {
+    "@hartlib/ui": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "6.0.3",
     "vitest": "4.1.9"

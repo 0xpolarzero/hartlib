@@ -9,17 +9,15 @@ describe("E2E port block", () => {
     expect(e2ePortsFromBase(E2E_PORT_BASE_DEFAULT)).toEqual({
       api: 43_110,
       demo: 43_111,
-      web: 43_112,
-      objectStore: 43_113,
+      objectStore: 43_112,
     });
   });
 
-  it("maps an isolated override to four consecutive owned ports", () => {
+  it("maps an isolated override to three consecutive owned ports", () => {
     expect(e2ePortsFromBase(parseE2ePortBase("44000"))).toEqual({
       api: 44_000,
       demo: 44_001,
-      web: 44_002,
-      objectStore: 44_003,
+      objectStore: 44_002,
     });
   });
 

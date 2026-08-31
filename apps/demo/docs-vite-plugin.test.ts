@@ -61,6 +61,9 @@ describe("demo /docs reference", () => {
     expect(result.nextCalls).toBe(0);
     expect(result.response.statusCode).toBe(200);
     expect(result.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(result.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
     expect(result.body).toBe(DOCS_HTML);
   });
 

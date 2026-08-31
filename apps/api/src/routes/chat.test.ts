@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   chatMessagesResponseFromRows,
-  creditLimitReached,
   effectiveWebPolicy,
   normalizeDomainAllowlist,
 } from "../domain/chat";
@@ -15,17 +14,6 @@ const documentSourceId = "public:test-source";
 const documentId = "test-document";
 const snapshotId = "test-document-version";
 const documentContentHash = "a".repeat(64);
-
-describe("creditLimitReached", () => {
-  it("compares PostgreSQL bigint values without losing precision", () => {
-    expect(creditLimitReached("9007199254740992", "9007199254740993")).toBe(false);
-    expect(creditLimitReached("9007199254740993", "9007199254740993")).toBe(true);
-    expect(creditLimitReached(1n, null)).toBe(false);
-    expect(() => creditLimitReached(Number.MAX_SAFE_INTEGER + 1, 1n)).toThrow(
-      "unsafe_database_integer",
-    );
-  });
-});
 
 describe("effectiveWebPolicy", () => {
   it("uses canonical precedence and normalizes a stable allowlist", () => {
@@ -159,6 +147,8 @@ describe("chatMessagesResponseFromRows", () => {
           started_at: at("2026-07-10T10:00:01.000Z"),
           finished_at: at("2026-07-10T10:00:03.000Z"),
           failed_at: null,
+          stopped_at: null,
+          superseded_at: null,
           error_code: null,
           retryable: null,
         },
@@ -166,9 +156,9 @@ describe("chatMessagesResponseFromRows", () => {
       [
         {
           assistant_message_id: "assistant-message",
+          run_id: "run-1",
           source_key: `k_${citationNamespace}_1`,
           citation_namespace: citationNamespaceHex,
-          publisher_extraction_id: null,
           source_id: documentSourceId,
           document_id: documentId,
           snapshot_id: snapshotId,
@@ -198,6 +188,7 @@ describe("chatMessagesResponseFromRows", () => {
       [
         {
           assistant_message_id: "assistant-message",
+          run_id: "run-1",
           source_key: `k_${citationNamespace}_1`,
           topic_id: "t2",
           consumer_task_id: "topic-t2-answer",
@@ -209,6 +200,7 @@ describe("chatMessagesResponseFromRows", () => {
         },
         {
           assistant_message_id: "assistant-message",
+          run_id: "run-1",
           source_key: `k_${citationNamespace}_1`,
           topic_id: "t1",
           consumer_task_id: "topic-t1-answer",
@@ -243,6 +235,7 @@ describe("chatMessagesResponseFromRows", () => {
   it("reloads sources by numeric ordinal and rejects malformed or non-HTTPS provenance", () => {
     const sourceRow = (sourceKey: string, citationUrl = "https://example.com/document") => ({
       assistant_message_id: "assistant-message",
+      run_id: "run-1",
       source_key: sourceKey,
       citation_namespace: citationNamespaceHex,
       publisher_extraction_id: null,
@@ -267,6 +260,7 @@ describe("chatMessagesResponseFromRows", () => {
     });
     const useRow = (sourceKey: string, context_order: number) => ({
       assistant_message_id: "assistant-message",
+      run_id: "run-1",
       source_key: sourceKey,
       consumer_task_id: "single-answer",
       topic_id: null,

@@ -30,7 +30,6 @@ export interface ApiTransportOptions {
 
 export interface ContractRequestOptions {
   readonly json?: unknown;
-  readonly body?: BodyInit | null | undefined;
   readonly headers?: HeadersInit | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly redirect?: RequestRedirect | undefined;
@@ -239,17 +238,6 @@ const validateContractHeaders = (contract: HttpRouteContract, headers: Headers):
   }
 };
 
-const bodyByteLength = (body: BodyInit): number | undefined => {
-  if (typeof body === "string") return new TextEncoder().encode(body).byteLength;
-  if (body instanceof Blob) return body.size;
-  if (body instanceof ArrayBuffer) return body.byteLength;
-  if (ArrayBuffer.isView(body)) return body.byteLength;
-  if (body instanceof URLSearchParams) {
-    return new TextEncoder().encode(body.toString()).byteLength;
-  }
-  return undefined;
-};
-
 const prepareRequest = (
   contract: HttpRouteContract,
   options: ContractRequestOptions,
@@ -257,14 +245,14 @@ const prepareRequest = (
   const headers = new Headers(options.headers);
   const requestBody = contract.requestBody;
   if (requestBody.kind === "none" || requestBody.kind === "empty") {
-    if (options.json !== undefined || options.body !== undefined) {
+    if (options.json !== undefined) {
       throw new ApiResponseError(0, "unexpected_request_body");
     }
     validateContractHeaders(contract, headers);
     return { headers };
   }
   if (requestBody.kind === "json") {
-    if (options.body !== undefined || options.json === undefined) {
+    if (options.json === undefined) {
       throw new ApiResponseError(0, "invalid_request_body");
     }
     let decoded: unknown;
@@ -282,20 +270,7 @@ const prepareRequest = (
     }
     return { headers, body };
   }
-  if (options.json !== undefined || options.body === undefined || options.body === null) {
-    throw new ApiResponseError(0, "invalid_request_body");
-  }
-  const byteLength = bodyByteLength(options.body);
-  if (byteLength === undefined) throw new ApiResponseError(0, "unbounded_request_body");
-  if (byteLength > requestBody.maxBytes) throw new ApiResponseError(0, "request_body_too_large");
-  if (requestBody.kind === "binary") {
-    const type = headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (type === undefined || !requestBody.mediaTypes.includes(type)) {
-      throw new ApiResponseError(0, "invalid_request_media_type");
-    }
-  }
-  validateContractHeaders(contract, headers);
-  return { headers, body: options.body };
+  throw new ApiResponseError(0, "invalid_request_body");
 };
 
 const decodeError = async (
@@ -309,14 +284,12 @@ const decodeError = async (
       if (contract.error !== HttpErrorResponse) throw new Error("non-canonical HTTP error schema");
       body = strictDecode(HttpErrorResponse, JSON.parse(await readResponseText(response, signal)));
     } catch (cause) {
+      // Error responses are a strict wire boundary. Malformed bytes, JSON,
+      // or schema are all response-body failures; never infer an error code
+      // from the HTTP status when the server sent an invalid body.
       if (signal?.aborted) throw cause;
-      // A malformed byte sequence never becomes trusted application data;
-      // preserve the typed body error raised by the fatal decoder. A valid
-      // JSON body with the wrong error schema remains a content-free status
-      // fallback for compatibility with the route contract.
-      if (cause instanceof ApiResponseError && cause.code === "invalid_response_body") {
-        throw cause;
-      }
+      if (cause instanceof ApiResponseError) throw cause;
+      throw new ApiResponseError(response.status, "invalid_response_body", undefined, { cause });
     }
   }
   const code =
@@ -347,11 +320,6 @@ export interface ApiTransport {
     options?: ContractRequestOptions,
   ) => Promise<A>;
   readonly empty: (route: string, path: string, options?: ContractRequestOptions) => Promise<void>;
-  readonly jsonUnknown: (
-    route: string,
-    path: string,
-    options?: ContractRequestOptions,
-  ) => Promise<unknown>;
   readonly sse: (
     route: string,
     path: string,
@@ -368,15 +336,6 @@ export interface ApiTransport {
     mediaTypes: readonly string[],
     options?: ContractRequestOptions,
   ) => Promise<Response>;
-  readonly jsonOrRedirectedBinary: (
-    route: string,
-    path: string,
-    mediaTypes: readonly string[],
-    options?: ContractRequestOptions,
-  ) => Promise<
-    | { readonly kind: "json"; readonly value: unknown }
-    | { readonly kind: "binary"; readonly response: Response }
-  >;
 }
 
 export const createApiTransport = ({ fetch, baseUrl }: ApiTransportOptions): ApiTransport => {
@@ -434,27 +393,6 @@ export const createApiTransport = ({ fetch, baseUrl }: ApiTransportOptions): Api
         return strictDecode(schema, value);
       } catch (cause) {
         return responseContractError(response, "invalid_response_body", cause);
-      }
-    },
-    jsonUnknown: async (route, path, options) => {
-      const { response, success } = await perform(
-        route,
-        path,
-        withAccept(options, "application/json"),
-      );
-      if (success.kind !== "json") {
-        return responseContractError(response, "invalid_response_contract");
-      }
-      if (mediaType(response) !== "application/json") {
-        responseContractError(response, "invalid_response_media_type");
-      }
-      let value: unknown;
-      try {
-        value = JSON.parse(await readResponseText(response, options?.signal)) as unknown;
-        return strictDecode(success.schema, value);
-      } catch (cause) {
-        if (options?.signal?.aborted) throw cause;
-        responseContractError(response, "invalid_response_body", cause);
       }
     },
     empty: async (route, path, options) => {
@@ -516,45 +454,5 @@ export const createApiTransport = ({ fetch, baseUrl }: ApiTransportOptions): Api
       if (response.body === null) return responseContractError(response, "invalid_response_body");
       return response;
     },
-    jsonOrRedirectedBinary: async (route, path, mediaTypes, options) => {
-      const { response, contract } = await fetchResponse(
-        route,
-        path,
-        withAccept(options, `application/json, ${mediaTypes.join(", ")}`),
-      );
-      if (response.redirected) {
-        if (response.status !== 200) {
-          return responseContractError(response, "invalid_response_status");
-        }
-        const type = mediaType(response);
-        if (type === null || !mediaTypes.includes(type)) {
-          return responseContractError(response, "invalid_response_media_type");
-        }
-        if (response.body === null) {
-          return responseContractError(response, "invalid_response_body");
-        }
-        return { kind: "binary", response };
-      }
-      const success = selectSuccess(response, contract);
-      if (success === undefined) return decodeError(response, contract, options?.signal);
-      if (success.kind === "json") {
-        if (mediaType(response) !== "application/json") {
-          return responseContractError(response, "invalid_response_media_type");
-        }
-        try {
-          const value = strictDecode(
-            success.schema,
-            JSON.parse(await readResponseText(response, options?.signal)),
-          );
-          return { kind: "json", value };
-        } catch (cause) {
-          if (options?.signal?.aborted) throw cause;
-          return responseContractError(response, "invalid_response_body", cause);
-        }
-      }
-      return responseContractError(response, "invalid_response_contract");
-    },
   };
 };
-
-export const decodeStrict = strictDecode;

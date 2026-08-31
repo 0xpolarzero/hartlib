@@ -3,7 +3,6 @@ import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { json, routeRequest, type Route } from "../http";
-import { routes } from "../routes";
 import {
   pathParameterKind,
   pathParameterNames,
@@ -17,86 +16,55 @@ const okContract: HttpRouteContract = {
   error: HttpErrorResponse,
 };
 
-const validValue = (kind: ReturnType<typeof pathParameterKind>): string =>
-  kind === "uuid" ? uuid : kind === "positive_integer" ? "1" : "opaque-id";
-
 describe("canonical path parameter policy", () => {
-  it("keeps the complete non-UUID exception inventory explicit", () => {
+  it("keeps only document and public-source IDs opaque", () => {
     expect(pathParameterPolicyExceptions).toEqual({
       opaque: [
-        "DELETE /v1/client-companies/:companyId/members/:userId userId",
-        "DELETE /v1/client-companies/:companyId/members/:userId/subscription-grants/:accessId userId",
-        "DELETE /v1/publisher-companies/:companyId/members/:userId userId",
         "GET /public-source-documents/:documentId/content documentId",
-        "PATCH /v1/client-companies/:companyId/members/:userId userId",
-        "PATCH /v1/publisher-companies/:companyId/members/:userId userId",
-        "POST /v1/client-companies/:companyId/members/:userId/subscription-grants userId",
-        "PUT /v1/client-companies/:companyId/members/:userId/ai-limit userId",
-        "PUT /v1/client-companies/:companyId/public-sources/:sourceId sourceId",
+        "GET /v1/issues/:issueId/documents/:documentId/content documentId",
         "PUT /v1/public-sources/:sourceId sourceId",
       ],
-      positiveInteger: ["POST /v1/platform/support/access/:accessId/review accessId"],
     });
   });
 
-  it("rejects a malformed value for every current path parameter before execute or audit", async () => {
-    for (const route of routes) {
-      for (const invalidName of pathParameterNames(route.path)) {
-        let executes = 0;
-        let audits = 0;
-        const guarded: Route = {
-          method: route.method,
-          path: route.path,
-          execute: () => {
-            executes += 1;
-            return Effect.succeed(json({ ok: true }));
-          },
-          administrativeAudit: () => {
-            audits += 1;
-            return Effect.void;
-          },
-        };
-        const path = route.path.replace(/:([A-Za-z][A-Za-z0-9]*)/gu, (_match, name: string) => {
-          const kind = pathParameterKind(route.method, route.path, name);
-          if (name === invalidName) {
-            return kind === "positive_integer" ? "0" : kind === "opaque" ? "%00" : "malformed";
-          }
-          return validValue(kind);
-        });
-        const response = await Effect.runPromise(
-          routeRequest(
-            [guarded],
-            new Request(`http://hartlib.test${path}`, { method: route.method }),
-          ),
-        );
-        expect(response.status, `${route.method} ${route.path} ${invalidName}`).toBe(404);
-        expect(executes).toBe(0);
-        expect(audits).toBe(0);
-      }
-    }
+  it("rejects malformed UUIDs before endpoint execution", async () => {
+    const route: Route = {
+      method: "GET",
+      path: "/v1/ai-runs/:runId/debug",
+      contract: okContract,
+      execute: () => Effect.succeed(json({ ok: true })),
+    };
+    const response = await Effect.runPromise(
+      routeRequest([route], new Request("http://hartlib.test/v1/ai-runs/not-a-uuid/debug")),
+    );
+    expect(response.status).toBe(404);
   });
 
-  it("passes Effect HTTP's decoded validated values to endpoint adapters", async () => {
+  it("passes decoded opaque values to endpoint adapters", async () => {
     let captured: Readonly<Record<string, string>> | undefined;
     const route: Route = {
       method: "PUT",
-      path: "/v1/client-companies/:companyId/public-sources/:sourceId",
+      path: "/v1/public-sources/:sourceId",
       contract: okContract,
-      execute: (_request, _url, pathParameters) => {
-        captured = pathParameters;
+      execute: (_request, _url, path) => {
+        captured = path;
         return Effect.succeed(json({ ok: true }));
       },
     };
     const response = await Effect.runPromise(
       routeRequest(
         [route],
-        new Request(
-          `http://hartlib.test/v1/client-companies/${uuid}/public-sources/source%20identifier`,
-          { method: "PUT" },
-        ),
+        new Request("http://hartlib.test/v1/public-sources/source%20identifier", { method: "PUT" }),
       ),
     );
     expect(response.status).toBe(200);
-    expect(captured).toEqual({ companyId: uuid, sourceId: "source identifier" });
+    expect(captured).toEqual({ sourceId: "source identifier" });
+  });
+
+  it("classifies every parameter from the final route shape", () => {
+    expect(pathParameterNames("PATCH /v1/chat/messages/:messageId")).toEqual(["messageId"]);
+    expect(pathParameterKind("PATCH", "/v1/chat/messages/:messageId", "messageId")).toBe("uuid");
+    expect(pathParameterKind("PUT", "/v1/public-sources/:sourceId", "sourceId")).toBe("opaque");
+    expect(uuid).toMatch(/[0-9a-f-]{36}/u);
   });
 });

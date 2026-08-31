@@ -113,10 +113,7 @@ const preflight = (request: Request, methods: ReadonlyArray<string>) =>
       headers.append("vary", "Origin");
     }
     headers.set("access-control-allow-methods", [...new Set(methods)].join(", "));
-    headers.set(
-      "access-control-allow-headers",
-      "authorization, content-type, idempotency-key, last-event-id, x-hartlib-title, x-content-sha256, x-file-name, x-request-id",
-    );
+    headers.set("access-control-allow-headers", "content-type, last-event-id, x-request-id");
     headers.set("access-control-max-age", "86400");
 
     return new Response(null, {
@@ -308,12 +305,6 @@ const requestSatisfiesContract = (
         cancelRequestBody(request);
         return { ok: false, reason: "tooLarge" } as const;
       }
-      if (body.kind === "binary") {
-        if (!body.mediaTypes.includes(mediaType(request.headers) ?? "")) {
-          cancelRequestBody(request);
-          return { ok: false, reason: "unsupportedMediaType" } as const;
-        }
-      }
       const maxBytes = body.kind === "empty" ? 0 : body.maxBytes;
       const bytes = await readBodyBounded(request, maxBytes);
       if (bytes === null) return { ok: false, reason: "tooLarge" } as const;
@@ -323,16 +314,6 @@ const requestSatisfiesContract = (
         return { ok: false, reason: "invalid" } as const;
       }
       if (body.kind === "empty") {
-        return {
-          ok: true,
-          input: {
-            ...baseInput,
-            bodyBytes: bytes,
-            ...(declared === undefined ? {} : { declaredBodyBytes: declared }),
-          },
-        } as const;
-      }
-      if (body.kind === "raw" || body.kind === "binary") {
         return {
           ok: true,
           input: {

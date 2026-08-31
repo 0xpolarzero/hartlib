@@ -61,6 +61,8 @@ export const makeWorkerTick = (options?: HandleJobOptions) =>
 
     if (result.status === "completed") {
       yield* jobs.markCompleted(job);
+    } else if (result.status === "retry") {
+      yield* jobs.markFailed(job, new Error(result.message ?? "job requested retry"));
     }
   });
 

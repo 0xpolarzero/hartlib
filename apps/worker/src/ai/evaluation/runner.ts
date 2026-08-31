@@ -1163,7 +1163,7 @@ const sourceIdForIdentity = (identity: {
   readonly memoryId?: string;
   readonly canonicalUrl?: string;
 }): string | undefined =>
-  identity.kind === "public_document" || identity.kind === "publisher_document"
+  identity.kind === "public_document"
     ? identity.sourceId
     : identity.kind === "chat_message"
       ? identity.messageId
@@ -1230,9 +1230,6 @@ const assertPreviewRecords = (
       identity: record.identity,
       snapshotId: record.snapshotId,
       contentHash: record.contentHash,
-      ...(record.publisherExtractionId === undefined
-        ? {}
-        : { publisherExtractionId: record.publisherExtractionId }),
       previewRanges: record.previewRanges,
       previewByteLength: record.previewByteLength,
       previewSha256Hex: record.previewSha256Hex,

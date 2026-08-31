@@ -171,14 +171,7 @@ export const webEvidenceIdentity = (url: string, quote: string): string =>
   `web:${canonicalizeWebUrl(url)}:${webQuoteHash(quote)}`;
 
 export const documentEvidenceIdentity = (documentId: string): string => `document:${documentId}`;
-export type DocumentEvidenceNamespace =
-  | { readonly kind: "public"; readonly sourceId: string }
-  | {
-      readonly kind: "publisher";
-      readonly sourceId: string;
-      readonly issueId: string;
-      readonly documentId: string;
-    };
+export type DocumentEvidenceNamespace = { readonly kind: "public"; readonly sourceId: string };
 
 /** Includes the literal namespace discriminator and length-safe JSON fields. */
 export const namespacedDocumentEvidenceIdentity = (
@@ -186,11 +179,7 @@ export const namespacedDocumentEvidenceIdentity = (
   documentId: string,
 ): string =>
   documentEvidenceIdentity(
-    `namespace:${namespace.kind}:${JSON.stringify(
-      namespace.kind === "public"
-        ? [namespace.sourceId, documentId]
-        : [namespace.sourceId, namespace.issueId, namespace.documentId, documentId],
-    )}`,
+    `namespace:${namespace.kind}:${JSON.stringify([namespace.sourceId, documentId])}`,
   );
 export const chatMessageEvidenceIdentity = (messageId: string): string =>
   `chat_message:${messageId}`;

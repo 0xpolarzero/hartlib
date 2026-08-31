@@ -208,16 +208,15 @@ const hasKnownUsage = (usage: ModelUsage): boolean =>
 const trustedStatusFromProviderError = (error: unknown): number | undefined => {
   if (error === null || typeof error !== "object") return undefined;
   const status = (error as { readonly status?: unknown }).status;
-  return typeof status === "number" && Number.isSafeInteger(status) && status >= 100 && status <= 599
+  return typeof status === "number" &&
+    Number.isSafeInteger(status) &&
+    status >= 100 &&
+    status <= 599
     ? status
     : undefined;
 };
 
-const providerBoundaryError = (
-  error: unknown,
-  role: string,
-  observedStatus?: number,
-): Error => {
+const providerBoundaryError = (error: unknown, role: string, observedStatus?: number): Error => {
   if (isAbortError(error) || isAiRuntimeError(error)) return error;
   const status = observedStatus ?? trustedStatusFromProviderError(error);
   const responseStatus = providerResponseStatus(status);
@@ -247,9 +246,10 @@ const providerFailure = (
     // the canonical role decision unless trusted transport status metadata is
     // available from Pi's response callback.
     taskRetryable: isRetryableAssistantError(message),
-    category: observedStatus !== undefined && responseStatus === undefined
-      ? "provider_output"
-      : "provider_response",
+    category:
+      observedStatus !== undefined && responseStatus === undefined
+        ? "provider_output"
+        : "provider_response",
     ...(responseStatus === undefined
       ? {}
       : {
@@ -545,11 +545,7 @@ export class ExactPiBoundary {
             } as Parameters<typeof completeSimple>[2]),
           );
         } catch (error) {
-          throw providerBoundaryError(
-            error,
-            executionCoordinates.agentRole,
-            observedStatus,
-          );
+          throw providerBoundaryError(error, executionCoordinates.agentRole, observedStatus);
         }
         return { message, providerRequest, baseUrl };
       }, signal);
@@ -626,11 +622,7 @@ export class ExactPiBoundary {
             }),
           );
         } catch (error) {
-          throw providerBoundaryError(
-            error,
-            executionCoordinates.agentRole,
-            observedStatus,
-          );
+          throw providerBoundaryError(error, executionCoordinates.agentRole, observedStatus);
         }
         let streamedFinal: AssistantMessage | undefined;
         let deltaIndex = 0;

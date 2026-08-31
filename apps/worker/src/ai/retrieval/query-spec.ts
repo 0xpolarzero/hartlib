@@ -4,10 +4,9 @@ import { z } from "zod";
 
 export type QueryAtomMode = "term" | "phrase";
 export type QueryOrder = "relevance" | "newest" | "oldest";
-export type QueryBranch = "public_documents" | "publisher_documents" | "chat_messages";
+export type QueryBranch = "public_documents" | "chat_messages";
 export const PHYSICAL_QUERY_BRANCHES = [
   "public_documents",
-  "publisher_documents",
   "chat_messages",
 ] as const satisfies readonly QueryBranch[];
 

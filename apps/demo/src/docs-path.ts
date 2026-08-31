@@ -1,3 +1,3 @@
 export function isDocsPath(pathname: string): boolean {
-  return pathname === "/docs" || pathname === "/docs/";
+  return pathname === "/docs";
 }

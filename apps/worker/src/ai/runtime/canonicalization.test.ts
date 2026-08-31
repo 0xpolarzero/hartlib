@@ -104,23 +104,12 @@ describe("AI evidence canonicalization golden contract", () => {
     expect(documentEvidenceIdentity("doc-7")).toBe("document:doc-7");
   });
 
-  it("includes the literal public/publisher namespace in document identity", () => {
+  it("includes the literal public namespace in document identity", () => {
     const publicIdentity = namespacedDocumentEvidenceIdentity(
       { kind: "public", sourceId: "public:source" },
       "same-document",
     );
-    const publisherIdentity = namespacedDocumentEvidenceIdentity(
-      {
-        kind: "publisher",
-        sourceId: "publisher:subscription",
-        issueId: "same-issue",
-        documentId: "same-document",
-      },
-      "same-document",
-    );
-    expect(publicIdentity).not.toBe(publisherIdentity);
     expect(publicIdentity).toContain(":public:");
-    expect(publisherIdentity).toContain(":publisher:");
     expect(
       namespacedDocumentEvidenceIdentity(
         { kind: "public", sourceId: "public:source" },

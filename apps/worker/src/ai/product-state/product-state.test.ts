@@ -166,36 +166,6 @@ interface Fixture {
 
 type TurnPlanMode = "clarify" | "single" | "fanout";
 
-type ResetProductChatResult =
-  | {
-      readonly kind: "created" | "replay";
-      readonly archivedChatId: string;
-      readonly replacementChatId: string;
-    }
-  | { readonly kind: "already_reset"; readonly archivedChatId: string }
-  | { readonly kind: "replacement_conflict" | "forbidden" };
-
-type ResetProductChat = (
-  identity: {
-    readonly mode: "demo" | "clerk";
-    readonly userId: string;
-    readonly organizationId: string | null;
-  },
-  chatId: string,
-  replacementChatId: string,
-) => Effect.Effect<ResetProductChatResult, unknown, PgClient.PgClient>;
-
-const loadResetProductChat = async (): Promise<ResetProductChat> => {
-  const moduleUrl: string = new URL(
-    "../../../../../packages/backend-domain/src/product-chats.ts",
-    import.meta.url,
-  ).href;
-  const productChats = (await import(moduleUrl)) as {
-    readonly resetProductChat: ResetProductChat;
-  };
-  return productChats.resetProductChat;
-};
-
 const newCitationNamespace = (): string =>
   `cn_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
 
@@ -235,10 +205,9 @@ const createFixture = (
     const citationNamespace = newCitationNamespace();
 
     yield* sql`
-      insert into platform_users (id, primary_email, display_name, clerk_user_id)
+      insert into platform_users (id, primary_email, display_name)
       values (
-        ${userId}, ${`${userId}@example.test`}, ${`Product state ${suffix}`},
-        ${`clerk-${userId}`}
+        ${userId}, ${`${userId}@example.test`}, ${`Product state ${suffix}`}
       )
     `;
     yield* sql`
@@ -490,15 +459,6 @@ type StructuredReviewPreviewIdentity =
       readonly contentHash: string;
     }
   | {
-      readonly kind: "publisher_document";
-      readonly subscriptionId: string;
-      readonly issueId: string;
-      readonly documentId: string;
-      readonly snapshotId: string;
-      readonly publisherExtractionId: string;
-      readonly contentHash: string;
-    }
-  | {
       readonly kind: "chat_message";
       readonly messageId: string;
       readonly sanitizedContentHash: string;
@@ -532,9 +492,6 @@ const structuredReviewPreviewRecord = (input: StructuredReviewPreviewRecordInput
     snapshotId:
       input.identity.kind === "chat_message" ? input.identity.messageId : input.identity.snapshotId,
     contentHash,
-    ...(input.identity.kind === "publisher_document"
-      ? { publisherExtractionId: input.identity.publisherExtractionId }
-      : {}),
     previewRanges: input.previewRanges,
     previewByteLength: previewBytes.byteLength,
     previewSha256Hex: createHash("sha256").update(previewBytes).digest("hex"),
@@ -553,15 +510,6 @@ const structuredReviewCoverage = [
     queryOrdinal: 1,
     branch: "public_documents" as const,
     status: "applicable" as const,
-    hitCount: 0,
-    truncated: false,
-    cap: 1,
-  },
-  {
-    queryOrdinal: 1,
-    branch: "publisher_documents" as const,
-    status: "not_applicable" as const,
-    reason: "scope_documents" as const,
     hitCount: 0,
     truncated: false,
     cap: 1,
@@ -671,9 +619,6 @@ const seedSingleObservability = (
       readonly documentId?: string;
       readonly snapshotId?: string;
       readonly contentHash?: string;
-      readonly publisherIssueId?: string;
-      readonly publisherDocumentId?: string;
-      readonly publisherExtractionId?: string;
       readonly contentItemIdentity?: string;
     }[];
   } = {},
@@ -735,12 +680,6 @@ const seedSingleObservability = (
                 .join("\n…\n"),
             )
           : 3),
-      ...(source.publisherIssueId === undefined
-        ? {}
-        : { publisherIssueId: source.publisherIssueId }),
-      ...(source.publisherDocumentId === undefined
-        ? {}
-        : { publisherDocumentId: source.publisherDocumentId }),
       providerSerializationProofBinding: {
         messageIndex: 0,
         sourceOrdinal,
@@ -755,9 +694,6 @@ const seedSingleObservability = (
               snapshotId: source.snapshotId ?? "fixture-version",
               contentHash: source.contentHash ?? "f".repeat(64),
               ranges: source.ranges,
-              ...(source.publisherExtractionId === undefined
-                ? {}
-                : { publisherExtractionId: source.publisherExtractionId }),
             },
           }
         : {}),
@@ -1864,14 +1800,7 @@ const candidateIdForSource = (source: FinalSourceRecord): string => {
   switch (locator.kind) {
     case "document":
       return namespacedDocumentEvidenceIdentity(
-        locator.publisherIssueId === undefined
-          ? { kind: "public", sourceId: locator.sourceId }
-          : {
-              kind: "publisher",
-              sourceId: locator.sourceId,
-              issueId: locator.publisherIssueId,
-              documentId: locator.publisherDocumentId!,
-            },
+        { kind: "public", sourceId: locator.sourceId },
         locator.documentId,
       );
     case "chat_message":
@@ -1883,93 +1812,6 @@ const candidateIdForSource = (source: FinalSourceRecord): string => {
   }
   throw new Error("unknown source kind");
 };
-
-interface PublisherSourceFixture {
-  readonly subscriptionId: string;
-  readonly issueId: string;
-  readonly documentId: string;
-  readonly snapshotId: string;
-  readonly extractionId: string;
-  readonly contentHash: string;
-}
-
-const createPublisherSourceFixture = (
-  fixture: Fixture,
-): Effect.Effect<PublisherSourceFixture, unknown, PgClient.PgClient> =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const publisherCompanyId = crypto.randomUUID();
-    const subscriptionId = crypto.randomUUID();
-    const issueId = crypto.randomUUID();
-    const documentId = crypto.randomUUID();
-    const snapshotId = crypto.randomUUID();
-    const contentHash = createHash("sha256").update("Fence source text", "utf8").digest("hex");
-    yield* sql`
-      insert into publisher_companies (id, name)
-      values (${publisherCompanyId}, ${`Fence publisher ${issueId}`})
-    `;
-    yield* sql`
-      insert into publisher_subscriptions (id, publisher_company_id, name, created_by_user_id)
-      values (${subscriptionId}, ${publisherCompanyId}, 'Fence publication', ${fixture.userId})
-    `;
-    yield* sql`
-      insert into publisher_issues (
-        id, subscription_id, title, status, publication_at, published_at,
-        created_by_user_id
-      ) values (
-        ${issueId}, ${subscriptionId}, 'Fence issue', 'draft', null, null, ${fixture.userId}
-      )
-    `;
-    yield* sql`
-      insert into hartlib_documents (
-        id, issue_id, title, original_file_name, object_key, media_type,
-        byte_size, sha256_hex, upload_completed_at, created_by_user_id
-      ) values (
-        ${documentId}, ${issueId}, 'Fence document', 'fence.pdf',
-        ${`fence/${documentId}.pdf`}, 'application/pdf', 1, ${contentHash}, now(), ${fixture.userId}
-      )
-  `;
-    const jobs = yield* sql<{ readonly id: string }>`
-      insert into jobs (kind, payload)
-      values ('extract_pdf_text', '{}'::jsonb)
-      returning id::text
-    `;
-    const extractions = yield* sql<{ readonly id: string }>`
-      insert into hartlib_document_extractions (
-        hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
-      ) values (
-        ${documentId}, ${contentHash},
-        '[{"pageNumber":1,"text":"Fence source text"}]'::jsonb,
-        17, ${jobs[0]!.id}
-      )
-      returning id::text
-    `;
-    yield* sql`
-      insert into hartlib_document_versions (
-        id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
-        text_char_count, page_ranges
-      ) values (
-        ${snapshotId}, ${documentId}, ${extractions[0]!.id}, ${contentHash}, 'english', 'Fence source text',
-        17, '[{"pageNumber":1,"charStart":0,"charEnd":17}]'::jsonb
-      )
-    `;
-    yield* sql`
-      update hartlib_documents set current_version_id = ${snapshotId} where id = ${documentId}
-    `;
-    yield* sql`
-      update publisher_issues
-      set status = 'published', publication_at = now(), published_at = now(), indexing_status = 'ready'
-      where id = ${issueId}
-    `;
-    return {
-      subscriptionId,
-      issueId,
-      documentId,
-      snapshotId,
-      extractionId: extractions[0]!.id,
-      contentHash,
-    };
-  });
 
 interface PublicExposureFixture {
   readonly sourceId: string;
@@ -2195,8 +2037,8 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
 
   it("rejects divergent replays for every bound observability field", async () => {
     const fixture = await runDb(createFixture("observability-replay"));
-    const publisher = await runDb(createPublisherSourceFixture(fixture));
-    const alternatePublisher = await runDb(createPublisherSourceFixture(fixture));
+    const document = await runDb(createPublicExposureFixture(fixture));
+    const alternateDocument = await runDb(createPublicExposureFixture(fixture));
     const expectConflict = async (operation: Promise<unknown>): Promise<void> => {
       await expect(operation).rejects.toThrow(/replay conflicts with an existing immutable row/u);
     };
@@ -2245,9 +2087,9 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     await expect(runDb(insertAiRunUsage(usage))).resolves.toBe(true);
     await expect(runDb(insertAiRunUsage(usage))).resolves.toBe(false);
     await expectConflict(runDb(insertAiRunUsage({ ...usage, agentRole: "topic_answer" })));
-    await expectConflict(runDb(insertAiRunUsage({ ...usage, modelId: "glm-5.2" })));
+    await expectConflict(runDb(insertAiRunUsage({ ...usage, modelId: "invalid-model" })));
     await expectConflict(
-      runDb(insertAiRunUsage({ ...usage, providerServiceId: "openai_compatible_custom" })),
+      runDb(insertAiRunUsage({ ...usage, providerServiceId: "zai_coding_plan_official" })),
     );
     await expectConflict(
       runDb(
@@ -2340,8 +2182,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       providerRequestSha256Hex: "b".repeat(64),
       sourceKind: "document" as const,
       logicalSourceIdentity: "document:replay",
-      publisherIssueId: publisher.issueId,
-      publisherDocumentId: publisher.documentId,
       contentItemIdentity: "version:replay:range:0-8",
       exposureStage: "context_candidate_inspection",
       visibleTokenCount: 8,
@@ -2352,11 +2192,10 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         orderedSourceDescriptor: "fixture:document:replay",
       },
       documentReconstruction: {
-        sourceId: `publisher:${publisher.subscriptionId}`,
-        documentId: publisher.documentId,
-        snapshotId: publisher.snapshotId,
-        contentHash: publisher.contentHash,
-        publisherExtractionId: publisher.extractionId,
+        sourceId: `public:${document.sourceId}`,
+        documentId: document.documentId,
+        snapshotId: document.documentId,
+        contentHash: document.contentHash,
         ranges: [{ charStart: 0, charEnd: 8 }],
       },
     };
@@ -2370,7 +2209,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           documentReconstruction: undefined,
           providerSerializationProofBinding: {
             ...exposure.providerSerializationProofBinding,
-            publicDocumentId: publisher.documentId,
+            publicDocumentId: document.documentId,
           },
         }),
       ),
@@ -2380,48 +2219,23 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       { ...exposure, contentItemIdentity: "version:replay:range:other" },
       { ...exposure, exposureStage: "answer_serialized" },
       { ...exposure, logicalSourceIdentity: "document:other" },
-      { ...exposure, publisherIssueId: "issue:other" },
-      { ...exposure, publisherDocumentId: "document:other" },
       { ...exposure, visibleTokenCount: 9 },
       { ...exposure, providerRequestSha256Hex: "d".repeat(64) },
       {
         ...exposure,
         documentReconstruction: {
           ...exposure.documentReconstruction,
-          sourceId: "publisher:other",
+          sourceId: "public:other",
         },
       },
       {
         ...exposure,
         documentReconstruction: {
           ...exposure.documentReconstruction,
-          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
-          documentId: alternatePublisher.documentId,
-          snapshotId: alternatePublisher.snapshotId,
-          contentHash: alternatePublisher.contentHash,
-          publisherExtractionId: alternatePublisher.extractionId,
-        },
-      },
-      {
-        ...exposure,
-        documentReconstruction: {
-          ...exposure.documentReconstruction,
-          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
-          documentId: alternatePublisher.documentId,
-          snapshotId: alternatePublisher.snapshotId,
-          contentHash: alternatePublisher.contentHash,
-          publisherExtractionId: alternatePublisher.extractionId,
-        },
-      },
-      {
-        ...exposure,
-        documentReconstruction: {
-          ...exposure.documentReconstruction,
-          sourceId: `publisher:${alternatePublisher.subscriptionId}`,
-          documentId: alternatePublisher.documentId,
-          snapshotId: alternatePublisher.snapshotId,
-          contentHash: alternatePublisher.contentHash,
-          publisherExtractionId: alternatePublisher.extractionId,
+          sourceId: `public:${alternateDocument.sourceId}`,
+          documentId: alternateDocument.documentId,
+          snapshotId: alternateDocument.documentId,
+          contentHash: alternateDocument.contentHash,
         },
       },
       {
@@ -2561,7 +2375,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       }) as const;
     const measurementFor = (
       fixture: Fixture,
-      modelId: "glm-5.2" | "glm-5-turbo",
+      modelId: string,
       observationKey = "single-answer:measurement",
     ) =>
       insertAiObservation({
@@ -2618,7 +2432,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     );
     await runDb(seedSingleObservability(mismatch, { includeAnswerMeasurement: false }));
     await runDb(insertAiRunUsage(usageFor(mismatch)));
-    await runDb(measurementFor(mismatch, "glm-5.2"));
+    await runDb(measurementFor(mismatch, "invalid-model"));
     const mismatchExit = await runDb(
       Effect.exit(finalizeAiRun(inputFor(mismatch, mismatchMemory))),
     );
@@ -5491,7 +5305,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         }),
       );
       await expect(runDb(finalizeAiRun(replayInput))).rejects.toThrow(
-        /invalid durable no-call reason/u,
+        /invalid durable no-call reason|terminal failure event is not exact/u,
       );
       await runDb(
         Effect.gen(function* () {
@@ -5506,7 +5320,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
         }),
       );
       await expect(runDb(finalizeAiRun(replayInput))).rejects.toThrow(
-        /invalid durable no-call reason|exact durable no-call seal/u,
+        /invalid durable no-call reason|exact durable no-call seal|terminal failure event is not exact/u,
       );
     }
   });
@@ -5709,298 +5523,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
     expect(result).toMatchObject({ status: "succeeded" });
   });
 
-  it("uses publisher provenance to persist a public document whose ID collides with a publisher version", async () => {
-    const sourceId = `collision-source-${crypto.randomUUID()}`;
-    const canonicalUrl = "https://public.example/colliding-document";
-    const text = "Public collision evidence. ".repeat(5);
-    await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        yield* sql`
-          insert into public_sources (
-            source_id, display_name, publisher_name, description, ingestion_method,
-            discovery_url, average_chars_per_item
-          ) values (
-            ${sourceId}, 'Collision public source', 'Public publisher', 'Collision source',
-            'manual', ${canonicalUrl}, ${text.length}
-          )
-        `;
-      }),
-    );
-    const fixture = await runDb(
-      createFixture("document-identity-collision", "single", "private_owner", true, true, [
-        sourceId,
-      ]),
-    );
-    const collision = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const publicDocumentId = crypto.randomUUID();
-        const publisherCompanyId = crypto.randomUUID();
-        const publisherIssueId = crypto.randomUUID();
-        const publisherDocumentId = crypto.randomUUID();
-        const subscriptionId = crypto.randomUUID();
-        const rawArtifactId = crypto.randomUUID();
-        const publisherText = "Publisher collision text";
-        const publicContentHash = createHash("sha256").update(text, "utf8").digest("hex");
-        const publisherContentHash = createHash("sha256")
-          .update(publisherText, "utf8")
-          .digest("hex");
-        let publisherExtractionId!: string;
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              insert into publisher_companies (id, name)
-              values (${publisherCompanyId}, 'Collision publisher')
-            `;
-            yield* sql`
-              insert into publisher_subscriptions (
-                id, publisher_company_id, name, created_by_user_id
-              ) values (${subscriptionId}, ${publisherCompanyId}, 'Collision publication', ${fixture.userId})
-            `;
-            yield* sql`
-              insert into publisher_issues (
-                id, subscription_id, title, status,
-                created_by_user_id
-              ) values (
-                ${publisherIssueId}, ${subscriptionId}, 'Collision issue', 'draft',
-                ${fixture.userId}
-              )
-            `;
-            yield* sql`
-              insert into hartlib_documents (
-                id, issue_id, title, original_file_name, object_key, media_type,
-                byte_size, sha256_hex, upload_completed_at, created_by_user_id
-              ) values (
-                ${publisherDocumentId}, ${publisherIssueId}, 'Publisher collision document',
-                'collision.pdf', ${`collision/${publisherDocumentId}.pdf`}, 'application/pdf',
-                1, ${"b".repeat(64)}, now(), ${fixture.userId}
-              )
-            `;
-            const [extraction] = yield* sql<{ readonly id: string }>`
-              insert into jobs (kind, payload)
-              values ('extract_pdf_text', '{}'::jsonb)
-              returning id::text
-            `;
-            const extractions = yield* sql<{ readonly id: string }>`
-              insert into hartlib_document_extractions (
-                hartlib_document_id, input_sha256_hex, pages, extracted_char_count, created_by_job_id
-              ) values (
-                ${publisherDocumentId}, ${"b".repeat(64)},
-                ${JSON.stringify([{ pageNumber: 1, text: publisherText }])}::jsonb,
-                ${publisherText.length}, ${extraction!.id}
-              )
-              returning id::text
-            `;
-            publisherExtractionId = extractions[0]!.id;
-            yield* sql`
-              insert into hartlib_document_versions (
-                id, hartlib_document_id, publisher_extraction_id, content_hash, language, canonical_text,
-                text_char_count, page_ranges
-              ) values (
-                ${publicDocumentId}, ${publisherDocumentId}, ${extractions[0]!.id}, ${publisherContentHash}, 'english',
-                ${publisherText}, ${publisherText.length},
-                '[{"pageNumber":1,"charStart":0,"charEnd":24}]'::jsonb
-              )
-            `;
-            yield* sql`
-              update hartlib_documents
-              set current_version_id = ${publicDocumentId}
-              where id = ${publisherDocumentId}
-            `;
-            yield* sql`
-              update publisher_issues
-              set status = 'published', publication_at = now(), published_at = now()
-              where id = ${publisherIssueId}
-            `;
-            yield* sql`
-              insert into public_source_raw_artifacts (
-                id, source_id, canonical_url, fetched_at, media_type, body, body_hash
-              ) values (
-                ${rawArtifactId}, ${sourceId}, ${canonicalUrl}, now(), 'text/html',
-                ${text}, ${publicContentHash}
-              )
-            `;
-            yield* sql`
-              insert into public_source_documents (
-                document_id, source_id, canonical_url, title, published_at,
-                discovered_at, fetched_at, language, document_type, text,
-                text_char_count, content_hash, raw_artifact_id
-              ) values (
-                ${publicDocumentId}, ${sourceId}, ${canonicalUrl}, 'Public collision document', now(),
-                now(), now(), 'en', 'article', ${text}, ${text.length}, ${publicContentHash}, ${rawArtifactId}
-              )
-            `;
-          }),
-        );
-        return {
-          sourceId,
-          subscriptionId,
-          publicDocumentId,
-          publisherIssueId,
-          publisherDocumentId,
-          publisherExtractionId,
-          publicContentHash,
-          publisherContentHash,
-          canonicalUrl,
-        };
-      }),
-    );
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
-    );
-    const source: FinalSourceRecord = {
-      sourceKey: sourceKeyFor(fixture),
-      locator: {
-        kind: "document",
-        sourceId: `public:${collision.sourceId}`,
-        documentId: collision.publicDocumentId,
-        snapshotId: collision.publicDocumentId,
-        contentHash: collision.publicContentHash,
-        ranges: [{ charStart: 0, charEnd: 8 }],
-      },
-      label: "Public collision document",
-      publicProvenance: {
-        documentTitle: "Public collision document",
-        citationUrl: collision.canonicalUrl,
-      },
-      uses: [
-        {
-          consumerTaskId: "single-answer",
-          contextOrder: 0,
-          renderedTokenCount: 8,
-          ranges: [{ charStart: 0, charEnd: 8 }],
-        },
-      ],
-    };
-    await runDb(
-      seedSingleObservability(fixture, {
-        includeAnswerMeasurement: true,
-        contextSources: [
-          {
-            sourceKey: source.sourceKey,
-            candidateId: candidateIdForSource(source),
-            kind: "document",
-            label: source.label,
-            ranges: source.locator.kind === "document" ? source.locator.ranges : [],
-            ...(source.locator.kind === "document"
-              ? {
-                  documentSourceId: source.locator.sourceId,
-                  documentId: source.locator.documentId,
-                  snapshotId: source.locator.snapshotId,
-                  contentHash: source.locator.contentHash,
-                }
-              : {}),
-          },
-        ],
-      }),
-    );
-    await expect(
-      runDb(
-        finalizeAiRun({
-          runId: fixture.runId,
-          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-          coordinates: finalizeCoordinates,
-          answer: {
-            status: "ok",
-            mode: "single",
-            content: `Public [[cite:${sourceKeyFor(fixture)}]]`,
-            sourceMap: [source],
-          },
-          memory,
-        }),
-      ),
-    ).resolves.toMatchObject({ status: "succeeded" });
-    const persisted = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return (yield* sql<{
-          readonly snapshotId: string;
-          readonly publisherExtractionId: string | null;
-        }>`
-          select snapshot_id as "snapshotId",
-                 publisher_extraction_id::text as "publisherExtractionId"
-          from assistant_message_sources
-          where assistant_message_id = (select assistant_message_id from ai_runs where id = ${fixture.runId})
-        `)[0]!;
-      }),
-    );
-    expect(persisted).toEqual({
-      snapshotId: collision.publicDocumentId,
-      publisherExtractionId: null,
-    });
-
-    const malformed = await runDb(createFixture("document-identity-malformed"));
-    const malformedMemory = await runDb(
-      persistMemoryArtifact(malformed, { proposals: [], discardedCount: 0 }),
-    );
-    const wrongIssueId = crypto.randomUUID();
-    const malformedSource: FinalSourceRecord = {
-      ...source,
-      sourceKey: sourceKeyFor(malformed),
-      locator: {
-        kind: "document",
-        sourceId: `publisher:${collision.subscriptionId}` as `publisher:${string}`,
-        documentId: collision.publisherDocumentId,
-        snapshotId: collision.publicDocumentId,
-        contentHash: collision.publisherContentHash,
-        publisherExtractionId: collision.publisherExtractionId,
-        publisherIssueId: wrongIssueId,
-        publisherDocumentId: collision.publisherDocumentId,
-        ranges: [{ charStart: 0, charEnd: 8 }],
-      },
-      publicProvenance: {
-        sourceName: "Collision publisher",
-        issueTitle: "Collision issue",
-        documentTitle: "Publisher collision document",
-        citationUrl: `/v1/issues/${wrongIssueId}/documents/${collision.publisherDocumentId}/content`,
-        publishedAt: new Date().toISOString(),
-      },
-    };
-    await runDb(
-      seedSingleObservability(malformed, {
-        includeAnswerMeasurement: true,
-        contextSources: [
-          {
-            sourceKey: malformedSource.sourceKey,
-            candidateId: candidateIdForSource(malformedSource),
-            kind: "document",
-            label: malformedSource.label,
-            ranges:
-              malformedSource.locator.kind === "document" ? malformedSource.locator.ranges : [],
-            ...(malformedSource.locator.kind === "document"
-              ? {
-                  documentSourceId: malformedSource.locator.sourceId,
-                  publisherIssueId: collision.publisherIssueId,
-                  publisherDocumentId: malformedSource.locator.publisherDocumentId,
-                }
-              : {}),
-            documentId: collision.publisherDocumentId,
-            snapshotId: collision.publicDocumentId,
-            contentHash: collision.publisherContentHash,
-            publisherExtractionId: collision.publisherExtractionId,
-          },
-        ],
-      }),
-    );
-    await expect(
-      runDb(
-        finalizeAiRun({
-          runId: malformed.runId,
-          expectedSmithersRunId: `ai-chat:${malformed.runId}`,
-          coordinates: finalizeCoordinates,
-          answer: {
-            status: "ok",
-            mode: "single",
-            content: "Malformed publisher source",
-            sourceMap: [malformedSource],
-          },
-
-          memory: malformedMemory,
-        }),
-      ),
-    ).rejects.toThrow("publisher document identity does not match database ownership");
-  });
   it("rejects tampered document attestation identity and ranges", async () => {
     const fixture = await runDb(createFixture("document-attestation-tamper"));
     const document = await runDb(createPublicExposureFixture(fixture));
@@ -6223,410 +5745,6 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
       finished: true,
       assistantMessageId: expect.any(String),
     });
-  });
-
-  it("orders real reset before finalization with no answer or memory publication", async () => {
-    const resetProductChat = await loadResetProductChat();
-    const fixture = await runDb(createFixture("archive-before-finalization"));
-    await runDb(seedSingleObservability(fixture));
-    const replacementChatId = crypto.randomUUID();
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, {
-        proposals: [{ kind: "fact", content: "Must stay unpublished" }],
-        discardedCount: 0,
-      }),
-    );
-    let signalLaneHeld!: () => void;
-    const laneHeld = new Promise<void>((resolve) => {
-      signalLaneHeld = resolve;
-    });
-    let releaseLane!: () => void;
-    const laneReleased = new Promise<void>((resolve) => {
-      releaseLane = resolve;
-    });
-    const holder = runDbAs(
-      "hartlib-archive-before-finalization-holder",
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              select pg_advisory_xact_lock(
-                hashtext(${`hartlib:user-memory:${fixture.userId}`})
-              )
-            `;
-            yield* Effect.sync(signalLaneHeld);
-            yield* Effect.promise(() => laneReleased);
-          }),
-        );
-      }),
-    );
-    await laneHeld;
-
-    const reset = runDbAs(
-      "hartlib-archive-before-finalization-reset",
-      resetProductChat(
-        { mode: "demo", userId: fixture.userId, organizationId: null },
-        fixture.chatId,
-        replacementChatId,
-      ),
-    );
-    await waitForDatabaseLock("hartlib-archive-before-finalization-reset");
-    const finalization = runDbAs(
-      "hartlib-archive-before-finalization-finalize",
-      Effect.exit(
-        finalizeAiRun({
-          runId: fixture.runId,
-          expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-          coordinates: finalizeCoordinates,
-          answer: { status: "ok", mode: "single", content: "late answer", sourceMap: [] },
-          memory,
-        }),
-      ),
-    );
-    try {
-      await waitForDatabaseLock("hartlib-archive-before-finalization-finalize");
-    } finally {
-      releaseLane();
-    }
-    await holder;
-    await expect(reset).resolves.toEqual({
-      kind: "created",
-      archivedChatId: fixture.chatId,
-      replacementChatId,
-    });
-    await expect(finalization).resolves.toMatchObject({ _tag: "Failure" });
-
-    const state = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const [run] = yield* sql<{
-          readonly errorCode: string | null;
-          readonly finishedAt: Date | null;
-          readonly failedAt: Date | null;
-          readonly assistantMessageId: string | null;
-        }>`
-          select error_code as "errorCode", finished_at as "finishedAt", failed_at as "failedAt",
-                 assistant_message_id::text as "assistantMessageId"
-          from ai_runs where id = ${fixture.runId}
-        `;
-        const [counts] = yield* sql<{
-          readonly assistants: number;
-          readonly memories: number;
-          readonly replacementMessages: number;
-          readonly replacementRuns: number;
-        }>`
-          select
-            (
-              select count(*)::int
-              from chat_messages
-              where chat_id = ${fixture.chatId} and author = 'assistant'
-            ) as assistants,
-            (
-              select count(*)::int
-              from user_memories
-              where user_id = ${fixture.userId}
-            ) as memories,
-            (
-              select count(*)::int
-              from chat_messages
-              where chat_id = ${replacementChatId}
-            ) as "replacementMessages",
-            (
-              select count(*)::int
-              from ai_runs
-              where chat_id = ${replacementChatId}
-            ) as "replacementRuns"
-        `;
-        return { run, counts };
-      }),
-    );
-    expect(state.run).toMatchObject({
-      errorCode: "chat_archived",
-      finishedAt: null,
-      failedAt: expect.any(Date),
-      assistantMessageId: null,
-    });
-    expect(state.counts).toEqual({
-      assistants: 0,
-      memories: 0,
-      replacementMessages: 0,
-      replacementRuns: 0,
-    });
-  });
-
-  it("commits final answer and memory wholly before real reset archives the chat", async () => {
-    const resetProductChat = await loadResetProductChat();
-    const fixture = await runDb(createFixture("finalization-before-archive", "clarify"));
-    await runDb(seedSingleObservability(fixture));
-    const memory = await runDb(
-      persistMemoryArtifact(fixture, {
-        proposals: [{ kind: "preference", content: "Keep complete results" }],
-        discardedCount: 0,
-      }),
-    );
-    const replacementChatId = crypto.randomUUID();
-    let signalLaneHeld!: () => void;
-    const laneHeld = new Promise<void>((resolve) => {
-      signalLaneHeld = resolve;
-    });
-    let releaseLane!: () => void;
-    const laneReleased = new Promise<void>((resolve) => {
-      releaseLane = resolve;
-    });
-    const holder = runDbAs(
-      "hartlib-finalization-before-archive-holder",
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              select pg_advisory_xact_lock(
-                hashtext(${`hartlib:user-memory:${fixture.userId}`})
-              )
-            `;
-            yield* Effect.sync(signalLaneHeld);
-            yield* Effect.promise(() => laneReleased);
-          }),
-        );
-      }),
-    );
-    await laneHeld;
-
-    const finalization = runDbAs(
-      "hartlib-finalization-before-archive-finalize",
-      finalizeAiRun({
-        runId: fixture.runId,
-        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-        coordinates: finalizeCoordinates,
-        answer: {
-          status: "ok",
-          mode: "clarification",
-          content: "Complete before archive",
-          sourceMap: [],
-        },
-        memory,
-      }),
-    );
-    await waitForDatabaseLock("hartlib-finalization-before-archive-finalize");
-    const reset = runDbAs(
-      "hartlib-finalization-before-archive-reset",
-      resetProductChat(
-        { mode: "demo", userId: fixture.userId, organizationId: null },
-        fixture.chatId,
-        replacementChatId,
-      ),
-    );
-    try {
-      await waitForDatabaseLock("hartlib-finalization-before-archive-reset");
-    } finally {
-      releaseLane();
-    }
-    await holder;
-    await expect(finalization).resolves.toMatchObject({
-      status: "succeeded",
-      alreadyTerminal: false,
-      memory: { created: 1, updated: 0 },
-    });
-    await expect(reset).resolves.toEqual({
-      kind: "created",
-      archivedChatId: fixture.chatId,
-      replacementChatId,
-    });
-
-    const state = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const [run] = yield* sql<{
-          readonly errorCode: string | null;
-          readonly finishedAt: Date | null;
-          readonly failedAt: Date | null;
-          readonly assistantMessageId: string | null;
-          readonly assistantContent: string | null;
-        }>`
-          select run.error_code as "errorCode",
-                 run.finished_at as "finishedAt",
-                 run.failed_at as "failedAt",
-                 run.assistant_message_id::text as "assistantMessageId",
-                 assistant.content as "assistantContent"
-          from ai_runs run
-          left join chat_messages assistant on assistant.id = run.assistant_message_id
-          where run.id = ${fixture.runId}
-        `;
-        const [counts] = yield* sql<{
-          readonly assistants: number;
-          readonly memories: number;
-          readonly revisions: number;
-          readonly replacementMessages: number;
-          readonly replacementRuns: number;
-          readonly archived: boolean;
-        }>`
-          select
-            (
-              select count(*)::int
-              from chat_messages
-              where chat_id = ${fixture.chatId} and author = 'assistant'
-            ) as assistants,
-            (
-              select count(*)::int
-              from user_memories
-              where user_id = ${fixture.userId}
-            ) as memories,
-            (
-              select count(*)::int
-              from user_memory_revisions revisions
-              join user_memories memories on memories.id = revisions.memory_id
-              where memories.user_id = ${fixture.userId}
-            ) as revisions,
-            (
-              select count(*)::int
-              from chat_messages
-              where chat_id = ${replacementChatId}
-            ) as "replacementMessages",
-            (
-              select count(*)::int
-              from ai_runs
-              where chat_id = ${replacementChatId}
-            ) as "replacementRuns",
-            (
-              select archived_at is not null
-                and archived_by_user_id = ${fixture.userId}
-                and replaced_by_chat_id = ${replacementChatId}
-              from chats
-              where id = ${fixture.chatId}
-            ) as archived
-        `;
-        return { run, counts };
-      }),
-    );
-    expect(state.run).toMatchObject({
-      errorCode: null,
-      finishedAt: expect.any(Date),
-      failedAt: null,
-      assistantMessageId: expect.any(String),
-      assistantContent: "Complete before archive",
-    });
-    expect(state.counts).toEqual({
-      assistants: 1,
-      memories: 1,
-      revisions: 1,
-      replacementMessages: 0,
-      replacementRuns: 0,
-      archived: true,
-    });
-  });
-
-  it("linearizes an export message snapshot before a concurrently finishing answer", async () => {
-    const fixture = await runDb(createFixture("export-finalization", "clarify"));
-    await runDb(seedSingleObservability(fixture));
-    const exportId = crypto.randomUUID();
-    let signalSnapshotCaptured!: () => void;
-    const snapshotCaptured = new Promise<void>((resolve) => {
-      signalSnapshotCaptured = resolve;
-    });
-    let releaseAcceptance!: () => void;
-    const acceptanceReleased = new Promise<void>((resolve) => {
-      releaseAcceptance = resolve;
-    });
-    const acceptance = runDbAs(
-      "hartlib-export-message-snapshot-holder",
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        return yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`
-              select pg_advisory_xact_lock(
-                hashtext(${`hartlib:client-members:${fixture.companyId}`})
-              )
-            `;
-            const messageIds = yield* sql<{ readonly id: string }>`
-              select id::text
-              from chat_messages
-              where chat_id = ${fixture.chatId}
-              order by created_at, id
-            `;
-            yield* sql`
-              insert into export_requests (
-                id, requester_user_id, scope_kind, scope_id,
-                authorization_snapshot, idempotency_key
-              ) values (
-                ${exportId}, ${fixture.userId}, 'user_chats', 'me',
-                ${sql.json({
-                  version: 1,
-                  authorizedAt: new Date().toISOString(),
-                  requesterUserId: fixture.userId,
-                  scopeKind: "user_chats",
-                  scopeId: "me",
-                  role: "self",
-                  clientCompanyIds: [fixture.companyId],
-                  accessIds: [],
-                  issueIds: [],
-                  documentIds: [],
-                  chatIds: [fixture.chatId],
-                  chatMessageIds: messageIds.map((message) => message.id),
-                })},
-                ${`export-finalization-${exportId}`}
-              )
-            `;
-            yield* Effect.sync(signalSnapshotCaptured);
-            yield* Effect.promise(() => acceptanceReleased);
-            return messageIds.map((message) => message.id);
-          }),
-        );
-      }),
-    );
-    await snapshotCaptured;
-
-    const exportMemory = await runDb(
-      persistMemoryArtifact(fixture, { proposals: [], discardedCount: 0 }),
-    );
-
-    const finalization = runDbAs(
-      "hartlib-finalization-behind-export-snapshot",
-      finalizeAiRun({
-        runId: fixture.runId,
-        expectedSmithersRunId: `ai-chat:${fixture.runId}`,
-        coordinates: finalizeCoordinates,
-        answer: {
-          status: "ok",
-          mode: "clarification",
-          content: "Clarify after export acceptance",
-          sourceMap: [],
-        },
-        memory: exportMemory,
-      }),
-    );
-    try {
-      await waitForDatabaseLock("hartlib-finalization-behind-export-snapshot");
-    } finally {
-      releaseAcceptance();
-    }
-    const capturedMessageIds = await acceptance;
-    await expect(finalization).resolves.toMatchObject({ status: "succeeded" });
-
-    const after = await runDb(
-      Effect.gen(function* () {
-        const sql = yield* PgClient.PgClient;
-        const [row] = yield* sql<{
-          readonly assistantMessageId: string;
-          readonly snapshottedMessageIds: string[];
-        }>`
-          select run.assistant_message_id::text as "assistantMessageId",
-                 array(
-                   select jsonb_array_elements_text(
-                     request.authorization_snapshot->'chatMessageIds'
-                   )
-                 ) as "snapshottedMessageIds"
-          from ai_runs run
-          cross join export_requests request
-          where run.id = ${fixture.runId} and request.id = ${exportId}
-        `;
-        return row!;
-      }),
-    );
-    expect(capturedMessageIds).toEqual([fixture.userMessageId]);
-    expect(after.snapshottedMessageIds).toEqual(capturedMessageIds);
-    expect(after.snapshottedMessageIds).not.toContain(after.assistantMessageId);
   });
 
   it("serializes fatal terminal failure on the chat execution lane", async () => {
@@ -8335,7 +7453,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             const [run] = yield* sql<{ readonly id: string }>`
               insert into ai_runs (
                 chat_id, initiating_user_id, user_message_id, locale, market,
-                acceptance_scope
+                acceptance_scope, citation_namespace
               )
               values (
                 ${fixture.chatId}, ${fixture.userId}, ${ids.messageId}, 'en-US', 'US',
@@ -8347,7 +7465,7 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
                     memoryMode: fixture.memoryMode,
                     memoryRevisionIds: memoryHead === undefined ? [] : [memoryHead.revisionId],
                   }),
-                )}
+                )}, ${newCitationNamespace()}
               )
               returning id::text
             `;
@@ -8675,24 +7793,25 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
             from generate_series(1, 501) ordinal
           )
           insert into assistant_message_sources (
-            assistant_message_id, source_key, kind, locator, memory_revision_id
+            run_id, assistant_message_id, source_key, kind, locator, memory_revision_id,
+            citation_namespace
           )
-          select ${assistantMessageId},
+          select ${fixture.runId}, ${assistantMessageId},
                  ${`k_${fixture.citationNamespace}_`} || ordinal::text,
                  'memory',
                  jsonb_build_object(
                    'kind', 'memory', 'memoryId', memory_id::text,
                    'memoryRevisionId', revision_id::text
                  ),
-                 revision_id
+                 revision_id, ${fixture.citationNamespace}
           from ids
         `;
             yield* sql`
           insert into assistant_message_source_uses (
-            assistant_message_id, source_key, consumer_task_id,
+            run_id, assistant_message_id, source_key, consumer_task_id,
             rendered_token_count, context_order, ranges
           )
-          select ${assistantMessageId},
+          select ${fixture.runId}, ${assistantMessageId},
                  ${`k_${fixture.citationNamespace}_`} || ordinal::text,
                  'single-answer', 1, ordinal - 1, '[]'::jsonb
           from generate_series(1, 501) ordinal
@@ -9069,10 +8188,11 @@ describe.skipIf(!isBun || !databaseUrl)("canonical AI product state", () => {
           ), runs as (
             insert into ai_runs (
               chat_id, initiating_user_id, user_message_id, locale, market,
-              acceptance_scope, failed_at, error_code, retryable
+              acceptance_scope, citation_namespace, failed_at, error_code, retryable
             )
             select ${eventFixture.chatId}, ${eventFixture.userId}, messages.id,
                    'en-US', 'US', (select acceptance_scope from ai_runs where id = ${eventFixture.runId}),
+                   'cn_' || substr(md5('retention-event:' || messages.id::text), 1, 22),
                    now() - interval '24 hours 1 second',
                    'answer_failed', false
             from messages

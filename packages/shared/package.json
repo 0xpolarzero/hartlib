@@ -7,8 +7,10 @@
     "./api": "./src/api.ts",
     "./chat": "./src/chat.ts",
     "./content": "./src/content.ts",
-    "./export-contract": "./src/export-contract.ts",
-    "./platform": "./src/platform.ts"
+    "./document-source-id": "./src/document-source-id.ts",
+    "./http-contracts": "./src/http-contracts.ts",
+    "./public-source-url": "./src/public-source-url.ts",
+    "./web-policy": "./src/web-policy.ts"
   },
   "scripts": {
     "build": "tsc -b --noEmit",

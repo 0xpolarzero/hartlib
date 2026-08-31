@@ -54,15 +54,6 @@ describe("Phase B query review", () => {
     },
     {
       queryOrdinal: 1,
-      branch: "publisher_documents" as const,
-      status: "not_applicable" as const,
-      reason: "scope_documents" as const,
-      hitCount: 0,
-      truncated: false,
-      cap: 2,
-    },
-    {
-      queryOrdinal: 1,
       branch: "chat_messages" as const,
       status: "not_applicable" as const,
       reason: "scope_documents" as const,
@@ -97,15 +88,6 @@ describe("Phase B query review", () => {
             branch: "public_documents" as const,
             status: "applicable" as const,
             hitCount: 1,
-            truncated: false,
-            cap: 2,
-          },
-          {
-            queryOrdinal: 1,
-            branch: "publisher_documents" as const,
-            status: "not_applicable" as const,
-            reason: "scope_documents" as const,
-            hitCount: 0,
             truncated: false,
             cap: 2,
           },
@@ -184,7 +166,7 @@ describe("Phase B query review", () => {
       { providerInput: projection, privateProof: [] },
     ]);
     expect(providerArgument).toEqual(projection);
-    expect(projection.coverage).toHaveLength(3);
+    expect(projection.coverage).toHaveLength(2);
     expect(projection.truncation).toEqual({ branch: false, candidates: false, hydration: false });
   });
 
@@ -214,7 +196,7 @@ describe("Phase B query review", () => {
     expect(exposures).toEqual([{ providerInput: projection, privateProof: [] }]);
     expect(providerArgument).toEqual(projection);
     expect((providerArgument as typeof projection).results).toHaveLength(0);
-    expect((providerArgument as typeof projection).coverage).toHaveLength(3);
+    expect((providerArgument as typeof projection).coverage).toHaveLength(2);
     expect((providerArgument as typeof projection).truncation).toEqual({
       branch: false,
       candidates: false,
@@ -695,122 +677,6 @@ describe("fanout source-key merge", () => {
     expect(first.sources.map(({ identityKey }) => identityKey)).toHaveLength(2);
     expect(new Set(first.sources.map(({ sourceKey }) => sourceKey)).size).toBe(
       first.sources.length,
-    );
-  });
-
-  it("keeps identical raw IDs distinct across public and publisher namespaces in both orders", async () => {
-    const operations = new CanonicalWorkflowOperations(
-      "postgres://unused",
-      config(100_000),
-      {} as CanonicalAgentClient,
-    );
-    stubPriorTurns(operations);
-    const _publicReference = {
-      kind: "document" as const,
-      documentId: "same-document",
-      snapshotId: "same-version",
-      source: { kind: "public" as const, sourceId: "public:same-source" },
-      purpose: "public",
-    };
-    const _publisherReference = {
-      kind: "document" as const,
-      documentId: "same-document",
-      snapshotId: "same-version",
-      source: {
-        kind: "publisher" as const,
-        sourceId: "publisher:same-source",
-        issueId: "same-issue",
-        documentId: "same-document",
-      },
-      purpose: "publisher",
-    };
-    const topics = plan([]).topics;
-    const first = await operations.mergeFanoutSources(load(""), topics, {
-      t1: {
-        structuredInternal: structuredForIdentities([
-          {
-            kind: "public_document",
-            sourceId: "same-source",
-            documentId: "same-document",
-            snapshotId: "same-version",
-            contentHash: "a".repeat(64),
-          },
-          {
-            kind: "publisher_document",
-            subscriptionId: "same-source",
-            issueId: "same-issue",
-            documentId: "same-document",
-            snapshotId: "same-version",
-            publisherExtractionId: "same-extraction",
-            contentHash: "b".repeat(64),
-          },
-        ]),
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-      t2: {
-        structuredInternal: null,
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-      t3: {
-        structuredInternal: null,
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-    });
-    const second = await operations.mergeFanoutSources(load(""), topics, {
-      t1: {
-        structuredInternal: structuredForIdentities([
-          {
-            kind: "publisher_document",
-            subscriptionId: "same-source",
-            issueId: "same-issue",
-            documentId: "same-document",
-            snapshotId: "same-version",
-            publisherExtractionId: "same-extraction",
-            contentHash: "b".repeat(64),
-          },
-          {
-            kind: "public_document",
-            sourceId: "same-source",
-            documentId: "same-document",
-            snapshotId: "same-version",
-            contentHash: "a".repeat(64),
-          },
-        ]),
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-      t2: {
-        structuredInternal: null,
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-      t3: {
-        structuredInternal: null,
-        memories: [],
-        memorySelection: "enabled" as const,
-        web: [],
-        webSelection: "enabled" as const,
-      },
-    });
-    expect(first.sources).toHaveLength(2);
-    expect(second.sources).toHaveLength(2);
-    expect(new Set(first.sources.map(({ identityKey }) => identityKey)).size).toBe(2);
-    expect(new Set(second.sources.map(({ identityKey }) => identityKey)).size).toBe(2);
-    expect(first.sources.map(({ identityKey }) => identityKey).sort()).toEqual(
-      second.sources.map(({ identityKey }) => identityKey).sort(),
     );
   });
 });

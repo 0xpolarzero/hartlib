@@ -8,9 +8,7 @@ import {
   activityStageForCode,
   canonicalPublicSourceHttpsUrl,
   isCanonicalPublicDocumentSourceId,
-  isCanonicalPublisherDocumentSourceId,
   parseRunAcceptanceScope,
-  publisherIssueAdvisoryLockKey,
   type RunAcceptanceScope,
   type AiRunActivityErrorCategory,
 } from "@hartlib/shared";
@@ -75,6 +73,9 @@ interface RunRow {
   readonly retryable: boolean | null;
   readonly finishedAt: Date | null;
   readonly failedAt: Date | null;
+  readonly stoppedAt: Date | null;
+  readonly supersededAt: Date | null;
+  readonly stopRequestedAt: Date | null;
   readonly citationNamespace: string;
   readonly acceptanceScope: unknown;
 }
@@ -411,24 +412,18 @@ const RetrievalRangeSchema = z
   .object({ charStart: z.number().int().nonnegative(), charEnd: z.number().int().positive() })
   .strict()
   .refine((range) => range.charEnd > range.charStart);
-const RetrievalDocumentSourceSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("public"), sourceId: z.string().trim().min(1) }).strict(),
-  z
-    .object({
-      kind: z.literal("publisher"),
-      sourceId: z.string().trim().min(1),
-      issueId: z.string().trim().min(1),
-      documentId: z.string().trim().min(1),
-    })
-    .strict(),
-]);
+const RetrievalDocumentSourceSchema = z
+  .object({
+    kind: z.literal("public"),
+    sourceId: z.string().trim().min(1),
+  })
+  .strict();
 const RetrievalReferenceSchema = z.union([
   z
     .object({
       kind: z.literal("document"),
       documentId: z.string().trim().min(1),
       snapshotId: z.string().trim().min(1),
-      publisherExtractionId: z.string().trim().min(1).optional(),
       source: RetrievalDocumentSourceSchema,
       ranges: z.array(RetrievalRangeSchema).optional(),
       purpose: z.string().trim().min(1),
@@ -528,17 +523,6 @@ const StructuredRetrievalPreviewIdentitySchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
-      kind: z.literal("publisher_document"),
-      subscriptionId: z.string().trim().min(1),
-      issueId: z.string().trim().min(1),
-      documentId: z.string().trim().min(1),
-      snapshotId: z.string().trim().min(1),
-      publisherExtractionId: z.string().trim().min(1),
-      contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
-    })
-    .strict(),
-  z
-    .object({
       kind: z.literal("chat_message"),
       messageId: z.string().trim().min(1),
       sanitizedContentHash: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -560,7 +544,6 @@ const StructuredRetrievalPreviewRecordSchema = z
     identity: StructuredRetrievalPreviewIdentitySchema,
     snapshotId: z.string().trim().min(1),
     contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
-    publisherExtractionId: z.string().trim().min(1).optional(),
     previewRanges: z.array(StructuredRetrievalPreviewRangeSchema).min(1),
     previewByteLength: z.number().int().positive(),
     previewSha256Hex: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -624,7 +607,179 @@ export type TerminalAiRunResult =
       readonly memory: AppliedMemoryChanges | null;
       readonly usage: AggregateAiRunUsage | null;
       readonly alreadyTerminal: boolean;
+    }
+  | {
+      readonly status: "stopped";
+      readonly assistantMessageId: string | null;
+      readonly alreadyTerminal: boolean;
     };
+
+export interface StoppedAiRunResult {
+  readonly status: "stopped";
+  readonly runId: string;
+  readonly assistantMessageId: string | null;
+  readonly alreadyStopped: boolean;
+}
+
+/** Remove a trailing citation marker that the provider had not finished. */
+export const stripIncompleteCitationTail = (text: string): string => {
+  const open = "[[cite:";
+  const markerStart = text.lastIndexOf(open);
+  if (markerStart >= 0 && !text.includes("]]", markerStart + open.length)) {
+    return text.slice(0, markerStart);
+  }
+  for (let length = Math.min(open.length - 1, text.length); length > 0; length -= 1) {
+    const candidate = text.slice(-length);
+    if (open.startsWith(candidate)) return text.slice(0, -length);
+  }
+  return text;
+};
+
+/**
+ * Commit a database-observed stop request.  The run row is locked first, so a
+ * normal completion that committed first wins.  Text deltas are reconstructed
+ * in order, an incomplete trailing citation token is removed, and only source
+ * keys already present in this run's ledger remain in a partial answer.
+ */
+const stopAiRunInTransaction = (
+  runId: string,
+): Effect.Effect<StoppedAiRunResult, SqlError | Error, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const runs = yield* sql<{
+      readonly id: string;
+      readonly finishedAt: Date | null;
+      readonly failedAt: Date | null;
+      readonly stoppedAt: Date | null;
+      readonly supersededAt: Date | null;
+      readonly assistantMessageId: string | null;
+      readonly assistantContent: string | null;
+      readonly chatId: string;
+    }>`
+      select ai_runs.id::text as id, finished_at as "finishedAt", failed_at as "failedAt",
+             stopped_at as "stoppedAt", superseded_at as "supersededAt",
+             assistant_message_id::text as "assistantMessageId",
+             assistant.content as "assistantContent", ai_runs.chat_id::text as "chatId"
+      from ai_runs
+      left join chat_messages assistant
+        on assistant.id = ai_runs.assistant_message_id and assistant.author = 'assistant'
+      where ai_runs.id = ${runId} for update of ai_runs
+    `;
+    const run = runs[0];
+    if (run === undefined) return yield* Effect.fail(new Error(`ai run not found: ${runId}`));
+    if (run.finishedAt !== null || run.failedAt !== null || run.supersededAt !== null) {
+      return {
+        status: "stopped",
+        runId,
+        assistantMessageId: run.assistantMessageId,
+        alreadyStopped: false,
+      } as const;
+    }
+    if (run.stoppedAt !== null) {
+      return {
+        status: "stopped",
+        runId,
+        assistantMessageId: run.assistantMessageId,
+        alreadyStopped: true,
+      } as const;
+    }
+    // A retried answer task leaves its earlier deltas in the durable event
+    // log.  The emission key carries the task and provider attempt, so use
+    // the most recent answer_started marker as the current attempt fence
+    // instead of replaying text from a discarded attempt.
+    const answerStartRows = yield* sql<{
+      readonly taskId: string;
+      readonly attempt: number;
+    }>`
+      select emitted_by_task as "taskId", (event->>'attempt')::integer as attempt
+      from ai_run_events
+      where run_id = ${run.id}
+        and event->>'type' = 'answer_started'
+        and emitted_by_task is not null
+      order by seq desc
+      limit 1
+    `;
+    const answerStart = answerStartRows[0];
+    const deltaRows =
+      answerStart === undefined
+        ? []
+        : yield* sql<{ readonly delta: string }>`
+            select event->>'delta' as delta
+            from ai_run_events
+            where run_id = ${run.id}
+              and event->>'type' = 'text_delta'
+              and emission_key like ${`text_delta:${answerStart.taskId}:${answerStart.attempt}:%`}
+            order by seq
+          `;
+    const sourceRows = yield* sql<{ readonly sourceKey: string }>`
+      select source_key as "sourceKey" from assistant_message_sources where run_id = ${run.id}
+    `;
+    const sourceKeys = new Set(sourceRows.map((row) => row.sourceKey));
+    let partial = deltaRows.map((row) => row.delta).join("");
+    partial = stripIncompleteCitationTail(partial);
+    partial = partial
+      .replace(/\[\[cite:([^\]]+)\]\]/gu, (_token: string, keys: string) => {
+        const valid = keys.split(",").filter((key) => sourceKeys.has(key));
+        return valid.length === 0 ? "" : `[[cite:${valid.join(",")}]]`;
+      })
+      .replace(/[ \t]{2,}$/u, " ");
+    let assistantMessageId = run.assistantMessageId;
+    if (assistantMessageId === null && partial.trim() !== "") {
+      const messages = yield* sql<{ readonly id: string }>`
+        insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+        values (${run.chatId}, 'assistant', ${partial}, ${run.id})
+        returning id::text
+      `;
+      assistantMessageId = messages[0]?.id ?? null;
+    } else if (assistantMessageId !== null && partial.trim() !== "") {
+      yield* sql`update chat_messages set content = ${partial} where id = ${assistantMessageId} and author = 'assistant'`;
+    } else if (assistantMessageId !== null && (run.assistantContent ?? "").trim() === "") {
+      // A worker must never leave an empty visible assistant row behind when
+      // a stop arrives before the first usable delta.
+      yield* sql`delete from chat_messages where id = ${assistantMessageId} and author = 'assistant'`;
+      assistantMessageId = null;
+    }
+    if (assistantMessageId !== null) {
+      // A stop can arrive after retrieval has persisted the run-owned source
+      // ledger but before normal finalization creates the assistant
+      // projection. Bind the visible projection to every still-unbound source
+      // (and its uses) so validated partial citations remain readable. The
+      // run and source identities stay unchanged.
+      yield* sql`
+        update assistant_message_sources
+        set assistant_message_id = ${assistantMessageId}::uuid
+        where run_id = ${run.id}::uuid and assistant_message_id is null
+      `;
+      yield* sql`
+        update assistant_message_source_uses
+        set assistant_message_id = ${assistantMessageId}::uuid
+        where run_id = ${run.id}::uuid and assistant_message_id is null
+      `;
+    }
+    yield* sql`
+      update ai_runs
+      set assistant_message_id = ${assistantMessageId},
+          stop_requested_at = coalesce(stop_requested_at, now()),
+          stopped_at = now(), error_code = null, retryable = null
+      where id = ${run.id}
+        and finished_at is null and failed_at is null and stopped_at is null and superseded_at is null
+    `;
+    yield* appendAiRunEventInTransaction({
+      runId: run.id,
+      emissionKey: "terminal",
+      event: { type: "stopped", assistantMessageId },
+      emittedByTask: "stop",
+    });
+    return { status: "stopped", runId, assistantMessageId, alreadyStopped: false } as const;
+  });
+
+export const stopAiRun = (
+  runId: string,
+): Effect.Effect<StoppedAiRunResult, SqlError | Error, PgClient.PgClient> =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    return yield* sql.withTransaction(stopAiRunInTransaction(runId));
+  });
 
 const validateDurableObservability = (
   run: RunRow,
@@ -712,9 +867,7 @@ const validateDurableObservability = (
       (row) => !allowedObservationKinds.has(row.kind),
     );
     if (unknownObservation !== undefined) {
-      return yield* Effect.fail(
-        new Error(`unknown or legacy observation kind: ${unknownObservation.kind}`),
-      );
+      return yield* Effect.fail(new Error(`unknown observation kind: ${unknownObservation.kind}`));
     }
     const terminalPlans = observationRows.filter((row) => row.kind === "turn_plan");
     if (terminalPlans.length === 0) {
@@ -838,7 +991,12 @@ const validateDurableObservability = (
             select value from jsonb_array_elements_text(${JSON.stringify(selectedTurnIds)}::jsonb)
           )
           and prior.id <> current.id
-          and (prior.finished_at is not null or prior.failed_at is not null)
+          and (
+            prior.finished_at is not null
+            or prior.failed_at is not null
+            or prior.stopped_at is not null
+            or prior.superseded_at is not null
+          )
       `;
       if (selectedRows.length !== selectedTurnIds.length) {
         return yield* Effect.fail(new Error("terminal turn_plan selects an unavailable chat turn"));
@@ -882,7 +1040,11 @@ const validateDurableObservability = (
       }
       noCallSealsBySelectorObservation.set(parsed.data.selectorObservationKey, parsed.data);
     }
-    const terminalReplay = run.finishedAt !== null || run.failedAt !== null;
+    const terminalReplay =
+      run.finishedAt !== null ||
+      run.failedAt !== null ||
+      run.stoppedAt !== null ||
+      run.supersededAt !== null;
     const historicalNoCallReasonsByTask = new Map<string, RetrievalNoCallReason>();
     for (const seal of noCallSealsBySelectorObservation.values()) {
       const previous = historicalNoCallReasonsByTask.get(seal.selectorTaskId);
@@ -1174,26 +1336,7 @@ const validateDurableObservability = (
         `;
           return rows[0]?.text ?? null;
         }
-        const sourceId = record.identity.subscriptionId.startsWith("publisher:")
-          ? record.identity.subscriptionId.slice("publisher:".length)
-          : record.identity.subscriptionId;
-        const rows = yield* sql<{ readonly text: string }>`
-        select versions.canonical_text as text
-        from hartlib_document_versions versions
-        join hartlib_documents documents on documents.id = versions.hartlib_document_id
-        where documents.id::text = ${record.identity.documentId}
-          and versions.id::text = ${record.identity.snapshotId}
-          and versions.publisher_extraction_id::text = ${record.identity.publisherExtractionId}
-          and documents.issue_id::text = ${record.identity.issueId}
-          and exists (
-            select 1
-            from publisher_issues issues
-            join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-            where issues.id::text = ${record.identity.issueId}
-              and subscriptions.id::text = ${sourceId}
-          )
-      `;
-        return rows[0]?.text ?? null;
+        return null;
       });
     for (const row of reviewPreviewRows) {
       const parsed = StructuredRetrievalReviewPreviewPayloadSchema.safeParse(row.payload);
@@ -1293,21 +1436,12 @@ const validateDurableObservability = (
           );
         }
         if (
-          (record.identity.kind === "public_document" ||
-            record.identity.kind === "publisher_document") &&
+          record.identity.kind === "public_document" &&
           (record.identity.snapshotId !== record.snapshotId ||
             record.identity.contentHash !== record.contentHash)
         ) {
           return yield* Effect.fail(
             new Error("structured retrieval review preview identity differs"),
-          );
-        }
-        if (
-          record.identity.kind === "publisher_document" &&
-          record.identity.publisherExtractionId !== record.publisherExtractionId
-        ) {
-          return yield* Effect.fail(
-            new Error("structured retrieval review preview publisher identity differs"),
           );
         }
         if (
@@ -1380,16 +1514,13 @@ const validateDurableObservability = (
       readonly contentHash: string | null;
       readonly documentSourceId: string | null;
       readonly documentId: string | null;
-      readonly publisherIssueId: string | null;
       readonly chatContentHash: string | null;
       readonly chatRanges:
         | readonly { readonly charStart: number; readonly charEnd: number }[]
         | null;
-      readonly publisherDocumentId: string | null;
       readonly documentRanges:
         | readonly { readonly charStart: number; readonly charEnd: number }[]
         | null;
-      readonly publisherExtractionId: string | null;
     }>`
       select task_id as "taskId", loop_iteration as "loopIteration", attempt,
              provider_request_index as "providerRequestIndex",
@@ -1399,12 +1530,9 @@ const validateDurableObservability = (
              visible_token_count as "visibleTokenCount",
              snapshot_id as "snapshotId", content_hash as "contentHash",
              document_source_id as "documentSourceId", document_id as "documentId",
-             publisher_issue_id::text as "publisherIssueId",
-             publisher_document_id::text as "publisherDocumentId",
              document_ranges as "documentRanges",
              chat_content_hash as "chatContentHash",
-             chat_ranges as "chatRanges",
-             publisher_extraction_id::text as "publisherExtractionId"
+             chat_ranges as "chatRanges"
       from ai_source_exposures where run_id = ${runId}
     `;
     const exposureRows = storedExposureRows.map((row) => ({
@@ -1443,28 +1571,15 @@ const validateDurableObservability = (
               rangesEqual(exposure.chatRanges, record.previewRanges)
             );
           }
-          const expectedLogical =
-            record.identity.kind === "public_document"
-              ? namespacedDocumentEvidenceIdentity(
-                  {
-                    kind: "public",
-                    sourceId: record.identity.sourceId.startsWith("public:")
-                      ? record.identity.sourceId
-                      : `public:${record.identity.sourceId}`,
-                  },
-                  record.identity.documentId,
-                )
-              : namespacedDocumentEvidenceIdentity(
-                  {
-                    kind: "publisher",
-                    sourceId: record.identity.subscriptionId.startsWith("publisher:")
-                      ? record.identity.subscriptionId
-                      : `publisher:${record.identity.subscriptionId}`,
-                    issueId: record.identity.issueId,
-                    documentId: record.identity.documentId,
-                  },
-                  record.identity.documentId,
-                );
+          const expectedLogical = namespacedDocumentEvidenceIdentity(
+            {
+              kind: "public",
+              sourceId: record.identity.sourceId.startsWith("public:")
+                ? record.identity.sourceId
+                : `public:${record.identity.sourceId}`,
+            },
+            record.identity.documentId,
+          );
           return (
             exposure.sourceKind === "document" &&
             exposure.exposureStage === "internal_search_preview" &&
@@ -1532,8 +1647,7 @@ const validateDurableObservability = (
           exposure.documentSourceId === null ||
           exposure.documentId === null ||
           exposure.documentRanges === null ||
-          exposure.documentSourceId.startsWith("publisher:") !==
-            (exposure.publisherExtractionId !== null)
+          !isCanonicalPublicDocumentSourceId(exposure.documentSourceId)
         ) {
           return yield* Effect.fail(
             new Error("document exposure lacks its exact reconstruction binding"),
@@ -1545,21 +1659,12 @@ const validateDurableObservability = (
             logicalSourceIdentity: exposure.logicalSourceIdentity,
             contentItemIdentity: exposure.contentItemIdentity,
             requireCanonicalDocumentIdentity: true,
-            ...(exposure.publisherIssueId === null || exposure.publisherDocumentId === null
-              ? {}
-              : {
-                  publisherIssueId: exposure.publisherIssueId,
-                  publisherDocumentId: exposure.publisherDocumentId,
-                }),
             documentReconstruction: {
               sourceId: exposure.documentSourceId,
               documentId: exposure.documentId,
               snapshotId: exposure.snapshotId,
               contentHash: exposure.contentHash,
               ranges: exposure.documentRanges,
-              ...(exposure.publisherExtractionId === null
-                ? {}
-                : { publisherExtractionId: exposure.publisherExtractionId }),
             },
           });
         } catch (error) {
@@ -1574,8 +1679,7 @@ const validateDurableObservability = (
         exposure.contentHash !== null ||
         exposure.documentSourceId !== null ||
         exposure.documentId !== null ||
-        exposure.documentRanges !== null ||
-        exposure.publisherExtractionId !== null
+        exposure.documentRanges !== null
       ) {
         return yield* Effect.fail(new Error("non-document exposure carries document identity"));
       }
@@ -1708,7 +1812,6 @@ const validateDurableObservability = (
         "snapshotId",
         "documentContentHash",
         "documentRanges",
-        "publisherExtractionId",
       ] as const;
       const chatReconstructionFields = ["chatMessageId", "chatContentHash", "chatRanges"] as const;
       const hasChatReconstruction = chatReconstructionFields.some((field) =>
@@ -1753,8 +1856,7 @@ const validateDurableObservability = (
           row.payload.documentId !== exposure.documentId ||
           row.payload.snapshotId !== exposure.snapshotId ||
           row.payload.documentContentHash !== exposure.contentHash ||
-          canonicalJson(row.payload.documentRanges) !== canonicalJson(exposure.documentRanges) ||
-          (row.payload.publisherExtractionId ?? null) !== exposure.publisherExtractionId
+          canonicalJson(row.payload.documentRanges) !== canonicalJson(exposure.documentRanges)
         ) {
           return yield* Effect.fail(
             new Error("document exposure attestation reconstruction differs"),
@@ -2086,9 +2188,8 @@ const validateDurableObservability = (
         );
         if (
           !providerTaskRoleAllowed(usage.taskId, usage.agentRole) ||
-          !["zai_coding_plan_official", "deterministic_test", "openai_compatible_custom"].includes(
-            usage.providerServiceId,
-          ) ||
+          (usage.providerServiceId !== "zai_coding_plan_official" &&
+            usage.providerServiceId !== "deterministic_test") ||
           !["stop", "length", "toolUse"].includes(usage.stopReason) ||
           roleRows.length !== 1 ||
           !providerTaskRoleAllowed(usage.taskId, roleRows[0]!.payload.agentRole as string)
@@ -3431,16 +3532,13 @@ const validateDurableObservability = (
                   exposure.documentSourceId === null &&
                   exposure.documentId === null &&
                   exposure.snapshotId === null &&
-                  exposure.contentHash === null &&
-                  exposure.publisherExtractionId === null
+                  exposure.contentHash === null
                 : exposure.documentRanges !== null &&
                   rangesEqual(exposure.documentRanges, identity.documentRanges) &&
                   exposure.documentSourceId === expectedDocument?.sourceId &&
                   exposure.documentId === expectedDocument?.documentId &&
                   exposure.snapshotId === expectedDocument?.snapshotId &&
-                  exposure.contentHash === expectedDocument?.contentHash &&
-                  exposure.publisherExtractionId ===
-                    (expectedDocument?.publisherExtractionId ?? null)),
+                  exposure.contentHash === expectedDocument?.contentHash),
           );
           if (matching.length !== 1) {
             return "serialized answer source lacks its exact answer_serialized exposure";
@@ -3823,6 +3921,9 @@ const loadRunForUpdate = (
         retryable,
         finished_at as "finishedAt",
         failed_at as "failedAt",
+        stop_requested_at as "stopRequestedAt",
+        stopped_at as "stoppedAt",
+        superseded_at as "supersededAt",
         citation_namespace as "citationNamespace",
         acceptance_scope as "acceptanceScope"
       from ai_runs
@@ -3887,35 +3988,14 @@ const lockRunExecutionScope = (
     return scope;
   });
 
-/**
- * Restriction changes and finalization share one transaction advisory lane per
- * publisher issue. The sorted acquisition order keeps a fanout answer from
- * deadlocking another transaction that touches the same set of issues.
- */
-const lockPublisherIssueLanes = (
-  sourceMap: readonly FinalSourceRecord[],
-): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const issueIds = [
-      ...new Set(
-        sourceMap.flatMap((source) =>
-          source.locator.kind === "document" && source.locator.publisherIssueId !== undefined
-            ? [source.locator.publisherIssueId]
-            : [],
-        ),
-      ),
-    ].sort();
-    for (const issueId of issueIds) {
-      yield* sql`
-        select pg_advisory_xact_lock(
-          hashtextextended(${publisherIssueAdvisoryLockKey(issueId)}, 0)
-        )
-      `;
-    }
-  });
-
 const existingTerminalResult = (row: RunRow): TerminalAiRunResult | null => {
+  if (row.stoppedAt !== null || row.supersededAt !== null) {
+    return {
+      status: "stopped",
+      assistantMessageId: row.assistantMessageId,
+      alreadyTerminal: true,
+    };
+  }
   if (row.finishedAt !== null && row.assistantMessageId !== null) {
     return {
       status: "succeeded",
@@ -4214,7 +4294,6 @@ const validateTerminalProductLedger = (
         readonly label: string | null;
         readonly publicProvenance: unknown;
         readonly snapshotId: string | null;
-        readonly publisherExtractionId: string | null;
         readonly documentSourceId: string | null;
         readonly documentId: string | null;
         readonly contentHash: string | null;
@@ -4223,12 +4302,11 @@ const validateTerminalProductLedger = (
       }>`
         select source_key as "sourceKey", kind, locator, display_label as label,
                public_provenance as "publicProvenance", snapshot_id::text as "snapshotId",
-               publisher_extraction_id::text as "publisherExtractionId",
                document_source_id as "documentSourceId", document_id as "documentId",
                content_hash as "contentHash", message_id::text as "messageId",
                memory_revision_id::text as "memoryRevisionId"
         from assistant_message_sources
-        where assistant_message_id = ${assistantMessageId}
+        where run_id = ${run.id}
       `;
       if (sourceRows.length !== answer.sourceMap.length) {
         return yield* Effect.fail(new Error("terminal source ledger is incomplete"));
@@ -4240,7 +4318,6 @@ const validateTerminalProductLedger = (
           expected?.locator.kind === "document"
             ? {
                 snapshotId: expected.locator.snapshotId,
-                publisherExtractionId: expected.locator.publisherExtractionId ?? null,
                 documentSourceId: expected.locator.sourceId,
                 documentId: expected.locator.documentId,
                 contentHash: expected.locator.contentHash,
@@ -4250,7 +4327,6 @@ const validateTerminalProductLedger = (
             : expected?.locator.kind === "chat_message"
               ? {
                   snapshotId: null,
-                  publisherExtractionId: null,
                   documentSourceId: null,
                   documentId: null,
                   contentHash: null,
@@ -4260,7 +4336,6 @@ const validateTerminalProductLedger = (
               : expected?.locator.kind === "memory"
                 ? {
                     snapshotId: null,
-                    publisherExtractionId: null,
                     documentSourceId: null,
                     documentId: null,
                     contentHash: null,
@@ -4269,7 +4344,6 @@ const validateTerminalProductLedger = (
                   }
                 : {
                     snapshotId: null,
-                    publisherExtractionId: null,
                     documentSourceId: null,
                     documentId: null,
                     contentHash: null,
@@ -4284,7 +4358,6 @@ const validateTerminalProductLedger = (
           row.label !== expected.label ||
           canonicalJson(row.publicProvenance) !== canonicalJson(expected.publicProvenance) ||
           row.snapshotId !== expectedIndexedIdentity.snapshotId ||
-          row.publisherExtractionId !== expectedIndexedIdentity.publisherExtractionId ||
           row.documentSourceId !== expectedIndexedIdentity.documentSourceId ||
           row.documentId !== expectedIndexedIdentity.documentId ||
           row.contentHash !== expectedIndexedIdentity.contentHash ||
@@ -4306,7 +4379,7 @@ const validateTerminalProductLedger = (
                topic_id as "topicId", rendered_token_count as "renderedTokenCount",
                context_order as "contextOrder", ranges
         from assistant_message_source_uses
-        where assistant_message_id = ${assistantMessageId}
+        where run_id = ${run.id}
       `;
       const expectedUses = answer.sourceMap.flatMap((source) =>
         source.uses.map((use) => ({
@@ -4415,8 +4488,7 @@ const validateTerminalProductLedger = (
       const sourceRows = yield* sql<{ readonly sourceKey: string }>`
         select source_key as "sourceKey"
         from assistant_message_sources sources
-        join chat_messages messages on messages.id = sources.assistant_message_id
-        where messages.assistant_ai_run_id = ${run.id}
+        where sources.run_id = ${run.id}
       `;
       const citationRows = observations.filter(
         (row) => row.kind === "citation" || row.kind === "citation_defect",
@@ -4436,11 +4508,7 @@ const sourceIdentity = (source: FinalSourceRecord): string => {
   const locator = source.locator;
   switch (locator.kind) {
     case "document":
-      return `document:${locator.sourceId}:${
-        locator.publisherIssueId === undefined
-          ? "public"
-          : `publisher:${locator.publisherIssueId}:${locator.publisherDocumentId ?? ""}`
-      }:${locator.snapshotId}:${locator.contentHash}:${locator.publisherExtractionId ?? ""}`;
+      return `document:${locator.sourceId}:public:${locator.snapshotId}:${locator.contentHash}`;
     case "chat_message":
       return `chat_message:${locator.messageId}`;
     case "memory":
@@ -4455,14 +4523,7 @@ const candidateIdentity = (source: FinalSourceRecord): string => {
   switch (locator.kind) {
     case "document":
       return namespacedDocumentEvidenceIdentity(
-        locator.publisherIssueId === undefined
-          ? { kind: "public", sourceId: locator.sourceId }
-          : {
-              kind: "publisher",
-              sourceId: locator.sourceId,
-              issueId: locator.publisherIssueId,
-              documentId: locator.publisherDocumentId!,
-            },
+        { kind: "public", sourceId: locator.sourceId },
         locator.documentId,
       );
     case "chat_message":
@@ -4540,10 +4601,7 @@ export const assertFinalSourceMap = (
         throw new Error(`document locator ranges are not a normalized non-empty union`);
       }
       if (
-        !(
-          isCanonicalPublicDocumentSourceId(source.locator.sourceId) ||
-          isCanonicalPublisherDocumentSourceId(source.locator.sourceId)
-        ) ||
+        !isCanonicalPublicDocumentSourceId(source.locator.sourceId) ||
         source.locator.documentId.trim() === "" ||
         source.locator.snapshotId.trim() === "" ||
         !/^[a-f0-9]{64}$/u.test(source.locator.contentHash)
@@ -4555,41 +4613,10 @@ export const assertFinalSourceMap = (
         source.publicProvenance.documentTitle.trim() === "" ||
         typeof source.publicProvenance.citationUrl !== "string" ||
         source.publicProvenance.citationUrl.trim() === "" ||
-        ((source.locator.publisherIssueId === undefined ||
-          source.locator.publisherDocumentId === undefined) &&
-          canonicalPublicSourceHttpsUrl(source.publicProvenance.citationUrl) !==
-            source.publicProvenance.citationUrl)
+        canonicalPublicSourceHttpsUrl(source.publicProvenance.citationUrl) !==
+          source.publicProvenance.citationUrl
       ) {
         throw new Error("document public provenance is incomplete");
-      }
-      const publisherIssueId = source.locator.publisherIssueId;
-      const publisherDocumentId = source.locator.publisherDocumentId;
-      if ((publisherIssueId === undefined) !== (publisherDocumentId === undefined)) {
-        throw new Error("publisher document identity is incomplete");
-      }
-      if (publisherIssueId !== undefined && publisherDocumentId !== undefined) {
-        if (
-          !isCanonicalPublisherDocumentSourceId(source.locator.sourceId) ||
-          publisherIssueId.trim() === "" ||
-          publisherDocumentId.trim() === "" ||
-          publisherDocumentId !== source.locator.documentId ||
-          typeof source.locator.publisherExtractionId !== "string" ||
-          source.locator.publisherExtractionId.trim() === "" ||
-          source.publicProvenance.sourceName?.trim() === "" ||
-          source.publicProvenance.issueTitle?.trim() === "" ||
-          typeof source.publicProvenance.sourceName !== "string" ||
-          typeof source.publicProvenance.issueTitle !== "string" ||
-          typeof source.publicProvenance.publishedAt !== "string" ||
-          !Number.isFinite(Date.parse(source.publicProvenance.publishedAt)) ||
-          source.publicProvenance.citationUrl !==
-            `/v1/issues/${publisherIssueId}/documents/${publisherDocumentId}/content`
-        ) {
-          throw new Error("publisher document provenance is incomplete");
-        }
-      } else if (!isCanonicalPublicDocumentSourceId(source.locator.sourceId)) {
-        throw new Error("public document source identity is incomplete");
-      } else if (source.locator.publisherExtractionId !== undefined) {
-        throw new Error("public document cannot carry publisher extraction identity");
       }
     } else if (source.locator.kind === "web") {
       if (
@@ -4723,6 +4750,13 @@ const persistAssistantSources = (
 ): Effect.Effect<void, SqlError | Error, PgClient.PgClient> =>
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
+    const namespaceRows = yield* sql<{ readonly citationNamespace: string }>`
+      select citation_namespace as "citationNamespace" from ai_runs where id = ${runId}
+    `;
+    const citationNamespace = namespaceRows[0]?.citationNamespace;
+    if (citationNamespace === undefined) {
+      return yield* Effect.fail(new Error("ai run citation namespace is missing"));
+    }
     for (const source of sourceMap) {
       const snapshotId = source.locator.kind === "document" ? source.locator.snapshotId : null;
       const messageId = source.locator.kind === "chat_message" ? source.locator.messageId : null;
@@ -4984,102 +5018,31 @@ const persistAssistantSources = (
           }
         }
       }
-      let publisherExtractionId: string | null = null;
       if (source.locator.kind === "document") {
-        const publisherIssueId = source.locator.publisherIssueId;
-        const publisherDocumentId = source.locator.publisherDocumentId;
-        if ((publisherIssueId === undefined) !== (publisherDocumentId === undefined)) {
-          return yield* Effect.fail(new Error("publisher document identity is incomplete"));
-        }
-        if (publisherIssueId !== undefined && publisherDocumentId !== undefined) {
-          const deliveredRows = yield* sql<{ readonly accessId: string }>`
-            select deliveries.access_id::text as "accessId"
-            from issue_deliveries deliveries
-            join issue_delivery_recipients recipients
-              on recipients.issue_id = deliveries.issue_id
-             and recipients.client_company_id = deliveries.client_company_id
-             and recipients.user_id = ${acceptanceScope.userId}
-             and recipients.delivered_at = deliveries.delivered_at
-            join publisher_issues issues
-              on issues.id = deliveries.issue_id
-             and issues.id::text = ${publisherIssueId}
-             and issues.subscription_id::text = ${source.locator.sourceId.slice("publisher:".length)}
-             and issues.restricted_at is null
-             and issues.deleted_at is null
-            join hartlib_documents documents
-              on documents.issue_id = issues.id
-             and documents.id::text = ${publisherDocumentId}
-             and documents.deleted_at is null
-            join hartlib_document_versions versions
-              on versions.hartlib_document_id = documents.id
-             and versions.id::text = ${source.locator.snapshotId}
-             and versions.content_hash = ${source.locator.contentHash}
-             and versions.publisher_extraction_id::text = ${source.locator.publisherExtractionId ?? ""}
-            where deliveries.client_company_id = ${acceptanceScope.companyId}
-              and deliveries.access_id::text = any(${acceptanceScope.accessIds}::text[])
-              and deliveries.subscription_id::text = any(${acceptanceScope.subscriptionIds}::text[])
-            limit 1
-          `;
-          if (deliveredRows[0] === undefined) {
-            return yield* Effect.fail(
-              new Error("publisher document lacks its accepted historical recipient"),
-            );
-          }
-          const publisherExtractions = yield* sql<{ readonly id: string }>`
-            select versions.publisher_extraction_id::text as id
-            from hartlib_document_extractions extractions
-            join hartlib_documents documents
-              on documents.id = extractions.hartlib_document_id
-             and documents.id::text = ${publisherDocumentId}
-             and documents.deleted_at is null
-            join hartlib_document_versions versions
-              on versions.hartlib_document_id = documents.id
-             and versions.id::text = ${source.locator.snapshotId}
-             and versions.content_hash = ${source.locator.contentHash}
-             and versions.publisher_extraction_id = extractions.id
-            join publisher_issues issues
-              on issues.id = documents.issue_id
-             and issues.restricted_at is null
-             and issues.deleted_at is null
-            join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-            where issues.id::text = ${publisherIssueId}
-              and ('publisher:' || subscriptions.id::text) = ${source.locator.sourceId}
-              and extractions.input_sha256_hex = documents.sha256_hex
-              and extractions.id::text = ${source.locator.publisherExtractionId ?? ""}
-            limit 1
-          `;
-          publisherExtractionId = publisherExtractions[0]?.id ?? null;
-          if (publisherExtractionId === null) {
-            return yield* Effect.fail(
-              new Error("publisher document identity does not match database ownership"),
-            );
-          }
-        } else {
-          const publicVersions = yield* sql<{ readonly id: string }>`
-            select document_id as id
-            from public_source_documents
-            where source_id = ${source.locator.sourceId.slice("public:".length)}
-              and document_id = ${source.locator.snapshotId}
-              and document_id = ${source.locator.documentId}
-              and content_hash = ${source.locator.contentHash}
-              and canonical_url = ${source.publicProvenance.citationUrl ?? ""}
-            limit 1
-          `;
-          if (publicVersions[0] === undefined) {
-            return yield* Effect.fail(
-              new Error(`public document version not found: ${source.locator.snapshotId}`),
-            );
-          }
+        const publicVersions = yield* sql<{ readonly id: string }>`
+          select document_id as id
+          from public_source_documents
+          where source_id = ${source.locator.sourceId.slice("public:".length)}
+            and document_id = ${source.locator.snapshotId}
+            and document_id = ${source.locator.documentId}
+            and content_hash = ${source.locator.contentHash}
+            and canonical_url = ${source.publicProvenance.citationUrl ?? ""}
+          limit 1
+        `;
+        if (publicVersions[0] === undefined) {
+          return yield* Effect.fail(
+            new Error(`public document version not found: ${source.locator.snapshotId}`),
+          );
         }
       }
       yield* sql`
         insert into assistant_message_sources (
+          run_id,
           assistant_message_id,
           source_key,
           kind,
           locator,
           snapshot_id,
-          publisher_extraction_id,
           document_source_id,
           document_id,
           content_hash,
@@ -5087,27 +5050,32 @@ const persistAssistantSources = (
           memory_revision_id,
           display_label,
           public_provenance
+          ,citation_namespace
+          ,source_identity_digest
         )
         values (
+          ${runId},
           ${assistantMessageId},
           ${source.sourceKey},
           ${source.locator.kind},
           ${sql.json(source.locator)},
           ${snapshotId},
-          ${publisherExtractionId},
           ${source.locator.kind === "document" ? source.locator.sourceId : null},
           ${source.locator.kind === "document" ? source.locator.documentId : null},
           ${source.locator.kind === "document" ? source.locator.contentHash : null},
           ${messageId},
           ${memoryRevisionId},
           ${source.label},
-          ${sql.json(source.publicProvenance)}
+          ${sql.json(source.publicProvenance)},
+          ${citationNamespace},
+          ${createHash("sha256").update(sourceIdentity(source), "utf8").digest("hex")}
         )
       `;
 
       for (const use of source.uses) {
         yield* sql`
           insert into assistant_message_source_uses (
+            run_id,
             assistant_message_id,
             source_key,
             consumer_task_id,
@@ -5115,15 +5083,23 @@ const persistAssistantSources = (
             rendered_token_count,
             context_order,
             ranges
+            ,source_use_identity_digest
           )
           values (
+            ${runId},
             ${assistantMessageId},
             ${source.sourceKey},
             ${use.consumerTaskId},
             ${use.topicId ?? null},
             ${use.renderedTokenCount},
             ${use.contextOrder},
-          ${JSON.stringify(use.ranges)}::jsonb
+          ${JSON.stringify(use.ranges)}::jsonb,
+          ${createHash("sha256")
+            .update(
+              `${runId}:${source.sourceKey}:${use.consumerTaskId}:${use.topicId ?? ""}:${use.renderedTokenCount}:${use.contextOrder}:${canonicalJson(use.ranges)}`,
+              "utf8",
+            )
+            .digest("hex")}
           )
         `;
       }
@@ -5221,6 +5197,8 @@ const transitionToFailure = (
       where id = ${runId}
         and finished_at is null
         and failed_at is null
+        and stopped_at is null
+        and superseded_at is null
     `;
     yield* appendAiRunEventInTransaction({
       runId,
@@ -5259,6 +5237,21 @@ export const finalizeAiRun = (
       Effect.gen(function* () {
         const executionScope = yield* lockRunExecutionScope(input.runId);
         const run = yield* loadRunForUpdate(input.runId);
+        if (run.stoppedAt !== null || run.supersededAt !== null) {
+          return {
+            status: "stopped" as const,
+            assistantMessageId: run.assistantMessageId,
+            alreadyTerminal: true,
+          };
+        }
+        if (run.stopRequestedAt !== null) {
+          const stopped = yield* stopAiRunInTransaction(run.id);
+          return {
+            status: "stopped" as const,
+            assistantMessageId: stopped.assistantMessageId,
+            alreadyTerminal: stopped.alreadyStopped,
+          };
+        }
         const acceptanceScope = parseRunAcceptanceScope(run.acceptanceScope);
         if (
           run.chatId !== executionScope.chatId ||
@@ -5279,13 +5272,8 @@ export const finalizeAiRun = (
             where runs.id = ${run.id}
               and runs.chat_id = ${run.chatId}
               and runs.initiating_user_id = ${run.initiatingUserId}
-              and chat.deleted_at is null
-              and chat.archived_at is null
               and company.id = ${acceptanceScope.companyId}::uuid
-              and company.recovery_deleted_at is null
-              and company.purged_at is null
-              and users.recovery_deleted_at is null
-              and users.purged_at is null
+              and chat.user_id = users.id
           ) as available
         `;
         if (tenantAvailable[0]?.available !== true) {
@@ -5300,14 +5288,6 @@ export const finalizeAiRun = (
             ),
           );
         }
-        // Acquire every publisher restriction lane before immutable source
-        // writes. The lane remains held until this transaction commits, so a
-        // restriction either linearizes before finalization (and fails the
-        // source-integrity check) or after the complete terminal answer write.
-        if (input.answer.status === "ok") {
-          yield* lockPublisherIssueLanes(input.answer.sourceMap);
-        }
-
         // A terminal run is replayable only while its complete product ledger
         // still matches the answer and consumed memory artifact.  Validate
         // those terminal rows before the replay branch and before any other
@@ -5468,9 +5448,8 @@ export const finalizeAiRun = (
           memoryUsage.agentRole !== producerMeasurement.agentRole ||
           memoryUsage.modelId !== producerMeasurement.modelId ||
           memoryUsage.providerServiceId !== acceptanceScope.provider ||
-          !["zai_coding_plan_official", "deterministic_test", "openai_compatible_custom"].includes(
-            memoryUsage.providerServiceId,
-          ) ||
+          (memoryUsage.providerServiceId !== "zai_coding_plan_official" &&
+            memoryUsage.providerServiceId !== "deterministic_test") ||
           !["stop", "length", "toolUse"].includes(memoryUsage.stopReason) ||
           memoryUsage.inputTokens + memoryUsage.cachedTokens !== producerMeasurement.inputTokens ||
           memoryUsage.outputTokens > producerMeasurement.requestedOutputTokens
@@ -5510,9 +5489,7 @@ export const finalizeAiRun = (
               const sourceId = source.locator.sourceId;
               return sourceId.startsWith("public:")
                 ? acceptanceScope.publicSourceIds.includes(sourceId.slice("public:".length))
-                : sourceId.startsWith("publisher:")
-                  ? acceptanceScope.subscriptionIds.includes(sourceId.slice("publisher:".length))
-                  : false;
+                : false;
             }
             if (source.locator.kind === "memory") {
               return (
@@ -5689,12 +5666,8 @@ export const failAiRun = (
             join client_companies company on company.id = chat.company_id
             join platform_users users on users.id = ${run.initiatingUserId}
             where chat.id = ${run.chatId}
-              and chat.deleted_at is null
               and company.id = ${acceptanceScope.companyId}::uuid
-              and company.recovery_deleted_at is null
-              and company.purged_at is null
-              and users.recovery_deleted_at is null
-              and users.purged_at is null
+              and chat.user_id = users.id
           ) as available
         `;
         if (tenantAvailable[0]?.available !== true) {
@@ -5707,6 +5680,14 @@ export const failAiRun = (
         }
         const terminal = existingTerminalResult(run);
         if (terminal !== null) return terminal;
+        if (run.stopRequestedAt !== null) {
+          const stopped = yield* stopAiRunInTransaction(run.id);
+          return {
+            status: "stopped" as const,
+            assistantMessageId: stopped.assistantMessageId,
+            alreadyTerminal: stopped.alreadyStopped,
+          };
+        }
 
         const usage = yield* appendAggregateAiRunUsageInTransaction(run.id, "failure-handler");
         const failure = yield* transitionToFailure(

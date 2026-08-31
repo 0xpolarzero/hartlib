@@ -5,7 +5,7 @@ import { DOCS_HTML } from "../../packages/docs/src/html.ts";
 
 const DOCS_CONTENT_TYPE = "text/html; charset=utf-8";
 const DOCS_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const DOCS_CACHE = "public, max-age=300, stale-while-revalidate=600";
 
 const serveDocs = (
@@ -32,7 +32,9 @@ export const docs = (): Plugin => ({
   generateBundle() {
     this.emitFile({
       type: "asset",
-      fileName: "docs/index.html",
+      // Keep the standalone document at the exact `/docs` path.  A directory
+      // index would make `/docs/` and `/docs/index.html` reachable aliases.
+      fileName: "docs",
       source: DOCS_HTML,
     });
   },

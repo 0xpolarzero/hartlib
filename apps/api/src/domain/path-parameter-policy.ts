@@ -1,29 +1,14 @@
-import {
-  OpaquePathParameter,
-  PositiveIntegerPathParameter,
-  UuidPathParameter,
-} from "@hartlib/shared";
+import { OpaquePathParameter, UuidPathParameter } from "@hartlib/shared";
 import { Schema } from "effect";
 
 import type { Route } from "../http";
 
-export type PathParameterKind = "uuid" | "opaque" | "positive_integer";
+export type PathParameterKind = "uuid" | "opaque";
 
 const opaqueParameters = new Set([
-  "PUT /v1/client-companies/:companyId/public-sources/:sourceId sourceId",
   "PUT /v1/public-sources/:sourceId sourceId",
   "GET /public-source-documents/:documentId/content documentId",
-  "PUT /v1/client-companies/:companyId/members/:userId/ai-limit userId",
-  "PATCH /v1/publisher-companies/:companyId/members/:userId userId",
-  "DELETE /v1/publisher-companies/:companyId/members/:userId userId",
-  "PATCH /v1/client-companies/:companyId/members/:userId userId",
-  "DELETE /v1/client-companies/:companyId/members/:userId userId",
-  "POST /v1/client-companies/:companyId/members/:userId/subscription-grants userId",
-  "DELETE /v1/client-companies/:companyId/members/:userId/subscription-grants/:accessId userId",
-]);
-
-const positiveIntegerParameters = new Set([
-  "POST /v1/platform/support/access/:accessId/review accessId",
+  "GET /v1/issues/:issueId/documents/:documentId/content documentId",
 ]);
 
 export const pathParameterNames = (path: string): ReadonlyArray<string> =>
@@ -36,16 +21,11 @@ export const pathParameterKind = (
 ): PathParameterKind => {
   const key = `${method} ${path} ${name}`;
   if (opaqueParameters.has(key)) return "opaque";
-  if (positiveIntegerParameters.has(key)) return "positive_integer";
   return "uuid";
 };
 
 const schemaFor = (kind: PathParameterKind) =>
-  kind === "uuid"
-    ? UuidPathParameter
-    : kind === "positive_integer"
-      ? PositiveIntegerPathParameter
-      : OpaquePathParameter;
+  kind === "uuid" ? UuidPathParameter : OpaquePathParameter;
 
 export type DecodedPathParameters = Readonly<Record<string, string>>;
 
@@ -77,5 +57,4 @@ export const decodePathParameters = (
 
 export const pathParameterPolicyExceptions = {
   opaque: [...opaqueParameters].sort(),
-  positiveInteger: [...positiveIntegerParameters].sort(),
 } as const;

@@ -6,5 +6,10 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["vite.config.ts", "docs-vite-plugin.ts", "../../packages/docs/src"]
+  "include": [
+    "vite.config.ts",
+    "docs-vite-plugin.ts",
+    "../../packages/docs/src",
+    "../../packages/ui/src/styles/document-style.ts"
+  ]
 }

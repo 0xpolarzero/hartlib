@@ -32,7 +32,7 @@ export const ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY =
   `${ZAI_CODING_PLAN_PROVIDER_SERVICE_ID}:${ZAI_CODING_PLAN_BASE_URL}` as const;
 
 export interface RegisteredModel {
-  readonly id: "glm-5.2" | "glm-5-turbo";
+  readonly id: RuntimeModelId;
   readonly contextWindow: number;
   readonly maximumOutputTokens: number;
   readonly thinking: boolean;
@@ -44,15 +44,7 @@ export interface RegisteredModel {
   readonly countRequestTokens: (request: ProviderRequest) => number;
 }
 
-const tokenizerAssetUrl = new URL("../tokenizer-assets/glm-5.2.tokenizer.json", import.meta.url);
-const tokenizerConfigAssetUrl = new URL(
-  "../tokenizer-assets/glm-5.2.tokenizer-config.json",
-  import.meta.url,
-);
-const chatTemplateAssetUrl = new URL(
-  "../tokenizer-assets/glm-5.2.chat-template.jinja",
-  import.meta.url,
-);
+const tokenizerAssetUrl = new URL("../tokenizer-assets/glm-5.tokenizer.json", import.meta.url);
 const turboTokenizerConfigAssetUrl = new URL(
   "../tokenizer-assets/glm-5.tokenizer-config.json",
   import.meta.url,
@@ -61,11 +53,6 @@ const turboChatTemplateAssetUrl = new URL(
   "../tokenizer-assets/glm-5.chat-template.jinja",
   import.meta.url,
 );
-const expectedTokenizerSha256 = "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d";
-const expectedTokenizerConfigSha256 =
-  "98b1271574f41abf89427ae2dda030d94dc9478f0edc5a8bd240db213c6fd5fc";
-const expectedChatTemplateSha256 =
-  "172dc74a35e1752df75ecfb2b2cf9326d2852bb1379868ebeec9571654489679";
 const expectedTurboTokenizerSha256 =
   "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d";
 const expectedTurboTokenizerConfigSha256 =
@@ -85,15 +72,6 @@ const readPinnedBytes = (url: URL, expectedSha256: string): Buffer => {
 const readPinnedJson = (url: URL, expectedSha256: string): Record<string, unknown> =>
   JSON.parse(readPinnedBytes(url, expectedSha256).toString("utf8")) as Record<string, unknown>;
 
-const officialChatTemplate = readPinnedBytes(
-  chatTemplateAssetUrl,
-  expectedChatTemplateSha256,
-).toString("utf8");
-const compiledOfficialChatTemplate = new Template(officialChatTemplate);
-const exactTokenizer = new tokenizers.PreTrainedTokenizer(
-  readPinnedJson(tokenizerAssetUrl, expectedTokenizerSha256),
-  readPinnedJson(tokenizerConfigAssetUrl, expectedTokenizerConfigSha256),
-);
 const officialTurboChatTemplate = readPinnedBytes(
   turboChatTemplateAssetUrl,
   expectedTurboChatTemplateSha256,
@@ -120,33 +98,27 @@ const createTokenCount = (tokenizer: Tokenizer): ((text: string) => number) => {
     return count;
   };
 };
-const countGlm52TextTokens = createTokenCount(exactTokenizer);
 const countGlmTurboTextTokens = createTokenCount(exactTurboTokenizer);
 
 const templateReasoningOptions = (
   request: ProviderRequest,
-  modelId: RegisteredModel["id"],
-): { readonly enable_thinking: boolean; readonly reasoning_effort?: "high" | undefined } => {
+): { readonly enable_thinking: boolean } => {
   if (request.reasoning === "minimal") return { enable_thinking: false };
-  // Pi's registered GLM-5.2 mapping sends high for low/medium/high. Turbo's
-  // provider metadata does not send reasoning_effort at all.
-  return modelId === "glm-5.2"
-    ? { enable_thinking: true, reasoning_effort: "high" }
-    : { enable_thinking: true };
+  return { enable_thinking: true };
 };
 
 export const renderOfficialGlmProviderRequest = (
   request: ProviderRequest,
-  modelId: RegisteredModel["id"],
+  modelId: RuntimeModelId = RUNTIME_MODEL_ID,
 ): string => {
   const input = toGlmTemplateInput(request);
-  const template =
-    modelId === "glm-5.2" ? compiledOfficialChatTemplate : compiledOfficialTurboChatTemplate;
+  if (modelId !== RUNTIME_MODEL_ID) throw new Error(`unsupported runtime model ${modelId}`);
+  const template = compiledOfficialTurboChatTemplate;
   return template.render({
     messages: input.messages,
     tools: input.tools,
     add_generation_prompt: input.messages.at(-1)?.role !== "assistant",
-    ...templateReasoningOptions(request, modelId),
+    ...templateReasoningOptions(request),
   });
 };
 
@@ -163,43 +135,21 @@ const turboProviderAccountingAdjustment = (request: ProviderRequest): number => 
   return -ignoredToolDefinitionTokens;
 };
 
-const exactCount = (request: ProviderRequest, modelId: RegisteredModel["id"]): number => {
-  const template = renderOfficialGlmProviderRequest(request, modelId);
-  const templateTokens =
-    modelId === "glm-5.2" ? countGlm52TextTokens(template) : countGlmTurboTextTokens(template);
+const exactCount = (request: ProviderRequest): number => {
+  const template = renderOfficialGlmProviderRequest(request);
+  const templateTokens = countGlmTurboTextTokens(template);
   // GLM-5-Turbo's live prompt usage matches the pinned template after its
   // ignored strict-field accounting adjustment above.
-  return modelId === "glm-5-turbo"
-    ? templateTokens + turboProviderAccountingAdjustment(request)
-    : templateTokens;
+  return templateTokens + turboProviderAccountingAdjustment(request);
 };
 
-// GLM-5.2 and Turbo intentionally use separately pinned official templates.
-// Turbo's provider preprocessing is parity-matched to the GLM-5 family even
-// though both repositories currently publish the same tokenizer bytes.
+// Turbo's provider preprocessing is parity-matched to the GLM-5 family.
 // Loading here makes a missing, corrupt, or incompatible asset a startup-time
 // failure for every worker process that imports the runtime registry.
-const tokenizerIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedTokenizerSha256}`;
-const chatTemplateIdentity = `zai-org/GLM-5.2@f6142f127a14b58dc602592e996cd7d8ff139351:${expectedChatTemplateSha256}:pi-tools-strict-false-v1:assistant-continuation-v1`;
 const turboTokenizerIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboTokenizerSha256}`;
 const turboChatTemplateIdentity = `zai-org/GLM-5@f4c624070fb778e07ad16fb04c34dad055be3fce:shared-vocabulary:${expectedTurboChatTemplateSha256}:pi-tools-strict-false-v1:tool-definition-adjustment-v1:assistant-continuation-v1`;
 
 const registry = new Map<string, RegisteredModel>([
-  [
-    "glm-5.2",
-    {
-      id: "glm-5.2",
-      contextWindow: 1_000_000,
-      maximumOutputTokens: 131_072,
-      thinking: true,
-      api: "openai-completions",
-      tokenizerIdentity,
-      chatTemplateIdentity,
-      providerTemplateVerified: true,
-      countTextTokens: countGlm52TextTokens,
-      countRequestTokens: (request) => exactCount(request, "glm-5.2"),
-    },
-  ],
   [
     "glm-5-turbo",
     {
@@ -212,7 +162,7 @@ const registry = new Map<string, RegisteredModel>([
       chatTemplateIdentity: turboChatTemplateIdentity,
       providerTemplateVerified: true,
       countTextTokens: countGlmTurboTextTokens,
-      countRequestTokens: (request) => exactCount(request, "glm-5-turbo"),
+      countRequestTokens: exactCount,
     },
   ],
 ]);
@@ -230,32 +180,12 @@ export const resolveRegisteredModel = (modelId: string): RegisteredModel => {
   return model;
 };
 
-/**
- * Resolve a model for a live runtime request. Historical GLM-5.2 remains in
- * the registry for explicit evaluation and compatibility captures, but this
- * resolver makes selecting it from live chat configuration impossible.
- */
 export const resolveRuntimeModel = (modelId: string): RegisteredModel => {
-  if (modelId !== RUNTIME_MODEL_ID) {
-    // Preserve the registry's startup diagnostic for unknown IDs while
-    // clearly distinguishing the known historical compatibility model.
-    if (modelId !== "glm-5.2") resolveRegisteredModel(modelId);
-    throw new Error(
-      `live AI chat runtime only permits ${RUNTIME_MODEL_ID}; ${modelId} is evaluation/compatibility-only`,
-    );
-  }
-  return resolveRegisteredModel(RUNTIME_MODEL_ID);
-};
-
-/** Exposed only so the opt-in real-provider contract can measure a rejected candidate. */
-export const resolveUnverifiedModelForProviderContract = (modelId: string): RegisteredModel => {
-  const model = registry.get(modelId);
-  if (model === undefined) throw new Error(`unknown provider contract model ${modelId}`);
-  return model;
+  return resolveRegisteredModel(modelId);
 };
 
 export const verifyRegisteredModelsAtStartup = (
-  modelIds: readonly string[] = ["glm-5.2", "glm-5-turbo"],
+  modelIds: readonly string[] = [RUNTIME_MODEL_ID],
 ): readonly RegisteredModel[] => modelIds.map(resolveRegisteredModel);
 
 export interface ProviderGateLimits {

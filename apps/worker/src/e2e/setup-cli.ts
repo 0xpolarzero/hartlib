@@ -8,6 +8,7 @@ import { makePgPublicSourceIngestionRepository } from "../source-ingestion/pg-re
 import { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 
 import { e2eStreamGateLockKey, isE2eStreamGateId } from "../ai/e2e/stream-gate";
+import { AI_CHAT_SMITHERS_SCHEMA_FENCE } from "../ai/smithers-interop";
 import { runMigrations } from "@hartlib/database/migrations";
 import {
   makeE2ePublicSourceAdapters,
@@ -16,7 +17,18 @@ import {
 
 const databaseUrl = Effect.runSync(loadE2eDatabaseUrl);
 const databaseName = new URL(databaseUrl).pathname.replace(/^\//, "") || "hartlib_e2e";
-const demoCompanyHash = createHash("md5").update("hartlib:client-company:demo-user").digest("hex");
+// The E2E stack uses one fixed server-issued identity so setup helpers can
+// seed and inspect the same singular chat that the browser receives in its
+// bootstrap cookie. Integration setup passes this value to the browser.
+const demoVisitorId = process.env.HARTLIB_E2E_VISITOR_ID ?? "00000000-0000-4000-8000-000000000001";
+if (
+  !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(demoVisitorId)
+) {
+  throw new Error("HARTLIB_E2E_VISITOR_ID must be a UUID");
+}
+const demoCompanyHash = createHash("md5")
+  .update(`hartlib:client-company:${demoVisitorId}`)
+  .digest("hex");
 const demoClientCompanyId = [
   demoCompanyHash.slice(0, 8),
   demoCompanyHash.slice(8, 12),
@@ -24,13 +36,16 @@ const demoClientCompanyId = [
   demoCompanyHash.slice(16, 20),
   demoCompanyHash.slice(20, 32),
 ].join("-");
-const publisherPdfFixture = {
-  publisherCompanyId: "f1111111-1111-4111-8111-111111111111",
-  subscriptionId: "f2222222-2222-4222-8222-222222222222",
-  issueId: "f3333333-3333-4333-8333-333333333333",
-  accessId: "f4444444-4444-4444-8444-444444444444",
-  issueTitle: "E2E publisher PDF issue",
-} as const;
+const clientCompanyIdForVisitor = (visitorId: string): string => {
+  const hash = createHash("md5").update(`hartlib:client-company:${visitorId}`).digest("hex");
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    hash.slice(12, 16),
+    hash.slice(16, 20),
+    hash.slice(20, 32),
+  ].join("-");
+};
 const seededAnswerSearchTerms = "solaire raccordements";
 const resetQuiescenceTimeoutMs = 10_000;
 const resetQuiescencePollMs = 25;
@@ -62,27 +77,22 @@ const citationNamespaceForSeed = (seed: string): string =>
 const seedProvider =
   process.env.AI_E2E_FAKE_PROVIDER === "true"
     ? ("deterministic_test" as const)
-    : (process.env.AI_BASE_URL ?? ZAI_CODING_PLAN_BASE_URL) === ZAI_CODING_PLAN_BASE_URL
-      ? ("zai_coding_plan_official" as const)
-      : ("openai_compatible_custom" as const);
+    : ("zai_coding_plan_official" as const);
 const seedProviderEndpointIdentity = `${seedProvider}:${process.env.AI_BASE_URL ?? ZAI_CODING_PLAN_BASE_URL}`;
 
 const acceptanceScopeForSeed = (args: {
+  readonly userId?: string;
   readonly chatId: string;
   readonly companyId: string;
-  readonly subscriptionIds?: readonly string[];
-  readonly accessIds?: readonly string[];
   readonly publicSourceIds: readonly string[];
   readonly webRequested?: boolean;
   readonly webEnabled?: boolean;
   readonly allowedDomains?: readonly string[] | null;
 }) =>
   makeRunAcceptanceScope({
-    userId: "demo-user",
+    userId: args.userId ?? demoVisitorId,
     chatId: args.chatId,
     companyId: args.companyId,
-    subscriptionIds: args.subscriptionIds ?? [],
-    accessIds: args.accessIds ?? [],
     publicSourceIds: args.publicSourceIds,
     memoryMode: "private_owner",
     provider: seedProvider,
@@ -205,23 +215,27 @@ const ingestPublicCorpusAndSeedDemoData = Effect.gen(function* () {
     );
   }
 
-  const clientCompanyId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   yield* sql`
-    insert into platform_users (id, primary_email, display_name, clerk_user_id)
-    values ('demo-user', 'demo@hartlib.test', 'Demo User', 'clerk-demo-user')
-    on conflict (id) do update set recovery_deleted_at = null, purge_after = null
+    insert into demo_sessions (visitor_id)
+    values (${demoVisitorId}::uuid)
+    on conflict (visitor_id) do update set revoked_at = null, last_seen_at = now()
+  `;
+  yield* sql`
+    insert into platform_users (id, primary_email, display_name)
+    values (${demoVisitorId}, ${`demo+${demoVisitorId}@hartlib.test`}, ${`Demo ${demoVisitorId}`})
+    on conflict (id) do update set display_name = excluded.display_name
   `;
   // The demo chat endpoint derives this workspace before creating its first
   // chat. Seed it explicitly so its public-source policy exists before the E2E
   // corpus settings are materialized.
   yield* sql`
     insert into client_companies (id, name)
-    values (${demoClientCompanyId}, 'Demo company for demo-user')
-    on conflict (id) do update set recovery_deleted_at = null, purge_after = null
+    values (${demoClientCompanyId}, ${`Demo company for ${demoVisitorId}`})
+    on conflict (id) do update set name = excluded.name
   `;
   yield* sql`
     insert into client_company_memberships (company_id, user_id, role)
-    values (${demoClientCompanyId}, 'demo-user', 'admin')
+    values (${demoClientCompanyId}, ${demoVisitorId}, 'admin')
     on conflict (company_id, user_id) do update set
       role = 'admin', revoked_at = null, revoked_by_user_id = null
   `;
@@ -230,74 +244,16 @@ const ingestPublicCorpusAndSeedDemoData = Effect.gen(function* () {
     values (${demoClientCompanyId}, true) on conflict (company_id) do nothing
   `;
   yield* sql`
-    insert into client_companies (id, name) values (${clientCompanyId}, 'E2E Client')
-    on conflict (id) do update set recovery_deleted_at = null, purge_after = null
-  `;
-  yield* sql`
-    insert into client_company_memberships (company_id, user_id, role)
-    values (${clientCompanyId}, 'demo-user', 'admin')
-    on conflict (company_id, user_id) do update set
-      role = 'admin', revoked_at = null, revoked_by_user_id = null
-  `;
-  yield* sql`
-    insert into client_company_ai_settings (company_id, web_search_enabled)
-    values (${clientCompanyId}, false) on conflict (company_id) do nothing
-  `;
-  yield* sql`
     insert into client_company_public_source_settings (
       client_company_id, source_id, enabled, updated_by_user_id
     )
-    select memberships.company_id, sources.source_id, true, 'demo-user'
+    select memberships.company_id, sources.source_id, true, ${demoVisitorId}
     from client_company_memberships memberships
     cross join public_sources sources
-    where memberships.user_id = 'demo-user'
+    where memberships.user_id = ${demoVisitorId}
       and memberships.revoked_at is null
       and sources.source_id like 'e2e-%'
     on conflict (client_company_id, source_id) do update set enabled = true, updated_at = now()
-  `;
-
-  yield* sql`
-    insert into publisher_companies (id, name, delivery_enabled)
-    values (${publisherPdfFixture.publisherCompanyId}, 'E2E PDF Publisher', true)
-  `;
-  yield* sql`
-    insert into publisher_company_memberships (
-      publisher_company_id, user_id, role, invited_email, accepted_at
-    ) values (
-      ${publisherPdfFixture.publisherCompanyId}, 'demo-user', 'admin', 'demo@hartlib.test', now()
-    )
-  `;
-  yield* sql`
-    insert into publisher_subscriptions (
-      id, publisher_company_id, name, delivery_enabled, created_by_user_id
-    ) values (
-      ${publisherPdfFixture.subscriptionId}, ${publisherPdfFixture.publisherCompanyId},
-      'E2E PDF publication', true, 'demo-user'
-    )
-  `;
-  yield* sql`
-    insert into client_subscription_accesses (
-      id, subscription_id, client_company_id, state, first_admin_email,
-      accepted_at, subscribed_at, created_by_user_id
-    ) values (
-      ${publisherPdfFixture.accessId}, ${publisherPdfFixture.subscriptionId}, ${clientCompanyId},
-      'active', 'demo@hartlib.test', now(), now(), 'demo-user'
-    )
-  `;
-  yield* sql`
-    insert into client_employee_subscription_grants (
-      access_id, client_company_id, user_id, granted_by_user_id
-    ) values (
-      ${publisherPdfFixture.accessId}, ${clientCompanyId}, 'demo-user', 'demo-user'
-    )
-  `;
-  yield* sql`
-    insert into publisher_issues (
-      id, subscription_id, title, status, indexing_status, created_by_user_id
-    ) values (
-      ${publisherPdfFixture.issueId}, ${publisherPdfFixture.subscriptionId},
-      ${publisherPdfFixture.issueTitle}, 'draft', 'pending', 'demo-user'
-    )
   `;
 });
 
@@ -381,7 +337,7 @@ const assertSeededCorpusSearchable = Effect.gen(function* () {
   }
 });
 
-const resetChatRuntime = Effect.gen(function* () {
+const resetDemoRuntimeBody = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const smithersTables = yield* sql<{ readonly tableName: string }>`
     select distinct table_name as "tableName"
@@ -395,40 +351,88 @@ const resetChatRuntime = Effect.gen(function* () {
       )
   `;
 
+  // Each browser test reactivates the fixed seed visitor. Remove prior reset
+  // operation rows so a fresh test cannot be mistaken for a competing reset
+  // against a predecessor that the fixture just made active again.
+  yield* sql`
+    delete from demo_reset_operations
+    where predecessor_visitor_id = ${demoVisitorId}::uuid
+       or successor_visitor_id = ${demoVisitorId}::uuid
+  `;
+  // A reset test leaves a durable purge row behind until the worker handles
+  // it. Remove that row while holding the same claim lane as the worker so a
+  // queued, retrying, or just-starting purge cannot race the fresh seed
+  // identity below. The reset-operation FK is removed first above.
+  yield* sql`
+    delete from jobs
+    where kind = 'demo_identity_purge'
+      and payload->>'visitorId' = ${demoVisitorId}
+  `;
+
   yield* sql`
     delete from jobs
     where kind = 'ai_chat_run'
       and payload->>'aiRunId' in (
-        select id::text from ai_runs where initiating_user_id = 'demo-user'
+        select id::text from ai_runs where initiating_user_id = ${demoVisitorId}
       )
   `;
   // Chat deletion cascades the immutable assistant-source rows that can retain
   // demo memory revisions. Remove those references before deleting the cited
   // revisions so reset preserves the production retention foreign keys.
-  yield* sql`delete from chats where user_id = 'demo-user'`;
+  yield* sql`delete from chats where user_id = ${demoVisitorId}`;
   yield* sql.withTransaction(
     Effect.gen(function* () {
       // The head-revision FK is intentionally deferred so the canonical memory
       // and immutable revision rows can be removed together without ever
       // manufacturing an invalid intermediate memory state.
-      yield* sql`delete from user_memory_revisions where memory_id in (select id from user_memories where user_id = 'demo-user')`;
-      yield* sql`delete from user_memories where user_id = 'demo-user'`;
+      yield* sql`delete from user_memory_revisions where memory_id in (select id from user_memories where user_id = ${demoVisitorId})`;
+      yield* sql`delete from user_memories where user_id = ${demoVisitorId}`;
     }),
   );
 
-  for (const table of smithersTables) {
-    yield* sql`truncate table ${sql(table.tableName)} cascade`;
-  }
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      // Serialize setup truncation with Smithers retention cleanup. Both
+      // paths use this transaction-level fence so a worker cannot hold an
+      // access share lock while setup requests a destructive truncate.
+      yield* sql`
+        select pg_advisory_xact_lock(
+          hashtextextended(${AI_CHAT_SMITHERS_SCHEMA_FENCE}, 0)
+        )
+      `;
+      for (const table of smithersTables) {
+        yield* sql`truncate table ${sql(table.tableName)} cascade`;
+      }
+    }),
+  );
 
   // Each browser test starts from the same canonical demo-source policy.
   // Tests may revoke one source through this setup boundary to prove that an
   // already acquired hosted path immediately fails closed.
   yield* sql`
     update client_company_public_source_settings
-    set enabled = true, updated_by_user_id = 'demo-user', updated_at = now()
+    set enabled = true, updated_by_user_id = ${demoVisitorId}, updated_at = now()
     where client_company_id = ${demoClientCompanyId}
       and source_id like 'e2e-%'
   `;
+  yield* sql`
+    insert into demo_sessions (visitor_id)
+    values (${demoVisitorId}::uuid)
+    on conflict (visitor_id) do update set revoked_at = null, last_seen_at = now()
+  `;
+}).pipe(Effect.asVoid);
+
+const resetDemoRuntime = Effect.gen(function* () {
+  const sql = yield* PgClient.PgClient;
+  // Purge handlers and queue claims serialize on this transaction-level lane.
+  // Holding it across the complete fixture reset prevents a pre-existing purge
+  // from observing the freshly reactivated fixed visitor.
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`select pg_advisory_xact_lock(hashtext('hartlib:jobs:claim'))`;
+      yield* resetDemoRuntimeBody;
+    }),
+  );
 }).pipe(Effect.asVoid);
 
 const disableDemoPublicSource = (sourceId: string) =>
@@ -436,7 +440,7 @@ const disableDemoPublicSource = (sourceId: string) =>
     const sql = yield* PgClient.PgClient;
     const updated = yield* sql<{ readonly sourceId: string }>`
       update client_company_public_source_settings
-      set enabled = false, updated_by_user_id = 'demo-user', updated_at = now()
+      set enabled = false, updated_by_user_id = ${demoVisitorId}, updated_at = now()
       where client_company_id = ${demoClientCompanyId}
         and source_id = ${sourceId}
         and source_id like 'e2e-%'
@@ -456,7 +460,7 @@ const countActiveDemoAiChatJobs = Effect.gen(function* () {
     where kind = 'ai_chat_run'
       and status in ('queued', 'retrying', 'running')
       and payload->>'aiRunId' in (
-        select id::text from ai_runs where initiating_user_id = 'demo-user'
+        select id::text from ai_runs where initiating_user_id = ${demoVisitorId}
       )
   `;
   return rows[0]?.count ?? 0;
@@ -491,20 +495,12 @@ const readRuntimeState = Effect.gen(function* () {
     readonly id: string;
     readonly companyId: string;
     readonly webEnabled: boolean;
-    readonly archivedAt: Date | null;
-    readonly replacedByChatId: string | null;
-    readonly deletedAt: Date | null;
-    readonly purgeAfter: Date | null;
   }>`
     select chats.id::text, chats.company_id::text as "companyId",
-           settings.web_search_enabled as "webEnabled",
-           chats.archived_at as "archivedAt",
-           chats.replaced_by_chat_id::text as "replacedByChatId",
-           chats.deleted_at as "deletedAt",
-           chats.purge_after as "purgeAfter"
+           settings.web_search_enabled as "webEnabled"
     from chats
     join client_company_ai_settings settings on settings.company_id = chats.company_id
-    where chats.user_id = 'demo-user'
+    where chats.user_id = ${demoVisitorId}
     order by chats.created_at, chats.id
   `;
   const runs = yield* sql<{
@@ -513,18 +509,54 @@ const readRuntimeState = Effect.gen(function* () {
     readonly status: string;
     readonly errorCode: string | null;
     readonly retryable: boolean | null;
+    readonly stopRequestedAt: Date | null;
+    readonly stoppedAt: Date | null;
   }>`
     select id::text, chat_id::text as "chatId",
            case
              when finished_at is not null then 'succeeded'
              when failed_at is not null then 'failed'
+             when stopped_at is not null then 'stopped'
+             when superseded_at is not null then 'superseded'
              when started_at is not null then 'running'
              else 'queued'
            end as status,
-           error_code as "errorCode", retryable
+           error_code as "errorCode", retryable,
+           stop_requested_at as "stopRequestedAt", stopped_at as "stoppedAt"
     from ai_runs
-    where initiating_user_id = 'demo-user'
+    where initiating_user_id = ${demoVisitorId}
     order by created_at, id
+  `;
+  const providerMeasurements = yield* sql<{
+    readonly runId: string;
+    readonly provider: string | null;
+    readonly providerEndpointIdentity: string | null;
+    readonly modelId: string | null;
+    readonly repairConsumed: boolean | null;
+  }>`
+    select observations.run_id::text as "runId",
+           runs.acceptance_scope->>'provider' as provider,
+           runs.acceptance_scope->>'providerEndpointIdentity' as "providerEndpointIdentity",
+           observations.payload->>'modelId' as "modelId",
+           (observations.payload->>'repairConsumed')::boolean as "repairConsumed"
+    from ai_observations observations
+    join ai_runs runs on runs.id = observations.run_id
+    where runs.initiating_user_id = ${demoVisitorId}
+      and observations.kind = 'provider_request_measurement'
+    order by runs.created_at, observations.created_at, observations.id
+  `;
+  const providerUsages = yield* sql<{
+    readonly runId: string;
+    readonly providerServiceId: string;
+    readonly modelId: string;
+  }>`
+    select usage.run_id::text as "runId",
+           usage.provider_service_id as "providerServiceId",
+           usage.model_id as "modelId"
+    from ai_run_usage usage
+    join ai_runs runs on runs.id = usage.run_id
+    where runs.initiating_user_id = ${demoVisitorId}
+    order by runs.created_at, usage.created_at, usage.id
   `;
   const events = yield* sql<{
     readonly runId: string;
@@ -538,7 +570,7 @@ const readRuntimeState = Effect.gen(function* () {
            events.emitted_by_task as "emittedByTask"
     from ai_run_events events
     join ai_runs runs on runs.id = events.run_id
-    where runs.initiating_user_id = 'demo-user'
+    where runs.initiating_user_id = ${demoVisitorId}
     order by runs.created_at, events.seq
   `;
   const memories = yield* sql<{
@@ -550,7 +582,7 @@ const readRuntimeState = Effect.gen(function* () {
     select id::text, content, deleted_at is not null as deleted,
            head_revision_id::text as "headRevisionId"
     from user_memories
-    where user_id = 'demo-user' and provenance_only_at is null
+    where user_id = ${demoVisitorId} and provenance_only_at is null
     order by created_at, id
   `;
   const revisions = yield* sql<{
@@ -561,7 +593,7 @@ const readRuntimeState = Effect.gen(function* () {
     select revisions.id::text, revisions.memory_id::text as "memoryId", revisions.action
     from user_memory_revisions revisions
     join user_memories memories on memories.id = revisions.memory_id
-    where memories.user_id = 'demo-user'
+    where memories.user_id = ${demoVisitorId}
     order by revisions.created_at, revisions.id
   `;
   const externalToolUsage = yield* sql<{
@@ -579,241 +611,144 @@ const readRuntimeState = Effect.gen(function* () {
            usage.operation, usage.status
     from ai_external_tool_usage usage
     join ai_runs runs on runs.id = usage.run_id
-    where runs.initiating_user_id = 'demo-user'
+    where runs.initiating_user_id = ${demoVisitorId}
     order by runs.created_at, usage.task_id, usage.loop_iteration,
              usage.attempt, usage.tool_request_index
   `;
-  return { chats, runs, events, memories, revisions, externalToolUsage };
-});
-
-const readPublisherPdfState = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  const publisherAccess = yield* sql<{ readonly active: boolean }>`
-    select exists (
-      select 1 from publisher_company_memberships
-      where publisher_company_id = ${publisherPdfFixture.publisherCompanyId}
-        and user_id = 'demo-user'
-        and accepted_at is not null
-    ) as active
-  `;
-  const issues = yield* sql<{
-    readonly status: string;
-    readonly indexingStatus: string;
-    readonly publishedAt: Date | null;
-  }>`
-    select status, indexing_status as "indexingStatus", published_at as "publishedAt"
-    from publisher_issues where id = ${publisherPdfFixture.issueId}
-  `;
-  const documents = yield* sql<{
-    readonly id: string;
-    readonly originalFileName: string;
-    readonly byteSize: number;
-    readonly sha256Hex: string;
-    readonly currentVersionId: string | null;
-    readonly extractionCount: number;
-  }>`
-    select documents.id::text, documents.original_file_name as "originalFileName",
-           documents.byte_size::int as "byteSize", documents.sha256_hex as "sha256Hex",
-           documents.current_version_id::text as "currentVersionId",
-           count(extractions.id)::int as "extractionCount"
-    from hartlib_documents documents
-    left join hartlib_document_extractions extractions
-      on extractions.hartlib_document_id = documents.id
-    where documents.issue_id = ${publisherPdfFixture.issueId}
-      and documents.deleted_at is null
-    group by documents.id
-    order by documents.created_at, documents.id
-  `;
-  const jobs = yield* sql<{
-    readonly kind: string;
-    readonly status: string;
-    readonly attempts: number;
-    readonly lastError: string | null;
-  }>`
-    select kind, status, attempts, last_error as "lastError"
-    from jobs
-    where (
-      payload->>'issueId' = ${publisherPdfFixture.issueId}
-      or payload->>'documentId' in (
-        select id::text from hartlib_documents where issue_id = ${publisherPdfFixture.issueId}
-      )
-      or payload->>'extractionId' in (
-        select extractions.id::text
-        from hartlib_document_extractions extractions
-        join hartlib_documents documents on documents.id = extractions.hartlib_document_id
-        where documents.issue_id = ${publisherPdfFixture.issueId}
-      )
-    )
-    order by created_at, id
-  `;
-  const deliveries = yield* sql<{ readonly count: number }>`
-    select count(*)::int as count
-    from issue_deliveries where issue_id = ${publisherPdfFixture.issueId}
-  `;
   return {
-    fixture: publisherPdfFixture,
-    publisherAccessActive: publisherAccess[0]?.active ?? false,
-    issue: issues[0] ?? null,
-    documents,
-    jobs,
-    deliveryCount: deliveries[0]?.count ?? 0,
+    chats,
+    runs,
+    providerMeasurements,
+    providerUsages,
+    events,
+    memories,
+    revisions,
+    externalToolUsage,
   };
 });
 
-const makePublisherPdfClientOnly = Effect.gen(function* () {
-  const sql = yield* PgClient.PgClient;
-  yield* sql`
-    update publisher_company_memberships
-    set accepted_at = null, updated_at = now()
-    where publisher_company_id = ${publisherPdfFixture.publisherCompanyId}
-      and user_id = 'demo-user'
-  `;
-  return { publisherAccessActive: false } as const;
-});
-
-const seedPublisherDocumentCitation = Effect.gen(function* () {
+const seedPublicDocumentCitation = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const documents = yield* sql<{
     readonly documentId: string;
     readonly snapshotId: string;
-    readonly extractionId: string;
     readonly title: string;
+    readonly canonicalUrl: string;
     readonly contentHash: string;
     readonly textCharCount: number;
     readonly publishedAt: Date;
   }>`
-    select documents.id::text as "documentId",
-           versions.id::text as "snapshotId",
-           extractions.id::text as "extractionId",
-           documents.title,
-           versions.content_hash as "contentHash",
-           versions.text_char_count::int as "textCharCount",
-           issues.published_at as "publishedAt"
-    from hartlib_documents documents
-    join hartlib_document_versions versions on versions.id = documents.current_version_id
-    join hartlib_document_extractions extractions
-      on extractions.hartlib_document_id = documents.id
-     and extractions.input_sha256_hex = documents.sha256_hex
-    join publisher_issues issues on issues.id = documents.issue_id
-    where documents.issue_id = ${publisherPdfFixture.issueId}
-      and documents.deleted_at is null
-      and issues.status = 'published'
-      and issues.published_at is not null
-    order by documents.created_at, documents.id
+    select document_id as "documentId",
+           document_id as "snapshotId",
+           title,
+           canonical_url as "canonicalUrl",
+           content_hash as "contentHash",
+           text_char_count::int as "textCharCount",
+           coalesce(published_at, discovered_at) as "publishedAt"
+    from public_source_documents
+    where source_id = 'e2e-fr-energie'
+      and text_char_count >= 100
+    order by discovered_at, document_id
     limit 1
   `;
   const document = documents[0];
   if (document === undefined) {
-    return yield* Effect.fail(new Error("published E2E publisher document is unavailable"));
+    return yield* Effect.fail(new Error("public E2E citation document is unavailable"));
   }
   const ranges = [{ charStart: 0, charEnd: Math.min(document.textCharCount, 200) }];
   const publicSources = yield* sql<{ readonly sourceId: string }>`
     select source_id as "sourceId"
     from client_company_public_source_settings
-    where client_company_id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
+    where client_company_id = ${demoClientCompanyId}
       and enabled
     order by source_id
   `;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const [chat] = yield* sql<{ readonly id: string }>`
-    insert into chats (user_id, company_id, memory_mode)
-    values ('demo-user', 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'private_owner')
-    returning id::text
-  `;
-      yield* sql`
-    insert into chat_subscription_sources (
-      chat_id, access_id, client_company_id, subscription_id
-    ) values (
-      ${chat!.id}, ${publisherPdfFixture.accessId},
-      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', ${publisherPdfFixture.subscriptionId}
-    )
-  `;
+        insert into chats (user_id, company_id, memory_mode)
+        values (${demoVisitorId}, ${demoClientCompanyId}, 'private_owner')
+        on conflict (user_id) do update set updated_at = chats.updated_at
+        returning id::text
+      `;
+      if (chat === undefined) return yield* Effect.fail(new Error("demo chat is unavailable"));
       const [userMessage] = yield* sql<{ readonly id: string }>`
-    insert into chat_messages (chat_id, author, content)
-    values (${chat!.id}, 'user', 'Show the published publisher evidence.')
-    returning id::text
-  `;
+        insert into chat_messages (chat_id, author, content)
+        values (${chat.id}, 'user', 'Show the public source evidence.')
+        returning id::text
+      `;
       const [run] = yield* sql<{
         readonly id: string;
         readonly citationNamespace: string;
       }>`
-    insert into ai_runs (
-      chat_id, initiating_user_id, user_message_id, locale, market,
-      citation_namespace, acceptance_scope, started_at, finished_at
-    ) values (
-      ${chat!.id}, 'demo-user', ${userMessage!.id}, 'en-US', 'US',
-      ${citationNamespaceForSeed("publisher-pdf")},
-      ${sql.json(
-        acceptanceScopeForSeed({
-          chatId: chat!.id,
-          companyId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-          subscriptionIds: [publisherPdfFixture.subscriptionId],
-          accessIds: [publisherPdfFixture.accessId],
-          publicSourceIds: publicSources.map((source) => source.sourceId),
-        }),
-      )},
-      now(), now()
-    )
-    returning id::text,
-      citation_namespace as "citationNamespace"
-  `;
-      const sourceKey = `k_${run!.citationNamespace}_1`;
+        insert into ai_runs (
+          chat_id, initiating_user_id, user_message_id, locale, market,
+          citation_namespace, acceptance_scope, started_at, finished_at
+        ) values (
+          ${chat.id}, ${demoVisitorId}, ${userMessage!.id}, 'en-US', 'US',
+          ${citationNamespaceForSeed("public-document")},
+          ${sql.json(
+            acceptanceScopeForSeed({
+              chatId: chat.id,
+              companyId: demoClientCompanyId,
+              publicSourceIds: publicSources.map((source) => source.sourceId),
+            }),
+          )},
+          now(), now()
+        )
+        returning id::text, citation_namespace as "citationNamespace"
+      `;
+      if (run === undefined)
+        return yield* Effect.fail(new Error("public citation run is unavailable"));
+      const sourceKey = `k_${run.citationNamespace}_1`;
       const [message] = yield* sql<{ readonly id: string }>`
-    insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
-    values (
-      ${chat!.id}, 'assistant',
-      ${`Authorized publisher evidence [[cite:${sourceKey}]].`},
-      ${run!.id}
-    )
-    returning id::text
-  `;
+        insert into chat_messages (chat_id, author, content, assistant_ai_run_id)
+        values (${chat.id}, 'assistant', ${`Authorized public source evidence [[cite:${sourceKey}]].`}, ${run.id})
+        returning id::text
+      `;
+      if (message === undefined)
+        return yield* Effect.fail(new Error("public citation message is unavailable"));
       yield* sql`
-    update ai_runs
-    set assistant_message_id = ${message!.id}
-    where id = ${run!.id}
-  `;
-      const citationUrl = `/v1/issues/${publisherPdfFixture.issueId}/documents/${document.documentId}/content`;
+        update ai_runs set assistant_message_id = ${message.id} where id = ${run.id}
+      `;
+      const sourceId = "e2e-fr-energie";
+      const citationUrl = document.canonicalUrl;
       yield* sql`
-    insert into assistant_message_sources (
-      assistant_message_id, source_key, kind, locator,
-      snapshot_id, publisher_extraction_id, document_source_id, document_id, content_hash,
-      display_label, public_provenance
-    ) values (
-      ${message!.id}, ${sourceKey}, 'document',
-      ${sql.json({
-        kind: "document",
-        sourceId: `publisher:${publisherPdfFixture.subscriptionId}`,
-        documentId: document.documentId,
-        snapshotId: document.snapshotId,
-        contentHash: document.contentHash,
-        ranges,
-        publisherIssueId: publisherPdfFixture.issueId,
-        publisherDocumentId: document.documentId,
-        publisherExtractionId: document.extractionId,
-      })},
-      ${document.snapshotId}, ${document.extractionId},
-      ${`publisher:${publisherPdfFixture.subscriptionId}`}, ${document.documentId}, ${document.contentHash},
-      ${document.title},
-      ${sql.json({
-        sourceName: "E2E PDF Publisher",
-        issueTitle: publisherPdfFixture.issueTitle,
-        documentTitle: document.title,
-        citationUrl,
-        publishedAt: document.publishedAt.toISOString(),
-      })}
-    )
-  `;
+        insert into assistant_message_sources (
+          run_id, assistant_message_id, source_key, kind, locator,
+          snapshot_id, document_source_id, document_id, content_hash,
+          display_label, public_provenance, source_identity_digest, citation_namespace
+        ) values (
+          ${run.id}, ${message.id}, ${sourceKey}, 'document',
+          ${sql.json({
+            kind: "document",
+            sourceId: `public:${sourceId}`,
+            documentId: document.documentId,
+            snapshotId: document.snapshotId,
+            contentHash: document.contentHash,
+            ranges,
+          })},
+          ${document.snapshotId}, ${`public:${sourceId}`}, ${document.documentId}, ${document.contentHash},
+          ${document.title},
+          ${sql.json({
+            sourceName: "Observatoire Energie",
+            documentTitle: document.title,
+            citationUrl,
+            publishedAt: document.publishedAt.toISOString(),
+          })},
+          ${"0".repeat(64)}, ${run.citationNamespace}
+        )
+      `;
       yield* sql`
-    insert into assistant_message_source_uses (
-      assistant_message_id, source_key, consumer_task_id, topic_id,
-      rendered_token_count, context_order, ranges
-    ) values (
-      ${message!.id}, ${sourceKey}, 'single-answer', null,
-      20, 0, ${JSON.stringify(ranges)}::jsonb
-    )
-  `;
-      return { chatId: chat!.id, messageId: message!.id, citationUrl };
+        insert into assistant_message_source_uses (
+          run_id, assistant_message_id, source_key, consumer_task_id, topic_id,
+          rendered_token_count, context_order, ranges, source_use_identity_digest
+        ) values (
+          ${run.id}, ${message.id}, ${sourceKey}, 'single-answer', null,
+          20, 0, ${JSON.stringify(ranges)}::jsonb, ${"0".repeat(64)}
+        )
+      `;
+      return { chatId: chat.id, messageId: message.id, citationUrl };
     }),
   );
 });
@@ -832,7 +767,7 @@ const makeLatestCitedMemoryProvenanceOnly = Effect.gen(function* () {
         join user_memory_revisions revisions on revisions.id = sources.memory_revision_id
         join user_memories memories on memories.id = revisions.memory_id
         where sources.kind = 'memory'
-          and memories.user_id = 'demo-user'
+          and memories.user_id = ${demoVisitorId}
         order by sources.created_at desc, sources.assistant_message_id desc, sources.source_key desc
         limit 1
         for update of memories, revisions
@@ -875,47 +810,37 @@ const makeLatestCitedMemoryProvenanceOnly = Effect.gen(function* () {
   );
 });
 
-const seedActiveRun = (scope: "chat" | "user") =>
-  Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    const chats = yield* sql<{ readonly id: string; readonly companyId: string }>`
+const seedActiveRun = Effect.gen(function* () {
+  const sql = yield* PgClient.PgClient;
+  const chats = yield* sql<{ readonly id: string; readonly companyId: string }>`
       select id::text, company_id::text as "companyId"
-      from chats where user_id = 'demo-user'
+      from chats where user_id = ${demoVisitorId}
       order by created_at, id limit 1
     `;
-    const primary = chats[0];
-    if (primary === undefined) return yield* Effect.fail(new Error("demo chat is not initialized"));
-    let chatId = primary.id;
-    if (scope === "user") {
-      const inserted = yield* sql<{ readonly id: string }>`
-        insert into chats (user_id, company_id, memory_mode)
-        values ('demo-user', ${primary.companyId}, 'private_owner')
-        returning id::text
-      `;
-      chatId = inserted[0]!.id;
-    }
-    const publicSources = yield* sql<{ readonly sourceId: string }>`
+  const primary = chats[0];
+  if (primary === undefined) return yield* Effect.fail(new Error("demo chat is not initialized"));
+  const publicSources = yield* sql<{ readonly sourceId: string }>`
       select source_id as "sourceId"
       from client_company_public_source_settings
       where client_company_id = ${primary.companyId}
         and enabled
       order by source_id
     `;
-    const messages = yield* sql<{ readonly id: string }>`
+  const messages = yield* sql<{ readonly id: string }>`
       insert into chat_messages (chat_id, author, content)
-      values (${chatId}, 'user', 'Seeded active-run guard')
+      values (${primary.id}, 'user', 'Seeded active-run guard')
       returning id::text
     `;
-    const runs = yield* sql<{ readonly id: string }>`
+  const runs = yield* sql<{ readonly id: string }>`
       insert into ai_runs (
         chat_id, initiating_user_id, user_message_id, locale, market,
         citation_namespace, acceptance_scope
       ) values (
-        ${chatId}, 'demo-user', ${messages[0]!.id}, 'fr-FR', 'FR',
-        ${citationNamespaceForSeed(`active:${scope}`)},
+        ${primary.id}, ${demoVisitorId}, ${messages[0]!.id}, 'fr-FR', 'FR',
+        ${citationNamespaceForSeed("active")},
         ${sql.json(
           acceptanceScopeForSeed({
-            chatId,
+            chatId: primary.id,
             companyId: primary.companyId,
             publicSourceIds: publicSources.map((source) => source.sourceId),
           }),
@@ -923,14 +848,201 @@ const seedActiveRun = (scope: "chat" | "user") =>
       )
       returning id::text
     `;
-    return { chatId, runId: runs[0]!.id };
+  return { chatId: primary.id, runId: runs[0]!.id };
+});
+
+const seedPurgeRetry = (visitorId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const companyId = clientCompanyIdForVisitor(visitorId);
+    const uniqueKey = `demo-identity-purge:${visitorId}`;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const existing = yield* sql<{ readonly id: string }>`
+          select id::text
+          from jobs
+          where unique_key = ${uniqueKey}
+        `;
+        if (existing[0] !== undefined) {
+          return yield* Effect.fail(new Error("purge retry seed already exists"));
+        }
+        yield* sql`
+          insert into demo_sessions (visitor_id, revoked_at)
+          values (${visitorId}::uuid, now())
+        `;
+        yield* sql`
+          insert into platform_users (id, primary_email, display_name)
+          values (${visitorId}, ${`purge+${visitorId}@hartlib.test`}, ${`Purge ${visitorId}`})
+        `;
+        yield* sql`
+          insert into client_companies (id, name)
+          values (${companyId}::uuid, ${`Purge company for ${visitorId}`})
+        `;
+        yield* sql`
+          insert into client_company_memberships (company_id, user_id, role)
+          values (${companyId}::uuid, ${visitorId}, 'admin')
+        `;
+        const chats = yield* sql<{ readonly id: string }>`
+          insert into chats (user_id, company_id, memory_mode)
+          values (${visitorId}, ${companyId}::uuid, 'private_owner')
+          returning id::text
+        `;
+        const chat = chats[0];
+        if (chat === undefined)
+          return yield* Effect.fail(new Error("purge retry chat was not created"));
+        const messages = yield* sql<{ readonly id: string }>`
+          insert into chat_messages (chat_id, author, content)
+          values (${chat.id}, 'user', 'Durable purge retry seed')
+          returning id::text
+        `;
+        const message = messages[0];
+        if (message === undefined)
+          return yield* Effect.fail(new Error("purge retry message was not created"));
+        const runs = yield* sql<{ readonly id: string }>`
+          insert into ai_runs (
+            chat_id, initiating_user_id, user_message_id, locale, market,
+            citation_namespace, acceptance_scope, started_at, next_event_seq
+          ) values (
+            ${chat.id}, ${visitorId}, ${message.id}, 'en-US', 'US',
+            ${citationNamespaceForSeed(`purge-retry:${visitorId}`)},
+            ${sql.json(
+              acceptanceScopeForSeed({
+                userId: visitorId,
+                chatId: chat.id,
+                companyId,
+                publicSourceIds: [],
+              }),
+            )},
+            now(), 1
+          )
+          returning id::text
+        `;
+        const run = runs[0];
+        if (run === undefined)
+          return yield* Effect.fail(new Error("purge retry run was not created"));
+        const jobs = yield* sql<{ readonly id: string }>`
+          insert into jobs (kind, payload, unique_key, status, attempts, max_attempts, available_at)
+          values (
+            'demo_identity_purge',
+            ${sql.json({ visitorId })},
+            ${uniqueKey},
+            'queued',
+            5,
+            2147483647,
+            now()
+          )
+          returning id::text
+        `;
+        const job = jobs[0];
+        if (job === undefined)
+          return yield* Effect.fail(new Error("purge retry job was not created"));
+        return { visitorId, companyId, chatId: chat.id, runId: run.id, jobId: job.id };
+      }),
+    );
+  });
+
+const readPurgeRetryState = (visitorId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const jobs = yield* sql<{
+      readonly id: string;
+      readonly status: string;
+      readonly attempts: number;
+      readonly maxAttempts: number;
+      readonly availableAt: string;
+      readonly lastError: string | null;
+    }>`
+      select id::text,
+             status,
+             attempts,
+             max_attempts as "maxAttempts",
+             available_at::text as "availableAt",
+             last_error as "lastError"
+      from jobs
+      where kind = 'demo_identity_purge'
+        and payload->>'visitorId' = ${visitorId}
+      order by created_at desc, id desc
+      limit 1
+    `;
+    const graph = yield* sql<{
+      readonly sessions: number;
+      readonly users: number;
+      readonly companies: number;
+      readonly memberships: number;
+      readonly chats: number;
+      readonly runs: number;
+    }>`
+      select
+        (select count(*)::int from demo_sessions where visitor_id = ${visitorId}::uuid) as sessions,
+        (select count(*)::int from platform_users where id = ${visitorId}) as users,
+        (select count(*)::int from client_companies where id = ${clientCompanyIdForVisitor(visitorId)}::uuid) as companies,
+        (select count(*)::int from client_company_memberships where user_id = ${visitorId}) as memberships,
+        (select count(*)::int from chats where user_id = ${visitorId}) as chats,
+        (select count(*)::int from ai_runs where initiating_user_id = ${visitorId}) as runs
+    `;
+    const activeRuns = yield* sql<{ readonly count: number }>`
+      select count(*)::int as count
+      from ai_runs
+      where initiating_user_id = ${visitorId}
+        and finished_at is null
+        and failed_at is null
+        and stopped_at is null
+        and superseded_at is null
+    `;
+    return {
+      visitorId,
+      job: jobs[0] ?? null,
+      graph: graph[0] ?? {
+        sessions: 0,
+        users: 0,
+        companies: 0,
+        memberships: 0,
+        chats: 0,
+        runs: 0,
+      },
+      activeRuns: activeRuns[0]?.count ?? 0,
+    };
+  });
+
+const releasePurgeRetry = (visitorId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const runs = yield* sql<{ readonly id: string }>`
+          update ai_runs
+          set stop_requested_at = coalesce(stop_requested_at, now()),
+              stopped_at = coalesce(stopped_at, now())
+          where initiating_user_id = ${visitorId}
+            and finished_at is null
+            and failed_at is null
+            and stopped_at is null
+            and superseded_at is null
+          returning id::text
+        `;
+        const jobs = yield* sql<{ readonly id: string }>`
+          update jobs
+          set status = 'queued',
+              available_at = now(),
+              locked_at = null,
+              locked_by = null,
+              last_error = null,
+              updated_at = now()
+          where kind = 'demo_identity_purge'
+            and payload->>'visitorId' = ${visitorId}
+            and status in ('queued', 'retrying')
+          returning id::text
+        `;
+        return { visitorId, releasedRuns: runs.length, releasedJobs: jobs.length };
+      }),
+    );
   });
 
 const seedPrunedStreamRun = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const chats = yield* sql<{ readonly id: string; readonly companyId: string }>`
     select id::text, company_id::text as "companyId"
-    from chats where user_id = 'demo-user'
+    from chats where user_id = ${demoVisitorId}
     order by created_at, id limit 1
   `;
   const primary = chats[0];
@@ -952,7 +1064,7 @@ const seedPrunedStreamRun = Effect.gen(function* () {
       chat_id, initiating_user_id, user_message_id, locale, market,
       citation_namespace, acceptance_scope, started_at, next_event_seq
     ) values (
-      ${primary.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+      ${primary.id}, ${demoVisitorId}, ${messages[0]!.id}, 'en-US', 'US',
       ${citationNamespaceForSeed("pruned-stream")},
       ${sql.json(
         acceptanceScopeForSeed({
@@ -994,8 +1106,7 @@ const seedFailedRun = (chatId: string, content: string) =>
       select id::text, company_id::text as "companyId"
       from chats
       where id = ${chatId}
-        and user_id = 'demo-user'
-        and deleted_at is null
+        and user_id = ${demoVisitorId}
     `;
     const chat = chats[0];
     if (chat === undefined) return yield* Effect.fail(new Error("failed-run chat is unavailable"));
@@ -1019,7 +1130,7 @@ const seedFailedRun = (chatId: string, content: string) =>
             citation_namespace, acceptance_scope, started_at, failed_at,
             error_code, retryable, next_event_seq
           ) values (
-            ${chat.id}, 'demo-user', ${messages[0]!.id}, 'en-US', 'US',
+            ${chat.id}, ${demoVisitorId}, ${messages[0]!.id}, 'en-US', 'US',
             ${citationNamespaceForSeed(`failed:${content}`)},
             ${sql.json(
               acceptanceScopeForSeed({
@@ -1056,7 +1167,7 @@ const pruneSeededStreamRun = (runId: string) =>
         const runs = yield* sql<{ readonly id: string }>`
           select id::text
           from ai_runs
-          where id = ${runId} and initiating_user_id = 'demo-user'
+          where id = ${runId} and initiating_user_id = ${demoVisitorId}
           for update
         `;
         if (runs[0] === undefined)
@@ -1137,24 +1248,37 @@ if (command === "setup") {
   await dropDatabase();
 } else if (command === "reset") {
   await waitForDemoAiChatJobsToQuiesce();
-  await runDb(databaseUrl, resetChatRuntime);
+  await runDb(databaseUrl, resetDemoRuntime);
 } else if (command === "state") {
   console.log(JSON.stringify(await runDb(databaseUrl, readRuntimeState)));
-} else if (command === "publisher-pdf-state") {
-  console.log(JSON.stringify(await runDb(databaseUrl, readPublisherPdfState)));
-} else if (command === "publisher-pdf-client-only") {
-  console.log(JSON.stringify(await runDb(databaseUrl, makePublisherPdfClientOnly)));
-} else if (command === "seed-publisher-citation") {
-  console.log(JSON.stringify(await runDb(databaseUrl, seedPublisherDocumentCitation)));
+} else if (command === "seed-public-citation") {
+  console.log(JSON.stringify(await runDb(databaseUrl, seedPublicDocumentCitation)));
 } else if (command === "memory-provenance-only") {
   console.log(JSON.stringify(await runDb(databaseUrl, makeLatestCitedMemoryProvenanceOnly)));
 } else if (command === "disable-demo-public-source") {
   const sourceId = process.argv[3] ?? "";
   if (!/^e2e-[a-z0-9-]+$/u.test(sourceId)) throw new Error("invalid E2E public source id");
   console.log(JSON.stringify(await runDb(databaseUrl, disableDemoPublicSource(sourceId))));
-} else if (command === "seed-active-chat" || command === "seed-active-user") {
-  const scope = command === "seed-active-chat" ? "chat" : "user";
-  console.log(JSON.stringify(await runDb(databaseUrl, seedActiveRun(scope))));
+} else if (command === "seed-active-chat") {
+  console.log(JSON.stringify(await runDb(databaseUrl, seedActiveRun)));
+} else if (command === "seed-purge-retry") {
+  const visitorId = process.argv[3] ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(visitorId)) {
+    throw new Error("invalid purge retry visitor id");
+  }
+  console.log(JSON.stringify(await runDb(databaseUrl, seedPurgeRetry(visitorId))));
+} else if (command === "purge-retry-state") {
+  const visitorId = process.argv[3] ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(visitorId)) {
+    throw new Error("invalid purge retry visitor id");
+  }
+  console.log(JSON.stringify(await runDb(databaseUrl, readPurgeRetryState(visitorId))));
+} else if (command === "release-purge-retry") {
+  const visitorId = process.argv[3] ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(visitorId)) {
+    throw new Error("invalid purge retry visitor id");
+  }
+  console.log(JSON.stringify(await runDb(databaseUrl, releasePurgeRetry(visitorId))));
 } else if (command === "seed-pruned-stream-run") {
   console.log(JSON.stringify(await runDb(databaseUrl, seedPrunedStreamRun)));
 } else if (command === "seed-failed-run") {

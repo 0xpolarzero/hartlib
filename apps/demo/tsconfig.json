@@ -9,13 +9,13 @@
       "@hartlib/api-client/*": ["../../packages/api-client/src/*"],
       "@hartlib/config": ["../../packages/config/src/index.ts"],
       "@hartlib/config/*": ["../../packages/config/src/*"],
-      "@hartlib/demo-data": ["../../packages/demo-data/src/index.ts"],
       "@hartlib/docs": ["../../packages/docs/src/index.ts"],
       "@hartlib/i18n": ["../../packages/i18n/src/index.ts"],
       "@hartlib/shared": ["../../packages/shared/src/index.ts"],
       "@hartlib/shared/*": ["../../packages/shared/src/*"],
-      "@hartlib/source-ingestion": ["../../packages/source-ingestion/src/index.ts"],
       "@hartlib/ui": ["../../packages/ui/src/index.ts"],
+      "@hartlib/ui/styles/document": ["../../packages/ui/src/styles/document-style.ts"],
+      "@hartlib/ui/*": ["../../packages/ui/src/*"],
       "@/*": ["./src/*"]
     }
   },
@@ -23,11 +23,9 @@
     "src",
     "../../packages/api-client/src",
     "../../packages/config/src",
-    "../../packages/demo-data/src",
     "../../packages/docs/src",
     "../../packages/i18n/src",
     "../../packages/shared/src",
-    "../../packages/source-ingestion/src",
     "../../packages/ui/src"
   ]
 }

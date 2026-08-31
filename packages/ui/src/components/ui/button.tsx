@@ -1,47 +1,86 @@
-import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
-import type * as React from "react";
-
+import * as React from "react";
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
-const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-sm text-sm font-medium transition-transform duration-fast ease-snappy active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-reduce:transition-none motion-reduce:active:scale-100 disabled:pointer-events-none disabled:opacity-50 disabled:active:scale-100 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
-  {
-    variants: {
-      variant: {
-        default:
-          "bg-primary text-primary-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-primary/90 active:bg-primary/80",
-        destructive:
-          "bg-destructive text-destructive-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-destructive/90 active:bg-destructive/80",
-        outline:
-          "border border-border bg-paper [@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink active:bg-surface/80",
-        secondary:
-          "bg-secondary text-secondary-foreground [@media(hover:hover)_and_(pointer:fine)]:hover:bg-secondary/80 active:bg-secondary/70",
-        ghost:
-          "[@media(hover:hover)_and_(pointer:fine)]:hover:bg-surface [@media(hover:hover)_and_(pointer:fine)]:hover:text-ink active:bg-surface/80",
-        link: "text-primary underline-offset-4 [@media(hover:hover)_and_(pointer:fine)]:hover:underline",
-      },
-      size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-7 rounded-sm px-3 text-xs",
-        lg: "h-10 rounded-sm px-8",
-        icon: "h-9 w-9",
-      },
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "destructive" | "link";
+export type ButtonSize = "sm" | "md" | "lg" | "icon" | "icon-sm";
+
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  asChild?: boolean;
+  children?: ReactNode;
+}
+
+const variants: Record<ButtonVariant, string> = {
+  primary: "bg-ink text-paper hover:bg-ink/85",
+  secondary: "border border-line-2 bg-transparent text-ink hover:border-ink hover:bg-paper-deep/60",
+  ghost: "text-ink underline-offset-4 hover:underline hover:decoration-line-2",
+  destructive: "bg-danger text-paper hover:bg-danger/90",
+  link: "text-accent underline decoration-1 underline-offset-2 hover:text-accent-deep",
+};
+const sizes: Record<ButtonSize, string> = {
+  sm: "h-6 gap-1 px-2 text-[12px]",
+  md: "h-7 px-3",
+  lg: "h-9 px-4 text-[13.5px]",
+  icon: "h-7 w-7",
+  "icon-sm": "h-6 w-6",
+};
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  (
+    {
+      className,
+      variant = "secondary",
+      size = "md",
+      asChild = false,
+      children,
+      type = "button",
+      ...props
     },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
+    ref,
+  ) => {
+    const classes = cn(
+      "inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-tiny font-sans font-medium leading-none",
+      "transition-[transform,background-color,border-color,color,text-decoration-color] duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:scale-[.97] disabled:pointer-events-none disabled:opacity-45",
+      "[&_svg]:size-3.5 [&_svg]:shrink-0 motion-reduce:transition-none motion-reduce:active:scale-100",
+      variants[variant],
+      sizes[size],
+      className,
+    );
+    if (asChild && typeof children === "object" && children !== null && "type" in children) {
+      const child = children as React.ReactElement<{
+        className?: string;
+        ref?: unknown;
+        onClick?: React.MouseEventHandler;
+      }>;
+      const childOnClick = child.props.onClick;
+      const buttonOnClick = props.onClick;
+      return React.cloneElement(child, {
+        className: cn(classes, child.props.className),
+        ref,
+        type,
+        ...props,
+        onClick: (event: React.MouseEvent) => {
+          childOnClick?.(event as React.MouseEvent<HTMLElement>);
+          if (!event.defaultPrevented)
+            buttonOnClick?.(event as React.MouseEvent<HTMLButtonElement>);
+        },
+      } as never);
+    }
+    return (
+      <button ref={ref} type={type} className={classes} {...props}>
+        {children}
+      </button>
+    );
   },
 );
+Button.displayName = "Button";
 
-export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonVariants> & {
-    asChild?: boolean;
-  };
-
-export function Button({ className, variant, size, asChild = false, ...props }: ButtonProps) {
-  const Component = asChild ? Slot : "button";
-
-  return <Component className={cn(buttonVariants({ variant, size }), className)} {...props} />;
-}
+export const buttonVariants = ({
+  variant = "secondary",
+  size = "md",
+  className,
+}: { variant?: ButtonVariant; size?: ButtonSize; className?: string } = {}) =>
+  cn(variants[variant], sizes[size], className);

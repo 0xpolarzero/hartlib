@@ -6,11 +6,11 @@ services:
       POSTGRES_PASSWORD: hartlib
       POSTGRES_DB: hartlib
     ports:
-      - "${HARTLIB_POSTGRES_HOST_PORT:-5432}:5432"
+      - "127.0.0.1:${HARTLIB_POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hartlib -d hartlib"]
+      test: ["CMD-SHELL", "pg_isready -U hartlib -d postgres -h 127.0.0.1 -p 5432"]
       interval: 5s
       timeout: 5s
       retries: 10

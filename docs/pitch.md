@@ -1,59 +1,30 @@
 # Pitch
 
-An AI subscriber portal for professional briefings, confidential letters, and specialist subscription publications.
+## Product
+
+Hartlib turns authorized public-source documents into a cited research
+workspace. A visitor gets one conversation, source subscriptions, memories,
+secure document opening, optional web research, and durable answers that remain
+available after a reload.
 
 ## Problem
 
-Specialist publishers already sell valuable documents to high-value clients.
-
-Their clients receive PDFs and emails, but the archive is hard to search, connect, and reuse.
-
-Publishers need a modern delivery layer without changing their content business.
-
-## Product
-
-The platform lets publishers create private subscriptions, publish issue documents, manage client delivery, and give clients an AI workspace over delivered archives.
-
-Clients receive issues from publisher subscriptions. In search and AI, those subscriptions appear as sources they can include or exclude.
-
-Clients can read, download, search, ask questions, compare past coverage, cite sources, and use web research when enabled.
-
-## Wedge
-
-Publishers keep their existing client relationships and content revenue.
-
-Publisher subscriptions are free.
-
-The platform charges clients for AI usage: monthly credit plans and additional credits.
+Professional briefings and public records are hard to search across, compare,
+and reuse. A durable chat with source citations gives a researcher one place
+to ask a question and inspect the evidence.
 
 ## Trust
 
-The MVP uses platform-hosted AI. Development runs the exact registered GLM-5-Turbo contract; the production provider is selected through the guided evidence process in `docs/production-readiness.spec.md`, with Mistral retained as one candidate.
+The browser talks only to Hartlib. The server authenticates an active session,
+limits retrieval to selected public sources, validates citations, and stores
+safe run evidence. The current runtime uses the official Z.AI Coding Plan
+provider when live credentials are enabled and a deterministic provider in
+tests. Production provider and commercial promises remain deferred until the
+evidence workflow accepts them.
 
-The AI layer is built for French and European publishers that need a European provider, clear data boundaries, and a regulated operating model.
+## Product boundary
 
-Publisher documents and client chats are excluded from model training.
-
-Answers cite the issue documents and web sources they use.
-
-## Why It Works
-
-Publishers get a better subscriber portal with low adoption friction.
-
-Clients pay for the AI value they use.
-
-The platform earns where it creates cost and value: AI usage.
-
-## Positioning
-
-For publishers:
-
-Keep your deals. Upgrade your publication into an AI archive.
-
-For clients:
-
-Turn every issue and archive into a cited research assistant.
-
-For the platform:
-
-Distribution is the wedge. AI usage is the business.
+The reachable demo has no publisher write workflow, billing workflow, account
+admin, export, or notification route. Dormant publisher and visualization
+presentations exist for direct fixture tests only. They have no product URL,
+command, link, navigation item, fetch, write callback, or production import.

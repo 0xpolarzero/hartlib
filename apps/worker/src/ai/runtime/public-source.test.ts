@@ -62,16 +62,6 @@ describe("canonical public source projection", () => {
     expect(() =>
       publicSourceRecordFromFinalSource({
         ...documentSource,
-        locator: {
-          ...documentLocator,
-          publisherIssueId: "issue-1",
-          publisherDocumentId: "publisher-document-1",
-        } as never,
-      }),
-    ).toThrow(/lacks sourceName/u);
-    expect(() =>
-      publicSourceRecordFromFinalSource({
-        ...documentSource,
         publicProvenance: {
           documentTitle: "Canonical document",
           citationUrl: "https://example.test/document-1",
@@ -82,7 +72,7 @@ describe("canonical public source projection", () => {
     expect(() =>
       publicSourceRecordFromFinalSource({
         ...documentSource,
-        locator: { ...documentLocator, sourceId: "publisher:source-1" },
+        locator: { ...documentLocator, sourceId: "legacy:source-1" },
       }),
     ).toThrow(/not canonical/u);
   });

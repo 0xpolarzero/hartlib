@@ -1,7 +1,6 @@
 import {
   canonicalPublicSourceHttpsUrl,
   isCanonicalPublicDocumentSourceId,
-  isCanonicalPublisherDocumentSourceId,
   type PublicSourceRecord,
 } from "@hartlib/shared";
 
@@ -44,21 +43,8 @@ export const publicSourceRecordFromFinalSource = (
     );
     const citationUrl = requiredProvenance(source.sourceKey, "citationUrl", provenance.citationUrl);
     if (
-      source.locator.publisherIssueId !== undefined ||
-      source.locator.publisherDocumentId !== undefined
-    ) {
-      requiredProvenance(source.sourceKey, "sourceName", provenance.sourceName);
-      requiredProvenance(source.sourceKey, "issueTitle", provenance.issueTitle);
-      requiredProvenance(source.sourceKey, "publishedAt", provenance.publishedAt);
-    }
-    if (
-      (source.locator.publisherIssueId === undefined &&
-        source.locator.publisherDocumentId === undefined &&
-        canonicalPublicSourceHttpsUrl(citationUrl) !== citationUrl) ||
-      (source.locator.publisherIssueId !== undefined &&
-        !isCanonicalPublisherDocumentSourceId(source.locator.sourceId)) ||
-      (source.locator.publisherIssueId === undefined &&
-        !isCanonicalPublicDocumentSourceId(source.locator.sourceId))
+      canonicalPublicSourceHttpsUrl(citationUrl) !== citationUrl ||
+      !isCanonicalPublicDocumentSourceId(source.locator.sourceId)
     ) {
       throw new Error(`${source.sourceKey} document public provenance is not canonical`);
     }

@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   resolve: {
     alias: {
-      "@": new URL("./apps/web/src", import.meta.url).pathname,
+      "@": new URL("./apps/demo/src", import.meta.url).pathname,
     },
   },
   test: {
@@ -14,7 +14,9 @@ export default defineConfig({
       "apps/**/*.test.ts",
       "apps/**/*.test.tsx",
       "packages/**/*.test.ts",
+      "packages/**/*.test.tsx",
       "packages/**/**/*.test.ts",
+      "scripts/**/*.test.ts",
       "tests/e2e/**/*.test.ts",
       ".smithers/workflows/**/*.test.ts",
     ],

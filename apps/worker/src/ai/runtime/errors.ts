@@ -326,8 +326,7 @@ export const aiRuntimeFailureMetadataFromDurableJson = (
       (markedCategory !== undefined && markedCategory !== category) ||
       (parsed.data.category !== undefined && parsed.data.diagnosticMessage === undefined) ||
       (parsed.data.diagnosticMessage !== undefined &&
-        parsed.data.diagnosticMessage !== serializedMessage
-      )
+        parsed.data.diagnosticMessage !== serializedMessage)
     ) {
       return undefined;
     }

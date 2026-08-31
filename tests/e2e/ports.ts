@@ -20,6 +20,5 @@ export const parseE2ePortBase = (raw = process.env.HARTLIB_E2E_PORT_BASE): numbe
 export const e2ePortsFromBase = (base: number) => ({
   api: base,
   demo: base + 1,
-  web: base + 2,
-  objectStore: base + 3,
+  objectStore: base + 2,
 });

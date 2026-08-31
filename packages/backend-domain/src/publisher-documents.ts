@@ -9,8 +9,6 @@ export interface PublisherDocumentRow {
 
 export interface PublisherDocumentIdentity {
   readonly userId: string;
-  readonly organizationId: string | null;
-  readonly mode: "demo" | "clerk";
 }
 
 /**
@@ -45,8 +43,6 @@ export const selectAuthorizedPublisherDocument = (
           select 1
           from platform_users users
           where users.id = ${identity.userId}
-            and users.recovery_deleted_at is null
-            and users.purged_at is null
         )
         and (
           exists (
@@ -59,11 +55,6 @@ export const selectAuthorizedPublisherDocument = (
              and membership.user_id = ${identity.userId}
              and membership.accepted_at is not null
             where subscription.id = issue.subscription_id
-              and (
-                ${identity.mode} = 'demo'
-                or ${identity.organizationId}::text is null
-                or publisher_company.clerk_organization_id = ${identity.organizationId}
-              )
               and (
                 membership.role = 'admin'
                 or exists (
@@ -80,8 +71,6 @@ export const selectAuthorizedPublisherDocument = (
             from issue_deliveries delivery
             join client_companies company
               on company.id = delivery.client_company_id
-             and company.recovery_deleted_at is null
-             and company.purged_at is null
             join client_company_memberships membership
               on membership.company_id = delivery.client_company_id
              and membership.user_id = ${identity.userId}
@@ -91,11 +80,6 @@ export const selectAuthorizedPublisherDocument = (
              and recipient.client_company_id = delivery.client_company_id
              and recipient.user_id = ${identity.userId}
             where delivery.issue_id = issue.id
-              and (
-                ${identity.mode} = 'demo'
-                or ${identity.organizationId}::text is null
-                or company.clerk_organization_id = ${identity.organizationId}
-              )
           )
         )
       limit 1

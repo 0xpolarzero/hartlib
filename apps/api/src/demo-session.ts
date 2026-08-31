@@ -15,9 +15,9 @@ import { randomUUID } from "node:crypto";
 
 export const DEMO_COOKIE_NAME = "hartlib_demo";
 
-// A visitor id is any short, cookie-safe slug (no dot, semicolon, or space).
-// Real sessions mint random UUIDs; tests carry stable ids like "demo-user".
-const VISITOR_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+// Only server-minted UUIDs are valid credentials.  A readable slug must never
+// authenticate a request or become a durable user identity.
+const VISITOR_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 const isVisitorId = (value: string): boolean => VISITOR_ID_PATTERN.test(value);
 
@@ -36,7 +36,7 @@ export const createDemoSession = (): {
  */
 export const verifyDemoSessionCookie = (cookieValue: string | null | undefined): string | null => {
   if (cookieValue === null || cookieValue === undefined || cookieValue === "") return null;
-  return isVisitorId(cookieValue) ? cookieValue : null;
+  return isVisitorId(cookieValue) ? cookieValue.toLowerCase() : null;
 };
 
 /** Read a named cookie from a Cookie header value. */
@@ -59,10 +59,7 @@ export const readCookie = (
  * Set-Cookie directive for a demo session. `Secure` is set only in production
  * so the cookie survives the plaintext localhost dev origin.
  */
-export const demoSessionCookieAttributes = (
-  secure: boolean,
-  maxAgeSeconds = 60 * 60 * 24 * 30,
-): string =>
-  [`HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=${maxAgeSeconds}`, secure ? "Secure" : null]
+export const demoSessionCookieAttributes = (secure: boolean): string =>
+  [`HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age=2592000`, secure ? "Secure" : null]
     .filter((value): value is string => value !== null)
     .join("; ");

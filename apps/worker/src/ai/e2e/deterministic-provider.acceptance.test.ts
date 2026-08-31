@@ -64,8 +64,8 @@ describe("deterministic provider acceptance", () => {
     const provider = new DeterministicE2eProviderBoundary({
       fastLimits: { inputTokens: 100_000, outputTokens: 16_384 },
       mainLimits: { inputTokens: 100_000, outputTokens: 16_384 },
-      providerServiceId: "openai_compatible_custom",
-      providerEndpointIdentity: "openai_compatible_custom:https://live-drift.example/v1",
+      providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: "zai_coding_plan_official:https://live-drift.example/v1",
       fastModelId: "glm-5-turbo",
       mainModelId: "glm-5-turbo",
       requireAcceptedProviderProfile: true,

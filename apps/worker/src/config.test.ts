@@ -114,12 +114,12 @@ describe("worker config", () => {
   });
 
   it.each([
-    ["aiMainModel", { aiMainModel: "glm-5.2" }],
-    ["aiFastModel", { aiFastModel: "glm-5.2" }],
-  ] as const)("rejects historical %s overrides for live startup", async (_role, override) => {
+    ["aiMainModel", { aiMainModel: "invalid-model" }],
+    ["aiFastModel", { aiFastModel: "invalid-model" }],
+  ] as const)("rejects non-current %s overrides for live startup", async (_role, override) => {
     const config = await loadConfigFrom({});
     expect(() => assertWorkerAiProviderPosture({ ...config, ...override } as never)).toThrow(
-      /evaluation\/compatibility-only/,
+      /no pinned exact tokenizer/u,
     );
   });
 

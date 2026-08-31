@@ -223,8 +223,13 @@ export const sweepAiChatSmithersRows = (
               select 1
               from ai_runs runs
               where runs.smithers_run_id = state.run_id
-                and (runs.finished_at is not null or runs.failed_at is not null)
-                and coalesce(runs.finished_at, runs.failed_at) <
+                and (
+                  runs.finished_at is not null
+                  or runs.failed_at is not null
+                  or runs.stopped_at is not null
+                  or runs.superseded_at is not null
+                )
+                and coalesce(runs.finished_at, runs.failed_at, runs.stopped_at, runs.superseded_at) <
                   now() - (${SMITHERS_TERMINAL_ORPHAN_RETENTION_MS} * interval '1 millisecond')
             )
             or not exists (
@@ -246,8 +251,13 @@ export const sweepAiChatSmithersRows = (
         select smithers_run_id as "smithersRunId"
         from ai_runs
         where smithers_run_id = ${smithersRunId}
-          and (finished_at is not null or failed_at is not null)
-          and coalesce(finished_at, failed_at) <
+          and (
+            finished_at is not null
+            or failed_at is not null
+            or stopped_at is not null
+            or superseded_at is not null
+          )
+          and coalesce(finished_at, failed_at, stopped_at, superseded_at) <
             now() - (${SMITHERS_TERMINAL_ORPHAN_RETENTION_MS} * interval '1 millisecond')
       `;
           const absentRows = yield* sql<SmithersRunIdRow>`

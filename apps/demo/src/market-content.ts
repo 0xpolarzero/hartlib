@@ -14,7 +14,7 @@ export const scopePublicContentToMarket = (
   market: Market,
 ): PublicSourcesResponse => {
   const sources = content.sources.filter(
-    (source) => source.kind === "public" && source.country === market && source.subscribed,
+    (source) => source.kind === "public" && source.country === market,
   );
   const sourceIds = new Set(sources.map((source) => source.id));
   return {

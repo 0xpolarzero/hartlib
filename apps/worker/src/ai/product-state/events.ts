@@ -74,7 +74,7 @@ export const appendAiRunEventInTransaction = (
     const runs = yield* sql<RunSequenceRow>`
       select
         next_event_seq as "nextEventSeq",
-        (finished_at is not null or failed_at is not null) as terminal
+        (finished_at is not null or failed_at is not null or stopped_at is not null or superseded_at is not null) as terminal
       from ai_runs
       where id = ${input.runId}
       for update

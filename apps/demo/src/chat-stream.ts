@@ -1,117 +1,16 @@
-import {
-  failActiveAiRunActivity,
-  projectAiRunActivity,
-  type ActiveAiRunConflict,
-  type AiRunEvent,
-  type AiRunErrorEvent,
-  type GetChatResponse,
-  type PublicSourceRecord,
-  type SendChatMessageRequest,
-} from "@hartlib/shared";
 import { ApiResponseError } from "@hartlib/api-client";
-import type { PersistedRunStreamState } from "@hartlib/api-client/stream";
+import type { AiRunEvent, PublicSourceRecord } from "@hartlib/shared";
+import { failActiveAiRunActivity, projectAiRunActivity } from "@hartlib/shared";
+import {
+  DEMO_STORAGE_KEYS,
+  readDemoStorage,
+  removeDemoStorage,
+  writeDemoStorage,
+} from "./storage-registry";
 
-export type ChatStreamPhase = "idle" | "preparing" | "answering" | "done" | "error";
+export type ChatStreamPhase = "idle" | "preparing" | "answering" | "done" | "stopped" | "error";
 export type ChatStreamEvent = AiRunEvent;
-
-export type UserScopedConflict = {
-  readonly runId: string;
-  readonly request: SendChatMessageRequest;
-  /** User-message IDs present before the ambiguous POST was retried. */
-  readonly knownMessageIds?: readonly string[];
-};
-
-export const userConflictRetryDelayMs = 1_000;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
-
-const asActiveAiRunConflict = (value: unknown): ActiveAiRunConflict | null => {
-  if (!isRecord(value)) return null;
-  const activeRun = value.activeRun;
-  if (
-    value.code !== "active_ai_run" ||
-    (value.conflictScope !== "chat" && value.conflictScope !== "user") ||
-    !isRecord(activeRun) ||
-    typeof activeRun.id !== "string" ||
-    (activeRun.status !== "queued" && activeRun.status !== "running") ||
-    typeof activeRun.streamPath !== "string"
-  ) {
-    return null;
-  }
-  return value as ActiveAiRunConflict;
-};
-
-const conflictFromCause = (cause: unknown): ActiveAiRunConflict | null =>
-  cause instanceof ApiResponseError && cause.status === 409
-    ? asActiveAiRunConflict(cause.body)
-    : null;
-
-const waitForRetry = (delayMs: number, signal: AbortSignal): Promise<boolean> =>
-  new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve(false);
-      return;
-    }
-    let settled = false;
-    const finish = (result: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      resolve(result);
-    };
-    const abort = () => finish(false);
-    const timer = setTimeout(() => finish(true), delayMs);
-    signal.addEventListener("abort", abort, { once: true });
-  });
-
-/**
- * Replays one rejected user-scoped send until the API accepts it or a
- * different/ambiguous outcome requires the UI to stop. A confirmed 409 is
- * the only retryable result: it proves the exact POST was not accepted.
- */
-export const reconcileUserScopedConflict = async <Accepted>(options: {
-  readonly conflict: UserScopedConflict;
-  readonly signal: AbortSignal;
-  readonly send: (request: SendChatMessageRequest) => Promise<Accepted>;
-  readonly onAccepted: (response: Accepted) => void | Promise<void>;
-  readonly onStillActive: (conflict: ActiveAiRunConflict) => void;
-  readonly onChatConflict: (conflict: ActiveAiRunConflict) => void | Promise<void>;
-  readonly onStopped: (cause: unknown) => void | Promise<void>;
-  readonly delayMs?: number;
-}): Promise<void> => {
-  const delayMs = options.delayMs ?? userConflictRetryDelayMs;
-  while (await waitForRetry(delayMs, options.signal)) {
-    let response: Accepted;
-    try {
-      response = await options.send(options.conflict.request);
-    } catch (cause) {
-      if (options.signal.aborted) return;
-      const conflict = conflictFromCause(cause);
-      if (conflict?.conflictScope === "user") {
-        options.onStillActive(conflict);
-        continue;
-      }
-      if (conflict?.conflictScope === "chat") {
-        await options.onChatConflict(conflict);
-        return;
-      }
-      await options.onStopped(cause);
-      return;
-    }
-    if (options.signal.aborted) return;
-    await options.onAccepted(response);
-    return;
-  }
-};
-
-export type ChatStreamInput = {
-  readonly seq: number;
-  readonly event: ChatStreamEvent;
-};
-
-export type ChatStreamState = {
+export interface ChatStreamState {
   readonly phase: ChatStreamPhase;
   readonly assistantText: string;
   readonly seq: number;
@@ -129,9 +28,18 @@ export type ChatStreamState = {
     readonly updated: number;
     readonly discarded: number;
   } | null;
-  readonly error: Omit<AiRunErrorEvent, "type"> | null;
-};
-
+  readonly error: {
+    readonly code: string;
+    readonly retryable: boolean;
+    readonly runId?: string;
+    readonly stage?: string;
+    readonly attempt?: number;
+    readonly occurredAt?: string;
+    readonly errorCategory?: string;
+    readonly errorMessage?: string;
+  } | null;
+  readonly stoppedAt: string | null;
+}
 export const initialChatStreamState: ChatStreamState = {
   phase: "idle",
   assistantText: "",
@@ -144,96 +52,23 @@ export const initialChatStreamState: ChatStreamState = {
   context: null,
   memoryUpdated: null,
   error: null,
+  stoppedAt: null,
 };
 
-/** A terminal run is no longer replayable once its SSE event has aged out. */
-export const isTerminalEventUnavailable = (cause: unknown): boolean =>
-  cause instanceof ApiResponseError &&
-  cause.status === 410 &&
-  cause.code === "terminal_event_unavailable";
-
-/** Definitive SSE handshake failures cannot recover by replaying a cursor. */
-export const isDefinitiveStreamHandshakeFailure = (cause: unknown): boolean =>
-  cause instanceof ApiResponseError &&
-  (cause.status === 401 || cause.status === 403 || cause.status === 404);
-
-export const streamReconnectAction = (cause: unknown): "reconcile" | "retry" =>
-  isTerminalEventUnavailable(cause) || isDefinitiveStreamHandshakeFailure(cause)
-    ? "reconcile"
-    : "retry";
-
-/** A send rejection proves the cached web toggle is stale. */
-export const isWebResearchUnavailable = (cause: unknown): boolean =>
-  cause instanceof ApiResponseError &&
-  cause.status === 403 &&
-  cause.code === "web_research_unavailable";
-
-export type AmbiguousConflictResolution =
-  | { readonly action: "attach"; readonly runId: string }
-  | { readonly action: "clear" };
-
-type ChatUserMessage = Extract<GetChatResponse["messages"][number], { readonly author: "user" }>;
-
-/**
- * Reconcile a POST whose transport outcome is unknown using the authoritative
- * chat projection. A newly persisted matching user message proves acceptance;
- * otherwise the request can be released without automatically replaying it.
- */
-export const resolveAmbiguousUserScopedConflict = (
-  conflict: UserScopedConflict,
-  chat: Pick<GetChatResponse, "messages" | "activeRun">,
-): AmbiguousConflictResolution => {
-  if (chat.activeRun !== null) return { action: "attach", runId: chat.activeRun.id };
-  const known = conflict.knownMessageIds === undefined ? null : new Set(conflict.knownMessageIds);
-  const matched = [...chat.messages]
-    .reverse()
-    .find(
-      (message): message is ChatUserMessage =>
-        message.author === "user" &&
-        message.content === conflict.request.text.trim() &&
-        (known === null || !known.has(message.id)),
-    );
-  if (
-    matched !== undefined &&
-    (matched.run.status === "queued" || matched.run.status === "running")
-  ) {
-    return { action: "attach", runId: matched.run.id };
-  }
-  return { action: "clear" };
-};
-
-export const restoreChatStreamState = (
-  persisted: PersistedRunStreamState | null,
-): ChatStreamState => {
-  if (persisted === null) return initialChatStreamState;
-  const terminalFailure = persisted.draft.terminalFailure;
-  return {
-    ...initialChatStreamState,
-    phase:
-      terminalFailure !== null ? "error" : persisted.draft.text === "" ? "preparing" : "answering",
-    assistantText: terminalFailure === null ? persisted.draft.text : "",
-    seq: persisted.lastSeq,
-    attempt: persisted.draft.attempt,
-    sourcesRead: persisted.draft.sourcesRead,
-    activities: persisted.draft.activities,
-    activityHistory: persisted.draft.activityHistory,
-    context: persisted.draft.context,
-    memoryUpdated: persisted.draft.memoryUpdated,
-    error: terminalFailure,
-  };
-};
-
-const assertNever = (value: never): never => {
-  throw new Error(`Unhandled chat stream event: ${JSON.stringify(value)}`);
-};
-
+export type ChatStreamInput = { readonly seq: number; readonly event: ChatStreamEvent };
 export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput): ChatStreamState {
-  if (input.seq <= state.seq) return state;
+  if (
+    !Number.isSafeInteger(input.seq) ||
+    input.seq <= state.seq ||
+    state.phase === "done" ||
+    state.phase === "stopped" ||
+    state.phase === "error"
+  )
+    return state;
   const base = { ...state, seq: input.seq };
-
   switch (input.event.type) {
     case "run_started":
-      return { ...base, phase: "preparing", error: null };
+      return { ...base, phase: "preparing", error: null, stoppedAt: null };
     case "activity": {
       const projection = projectAiRunActivity(
         { activities: state.activities, history: state.activityHistory },
@@ -263,6 +98,7 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
         attempt: Math.max(state.attempt, input.event.attempt),
         assistantText: input.event.attempt > state.attempt ? "" : state.assistantText,
         error: null,
+        stoppedAt: null,
       };
     case "text_delta":
       return {
@@ -283,6 +119,8 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
       return base;
     case "done":
       return { ...base, phase: "done" };
+    case "stopped":
+      return { ...base, phase: "stopped", stoppedAt: new Date().toISOString() };
     case "error": {
       const projection = failActiveAiRunActivity({
         activities: state.activities,
@@ -312,6 +150,78 @@ export function reduceChatStream(state: ChatStreamState, input: ChatStreamInput)
       };
     }
   }
-
-  return assertNever(input.event);
 }
+
+export const isTerminalEventUnavailable = (cause: unknown): boolean =>
+  cause instanceof ApiResponseError &&
+  cause.status === 410 &&
+  cause.code === "terminal_event_unavailable";
+export const isDefinitiveStreamHandshakeFailure = (cause: unknown): boolean =>
+  cause instanceof ApiResponseError &&
+  (cause.status === 401 || cause.status === 403 || cause.status === 404);
+export const streamReconnectAction = (cause: unknown): "reconcile" | "retry" =>
+  isTerminalEventUnavailable(cause) || isDefinitiveStreamHandshakeFailure(cause)
+    ? "reconcile"
+    : "retry";
+export const streamStorageKey = (runId: string): string =>
+  `${DEMO_STORAGE_KEYS.streamPrefix}${runId}`;
+export const serializeChatStreamState = (state: ChatStreamState): string =>
+  JSON.stringify({ schemaVersion: 5, state });
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const isRestorableStreamState = (
+  value: Record<string, unknown>,
+): value is Partial<ChatStreamState> => {
+  const phases: readonly ChatStreamPhase[] = [
+    "idle",
+    "preparing",
+    "answering",
+    "done",
+    "stopped",
+    "error",
+  ];
+  const modes = ["clarification", "single", "synthesis", null] as const;
+  return (
+    phases.includes(value.phase as ChatStreamPhase) &&
+    typeof value.assistantText === "string" &&
+    Number.isSafeInteger(value.seq) &&
+    Number(value.seq) >= 0 &&
+    Number.isSafeInteger(value.attempt) &&
+    Number(value.attempt) >= 0 &&
+    modes.includes(value.mode as (typeof modes)[number]) &&
+    Array.isArray(value.sourcesRead) &&
+    Array.isArray(value.activities) &&
+    Array.isArray(value.activityHistory) &&
+    (value.context === null || record(value.context)) &&
+    (value.memoryUpdated === null || record(value.memoryUpdated)) &&
+    (value.error === null || record(value.error)) &&
+    (value.stoppedAt === null || typeof value.stoppedAt === "string")
+  );
+};
+export const restoreChatStreamState = (runId: string): ChatStreamState => {
+  const key = streamStorageKey(runId);
+  const raw = readDemoStorage("session", key);
+  if (!raw) return initialChatStreamState;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !record(parsed) ||
+      parsed.schemaVersion !== 5 ||
+      !record(parsed.state) ||
+      !isRestorableStreamState(parsed.state)
+    ) {
+      removeDemoStorage("session", key);
+      return initialChatStreamState;
+    }
+    return { ...initialChatStreamState, ...parsed.state } as ChatStreamState;
+  } catch {
+    removeDemoStorage("session", key);
+    return initialChatStreamState;
+  }
+};
+export const persistChatStreamState = (runId: string, state: ChatStreamState): void => {
+  writeDemoStorage("session", streamStorageKey(runId), serializeChatStreamState(state));
+};
+export const clearChatStreamState = (runId: string): void => {
+  removeDemoStorage("session", streamStorageKey(runId));
+};

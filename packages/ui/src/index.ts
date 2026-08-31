@@ -1,112 +1,147 @@
+export * from "./components/ui/index";
+
 export {
-  Breadcrumbs,
-  type BreadcrumbItem,
-  type BreadcrumbsProps,
-} from "./components/navigation/breadcrumbs";
+  AppShell,
+  type AppShellProps,
+  type PublisherSubnavItem,
+} from "./components/product/app-shell";
 export {
-  ScheduledPublicationIcon,
-  type ScheduledPublicationIconProps,
-} from "./components/publications/scheduled-publication-icon";
+  ClientChat,
+  type ClientChatResizeAdapter,
+  type ClientChatLayoutState,
+  type ClientChatProps,
+} from "./components/product/client-chat";
 export {
-  ClientFeedsTable,
-  type ClientFeedTableRow,
-  type ClientFeedSourceType,
-} from "./components/publications/client-feeds-table";
+  CommandPalette,
+  useCommandPalette,
+  type PaletteAction,
+  type PaletteState,
+} from "./components/product/command-palette";
 export {
-  ClientPublicationsTable,
-  type ClientPublicationTableRow,
-} from "./components/publications/client-publications-table";
+  DataTable,
+  SortableTableHead,
+  type DataTableColumn,
+  type DataTableProps,
+  type DemoDataState,
+} from "./components/product/data-table";
+export {
+  IssueWizard,
+  type IssueWizardProps,
+  type IssueWizardStep,
+  type IssueWizardValue,
+} from "./components/product/issue-wizard";
+export {
+  NotificationBell,
+  type PublisherNotification,
+} from "./components/product/notification-bell";
+export {
+  NotificationSettings,
+  type NotificationSettingRow,
+  type NotificationSettingsProps,
+} from "./components/product/notification-settings";
+export {
+  SubscriberSubscriptions,
+  type SubscriberSubscriptionsProps,
+  type SubscriptionDocument,
+  type SubscriptionPublication,
+  type SubscriptionSource,
+} from "./components/product/subscriber-subscriptions";
 export {
   DocumentsTable,
-  type OpenStoredPdfResult,
-  type PublicationDocument,
-} from "./components/publications/documents-table";
-export {
-  PublicationDetail,
-  type PublicationDetailIssue,
-} from "./components/publications/publication-detail";
-export {
   PublicationsTable,
-  type PublicationTableIssue,
-} from "./components/publications/publications-table";
-export { SourcesTable, type SourceTableRow } from "./components/publications/sources-table";
-export {
+  SourcesTable,
   SubscribersTable,
-  type DraftSubscriber,
-  type DraftSubscriberErrors,
-  type SubscriberStatus,
-  type SubscriberTableRow,
-} from "./components/subscribers/subscribers-table";
+  type DocumentsTableProps,
+  type NewPublisherSubscriber,
+  type PublicationsTableProps,
+  type PublisherDocument,
+  type PublisherPublicationRow,
+  type PublisherSourceRow,
+  type PublisherSubscriberRow,
+  type PublisherTableState,
+  type SourcesTableProps,
+  type SubscribersTableProps,
+} from "./components/product/tables";
 export {
-  ChatBubble,
-  ChatRunOutcome,
-  ChatSourcesRead,
-  ChatWebSearchToggle,
-  VirtualizedChatTranscript,
-  chatFailureMessageId,
-  type ChatAiRunDebugLoader,
-  type ChatTranscriptAuthorLabels,
-  type ChatTranscriptMessage,
-} from "./components/chat/virtualized-chat-transcript";
+  CitationChip,
+  CitationProvider,
+  ClaimSpan,
+  MarginCard,
+  citationKindLabel,
+  hasMarkers,
+  injectCitations,
+} from "./components/product/chat/citations";
+export { AnswerBody, splitBlocks, type CopyAdapter } from "./components/product/chat/markdown";
+export { AssistantMessage, FailureBlock, UserMessage } from "./components/product/chat/message";
 export {
-  citationRecordsFromText,
+  Composer,
+  type ComposerProps,
+  type DictationAdapter,
+  type DictationState,
+} from "./components/product/chat/composer";
+export {
+  DebugDrawer,
+  type DebugDrawerProps,
+  type DebugLoadState,
+} from "./components/product/chat/debug-drawer";
+export { MemoriesPanel, type MemoriesPanelProps } from "./components/product/chat/memories-panel";
+export { RunRail, RunStatusLine } from "./components/product/chat/run-rail";
+export {
+  SourcesDisclosure,
+  type SourcesDisclosureProps,
+} from "./components/product/chat/sources-disclosure";
+export {
+  Transcript,
+  TRANSCRIPT_NEAR_BOTTOM_PX,
+  type TranscriptProps,
+} from "./components/product/chat/transcript";
+export { VizPane, type VizPaneProps } from "./components/product/chat/viz-pane";
+export {
   parseCitationTags,
-  type CitationParseMode,
+  stripPendingCitationTail,
   type CitationMarkerSegment,
+  type CitationParseMode,
   type CitationTagSegment,
   type CitationTextSegment,
   type ParsedCitationTags,
-} from "./components/chat/citation-tags";
+} from "./components/product/chat/citation-tags";
+export {
+  createAuthenticatedDocumentOpener,
+  publisherDocumentCitationTarget,
+  type AuthenticatedDocumentBrowser,
+  type AuthenticatedDocumentOpener,
+  type AuthenticatedPublisherDocument,
+  type PublisherDocumentCitationTarget,
+  type PublisherDocumentLoader,
+} from "./components/product/chat/authenticated-document";
 export {
   memoryRevisionFragment,
   parseMemoryRevisionFragment,
   type MemoryRevisionFragment,
-} from "./components/chat/memory-provenance";
+} from "./components/product/chat/memory-provenance";
+export type {
+  ChatRunProjection,
+  ChatTranscriptMessage,
+  RunDiagnostics,
+  RunFailure,
+  RunStageId,
+  RunStages,
+  StageStatus,
+  VisualizationAssociation,
+  VisualizationPresentationState,
+  VisualizationState,
+  VisualizationVersion,
+} from "./components/product/chat/types";
+export { AnnounceProvider, useAnnounce } from "./lib/announce";
 export {
-  createAuthenticatedDocumentOpener,
-  publisherDocumentCitationTarget,
-  type AuthenticatedPublisherDocument,
-  type AuthenticatedDocumentBrowser,
-  type AuthenticatedDocumentOpener,
-  type PublisherDocumentCitationTarget,
-  type PublisherDocumentLoader,
-} from "./components/chat/authenticated-document";
-export { Badge, type BadgeProps } from "./components/ui/badge";
-export { Button, type ButtonProps } from "./components/ui/button";
-export {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "./components/ui/card";
-export {
-  ConfirmingDeleteButton,
-  type ConfirmingDeleteButtonProps,
-} from "./components/ui/confirming-delete-button";
-export {
-  editableFieldChromeClass,
-  InlineEditableField,
-  type InlineEditableFieldProps,
-} from "./components/ui/inline-editable-field";
-export { Input, type InputProps } from "./components/ui/input";
-export { Label } from "./components/ui/label";
-export { Separator } from "./components/ui/separator";
-export { SectionHeader, type SectionHeaderProps } from "./components/ui/section-header";
-export { DataTable, SortableTableHead } from "./components/ui/data-table";
-export {
-  Table,
-  TableBody,
-  TableCaption,
-  TableCell,
-  TableFooter,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "./components/ui/table";
-export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
-export { Textarea, type TextareaProps } from "./components/ui/textarea";
-export { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
-export { cn } from "./lib/utils";
+  formatBytes,
+  formatDate,
+  formatDateShort,
+  formatDateTime,
+  formatMonthYear,
+  formatNumber,
+  formatTime,
+  uiMessage,
+} from "./lib/format";
+export { clamp, cn, safeId } from "./lib/utils";
+export { standaloneDocumentCss } from "./styles/document-style";

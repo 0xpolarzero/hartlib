@@ -1,49 +1,44 @@
 # Expansion
 
-These are possible later customer types.
+## Current boundary
 
-They are not the first product.
+The first product is a client research workspace over authorized public-source
+documents. The reachable demo supports France and the United States, one
+conversation per visitor, source subscriptions, memories, secure document
+opening, citations, optional web research, and an empty visualization pane.
 
-## Markets
+The product exposes no publisher or gallery route. The complete dormant
+publisher composition and visualization presentation live in `packages/ui` and
+direct test fixtures only. They accept data and callbacks as props; the live
+demo passes empty arrays, zero counts, idle state, and no write callbacks.
 
-The first market is France, then Europe.
+## Public sources
 
-The product also targets the US market. The demo and platform support a FR and US market split: `FR` (default) and `US`. See `localization.spec.md`.
+Public-source ingestion remains the retained source adapter boundary. A source
+row includes its stable ID, display name, publisher name, description, country,
+language, and enabled state. The API returns authorized rows for the selected
+market, including disabled rows. A toggle is fenced and reversible on failure.
 
-## Options
+Public documents keep immutable identity, content hash, canonical URL, and
+secure opening rules. The AI run scope stores only selected public-source IDs;
+the worker never broadens that scope during retrieval.
 
-- Newsrooms creating new paid B2B brief products.
-- Lobbying and public affairs firms producing private intelligence for clients.
-- Large companies ingesting paid third-party briefs into their own AI archive.
-- Multi-publisher marketplace for professional briefs.
-- Internal intelligence portal for companies that produce their own briefs.
+## Future work
 
-## Future Sources
+Future work may add more markets, source adapters, customer-owned data, or a
+separately reviewed publication workflow. It must define its own routes,
+authorization, storage, and retention contract before becoming reachable. It
+must not add aliases, fallback reads, dual writes, or provider-specific fields
+to the current demo chat contract.
 
-Later, publishers may connect their own databases, news systems, CMS, or archive systems as sources.
+Future providers may be evaluated through the production-readiness workflow.
+The current runtime accepts only the official Z.AI Coding Plan provider and the
+deterministic test provider. Web research remains disabled unless its explicit
+deployment, company, transport, and allowlist gates pass.
 
-This belongs after the MVP.
+## Evidence
 
-The MVP publisher ingestion model is PDF upload. EPUB and direct CMS/database/archive connectors remain later source options.
-
-Public recurring sources may later appear as opt-in marketplace sources for client search and AI context.
-
-The demo previews this marketplace: public sources from `packages/source-ingestion` appear beside publisher invitation sources in the client's Subscriptions view. Each row shows the source type and lets the client enable or disable that source for chat retrieval. The MVP access model remains publisher invite only.
-
-Initial public-source marketplace research lives in `docs/public-source-marketplace.research.md`.
-
-## Future Access Discovery
-
-Later, publishers may expose a controlled request-access form or channel directory.
-
-The MVP access model is publisher invite only.
-
-## Future AI Providers
-
-Later, client companies may choose custom AI providers or self-hosted AI endpoints.
-
-This is controlled by the client company.
-
-This is separate from publisher subscription management.
-
-Development sends model calls through the exact registered GLM-5-Turbo contract on Z.AI and may use Tinyfish discovery for non-sensitive local testing. The French production provider and web posture are selected through `docs/production-readiness.spec.md`; production web research remains disabled until the applicable provider, contract, conformance, and disclosure decisions are accepted.
+Direct dormant fixtures prove populated source, publication, document,
+subscriber, notification, settings, issue-wizard, and visualization states.
+Reachability and bundle scans prove those fixtures never create a product URL,
+command, link, navigation item, fetch, write, or production import.

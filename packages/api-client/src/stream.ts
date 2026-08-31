@@ -1,14 +1,4 @@
-import {
-  AiRunActivityEvent,
-  AiRunActivityErrorCategory,
-  AiRunEvent,
-  PublicContextConsumer,
-  PublicSourceRecord,
-  type GetChatResponse,
-  type AiRunActivityEvent as AiRunActivityEventValue,
-  type AiRunErrorEvent,
-  type AiRunEvent as AiRunEventValue,
-} from "@hartlib/shared";
+import { AiRunEvent, type AiRunEvent as AiRunEventValue } from "@hartlib/shared";
 import { Schema } from "effect";
 
 import { ApiResponseError } from "./transport";
@@ -19,7 +9,7 @@ export interface AiRunStreamFrame {
 }
 
 const decodeFrame = (frame: string): AiRunStreamFrame | null => {
-  const lines = frame.replaceAll("\r\n", "\n").split("\n");
+  const lines = frame.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
   let id: string | undefined;
   let eventName: string | undefined;
   const data: string[] = [];
@@ -46,9 +36,7 @@ const decodeFrame = (frame: string): AiRunStreamFrame | null => {
     throw new ApiResponseError(200, "invalid_sse_event");
   }
   const seq = Number(id);
-  if (!Number.isSafeInteger(seq) || seq <= 0) {
-    throw new ApiResponseError(200, "invalid_sse_event");
-  }
+  if (!Number.isSafeInteger(seq) || seq <= 0) throw new ApiResponseError(200, "invalid_sse_event");
   let parsed: unknown;
   try {
     parsed = JSON.parse(data.join("\n")) as unknown;
@@ -124,171 +112,9 @@ export async function* decodeAiRunSse(
       try {
         await (abortCancellation ?? reader.cancel("stream_consumer_closed"));
       } catch {
-        // Cancellation can race with a server-side terminal close.
+        // Server-side terminal close can race with consumer cancellation.
       }
     }
     reader.releaseLock();
   }
 }
-
-export interface StreamDraftState {
-  readonly runId: string;
-  readonly text: string;
-  readonly attempt: number;
-  readonly sourcesRead: readonly Schema.Schema.Type<typeof PublicSourceRecord>[];
-  readonly activities: readonly AiRunActivityEventValue[];
-  readonly activityHistory: readonly AiRunActivityEventValue[];
-  readonly context: {
-    readonly compactionRan: boolean;
-    readonly consumers: readonly Schema.Schema.Type<typeof PublicContextConsumer>[];
-  } | null;
-  readonly memoryUpdated: {
-    readonly created: number;
-    readonly updated: number;
-    readonly discarded: number;
-  } | null;
-  readonly terminalFailure: Omit<AiRunErrorEvent, "type"> | null;
-}
-
-export interface PersistedRunStreamState {
-  readonly version: 4;
-  readonly runId: string;
-  readonly lastSeq: number;
-  readonly draft: StreamDraftState;
-}
-
-const NonNegativeInteger = Schema.Number.pipe(
-  Schema.check(Schema.isInt()),
-  Schema.check(Schema.isGreaterThanOrEqualTo(0)),
-);
-const StreamDraft = Schema.Struct({
-  runId: Schema.String,
-  text: Schema.String,
-  attempt: NonNegativeInteger,
-  sourcesRead: Schema.Array(PublicSourceRecord),
-  activities: Schema.Array(AiRunActivityEvent),
-  activityHistory: Schema.Array(AiRunActivityEvent),
-  context: Schema.NullOr(
-    Schema.Struct({
-      compactionRan: Schema.Boolean,
-      consumers: Schema.Array(PublicContextConsumer),
-    }),
-  ),
-  memoryUpdated: Schema.NullOr(
-    Schema.Struct({
-      created: NonNegativeInteger,
-      updated: NonNegativeInteger,
-      discarded: NonNegativeInteger,
-    }),
-  ),
-  terminalFailure: Schema.NullOr(
-    Schema.Struct({
-      code: Schema.String.pipe(
-        Schema.check(Schema.isNonEmpty()),
-        Schema.check(Schema.isMaxLength(96)),
-        Schema.check(Schema.isPattern(/^[a-z][a-z0-9_]{0,95}$/u)),
-      ),
-      retryable: Schema.Boolean,
-      runId: Schema.optional(
-        Schema.String.pipe(
-          Schema.check(Schema.isNonEmpty()),
-          Schema.check(Schema.isMaxLength(128)),
-          Schema.check(Schema.isPattern(/^[A-Za-z0-9_-]+$/u)),
-        ),
-      ),
-      stage: Schema.optional(
-        Schema.Literals(["understanding", "evidence", "preparing", "writing", "finishing"]),
-      ),
-      attempt: Schema.optional(
-        NonNegativeInteger.pipe(Schema.check(Schema.isLessThanOrEqualTo(100_000))),
-      ),
-      occurredAt: Schema.optional(
-        Schema.String.pipe(
-          Schema.check(Schema.isNonEmpty()),
-          Schema.check(Schema.isMaxLength(64)),
-          Schema.check(
-            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u),
-          ),
-        ),
-      ),
-      errorCategory: Schema.optional(AiRunActivityErrorCategory),
-      errorMessage: Schema.optional(
-        Schema.String.pipe(
-          Schema.check(Schema.isNonEmpty()),
-          Schema.check(Schema.isMaxLength(512)),
-        ),
-      ),
-    }),
-  ),
-});
-const PersistedRunStream = Schema.Struct({
-  version: Schema.Literal(4),
-  runId: Schema.String,
-  lastSeq: NonNegativeInteger,
-  draft: StreamDraft,
-});
-
-export const runStreamStorageKey = (runId: string): string => `hartlib:web:ai-run-stream:${runId}`;
-
-/** Return the newest failed run whose terminal stream state may be restored. */
-export const latestFailedRunId = (
-  messages: GetChatResponse["messages"],
-): string | null => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.author === "user" && message.run.status === "failed") return message.run.id;
-  }
-  return null;
-};
-
-export const restoreRunStreamState = (
-  storage: Pick<Storage, "getItem">,
-  runId: string,
-): PersistedRunStreamState | null => {
-  try {
-    const raw = storage.getItem(runStreamStorageKey(runId));
-    if (raw === null) return null;
-    const value = Schema.decodeUnknownSync(PersistedRunStream, { onExcessProperty: "error" })(
-      JSON.parse(raw) as unknown,
-    );
-    return value.runId === runId && value.draft.runId === runId ? value : null;
-  } catch {
-    return null;
-  }
-};
-
-export const persistRunStreamState = (
-  storage: Pick<Storage, "setItem">,
-  state: PersistedRunStreamState,
-): void => {
-  try {
-    const value = Schema.decodeUnknownSync(PersistedRunStream, { onExcessProperty: "error" })(
-      state,
-    );
-    storage.setItem(runStreamStorageKey(value.runId), JSON.stringify(value));
-  } catch {
-    // Streaming remains functional when state is invalid or storage is unavailable.
-  }
-};
-
-export const clearRunStreamState = (storage: Pick<Storage, "removeItem">, runId: string): void => {
-  try {
-    storage.removeItem(runStreamStorageKey(runId));
-  } catch {
-    // Best-effort browser-only provisional state cleanup.
-  }
-};
-
-export const decodeStoredJson = <A, I>(
-  schema: Schema.Codec<A, I, never, never>,
-  raw: string | null,
-): A | undefined => {
-  if (raw === null) return undefined;
-  try {
-    return Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(
-      JSON.parse(raw) as unknown,
-    );
-  } catch {
-    return undefined;
-  }
-};

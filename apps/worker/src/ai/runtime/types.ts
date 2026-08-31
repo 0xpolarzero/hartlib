@@ -46,14 +46,7 @@ export type PlanTurnResult =
       }>;
     };
 
-export type DocumentSource =
-  | { readonly kind: "public"; readonly sourceId: string }
-  | {
-      readonly kind: "publisher";
-      readonly sourceId: string;
-      readonly issueId: string;
-      readonly documentId: string;
-    };
+export type DocumentSource = { readonly kind: "public"; readonly sourceId: string };
 
 export type InternalReference =
   | {
@@ -61,7 +54,6 @@ export type InternalReference =
       readonly documentId: string;
       /** Server-owned binding fields are populated after provider validation. */
       readonly snapshotId: string;
-      readonly publisherExtractionId?: string | undefined;
       readonly source: DocumentSource;
       readonly ranges?: readonly CharacterRange[] | undefined;
       readonly purpose: string;
@@ -91,9 +83,6 @@ export interface DocumentCandidate {
   readonly sourceId: string;
   readonly documentId: string;
   readonly snapshotId: string;
-  readonly publisherExtractionId?: string | undefined;
-  readonly publisherIssueId?: string | undefined;
-  readonly publisherDocumentId?: string | undefined;
   readonly contentHash: string;
   readonly text: string;
   readonly ranges: readonly CharacterRange[];
@@ -182,18 +171,6 @@ export interface SerializedSourceUse {
   readonly ranges: readonly CharacterRange[];
 }
 
-export type PublisherDocumentLocator = {
-  readonly kind: "document";
-  readonly sourceId: `publisher:${string}`;
-  readonly documentId: string;
-  readonly snapshotId: string;
-  readonly contentHash: string;
-  readonly ranges: readonly CharacterRange[];
-  readonly publisherExtractionId: string;
-  readonly publisherIssueId: string;
-  readonly publisherDocumentId: string;
-};
-
 export type PublicDocumentLocator = {
   readonly kind: "document";
   readonly sourceId: string;
@@ -201,15 +178,10 @@ export type PublicDocumentLocator = {
   readonly snapshotId: string;
   readonly contentHash: string;
   readonly ranges: readonly CharacterRange[];
-  /** Publisher identity fields are forbidden on public locators. */
-  readonly publisherExtractionId?: never;
-  readonly publisherIssueId?: never;
-  readonly publisherDocumentId?: never;
 };
 
 export type SourceLocator =
   | PublicDocumentLocator
-  | PublisherDocumentLocator
   | { readonly kind: "chat_message"; readonly messageId: string }
   | {
       readonly kind: "memory";
@@ -236,7 +208,7 @@ export interface FinalSourceRecord {
 }
 
 export interface ProviderRequestMeasurement {
-  readonly modelId: "glm-5.2" | "glm-5-turbo";
+  readonly modelId: "glm-5-turbo";
   readonly inputTokens: number;
   readonly requestedOutputTokens: number;
   readonly usableInputTokens: number;

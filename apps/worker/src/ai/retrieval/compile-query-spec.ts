@@ -42,8 +42,6 @@ export interface AcceptedRetrievalScope {
   readonly chatId: string;
   readonly companyId: string;
   readonly publicSourceIds: readonly string[];
-  readonly subscriptionIds: readonly string[];
-  readonly accessIds: readonly string[];
   /** Recent plan-turn messages and the current message are never searched by A. */
   readonly excludedMessageIds?: readonly string[] | undefined;
   readonly currentMessageId?: string | undefined;
@@ -51,10 +49,6 @@ export interface AcceptedRetrievalScope {
 
 export interface SourceNameCatalog {
   readonly publicSources?: readonly { readonly sourceId: string; readonly displayName: string }[];
-  readonly publisherSources?: readonly {
-    readonly subscriptionId: string;
-    readonly displayName: string;
-  }[];
 }
 
 /**
@@ -64,34 +58,21 @@ export interface SourceNameCatalog {
  */
 export const resolveAcceptedSourceNames = (
   names: readonly string[] | undefined,
-  scope: Pick<AcceptedRetrievalScope, "publicSourceIds" | "subscriptionIds">,
+  scope: Pick<AcceptedRetrievalScope, "publicSourceIds">,
   catalog: SourceNameCatalog,
 ): readonly string[] => {
   if (names === undefined || names.length === 0) {
-    return [
-      ...scope.publicSourceIds.map((id) => `public:${id}`),
-      ...scope.subscriptionIds.map((id) => `publisher:${id}`),
-    ].sort();
+    return scope.publicSourceIds.map((id) => `public:${id}`).sort();
   }
   const wanted = new Set(names.map((name) => name.trim().normalize("NFC").toLowerCase()));
   const publicIds = new Set(scope.publicSourceIds);
-  const publisherIds = new Set(scope.subscriptionIds);
-  const resolved = [
-    ...(catalog.publicSources ?? [])
-      .filter(
-        (source) =>
-          publicIds.has(source.sourceId) &&
-          wanted.has(source.displayName.trim().normalize("NFC").toLowerCase()),
-      )
-      .map((source) => `public:${source.sourceId}`),
-    ...(catalog.publisherSources ?? [])
-      .filter(
-        (source) =>
-          publisherIds.has(source.subscriptionId) &&
-          wanted.has(source.displayName.trim().normalize("NFC").toLowerCase()),
-      )
-      .map((source) => `publisher:${source.subscriptionId}`),
-  ];
+  const resolved = (catalog.publicSources ?? [])
+    .filter(
+      (source) =>
+        publicIds.has(source.sourceId) &&
+        wanted.has(source.displayName.trim().normalize("NFC").toLowerCase()),
+    )
+    .map((source) => `public:${source.sourceId}`);
   return [...new Set(resolved)].sort();
 };
 
@@ -246,18 +227,16 @@ const documentFilters = (
 const sourceIdsForQuery = (
   query: NormalizedInternalQuery,
   options: PhysicalCompilerOptions,
-  kind: "public" | "publisher",
 ): readonly string[] => {
   const names = query.targets.find((target) => target.kind === "documents")?.filters.sourceNames;
   const resolved =
     names === undefined || names.length === 0
       ? options.acceptedSourceIds
       : (options.resolveSourceNames?.(names) ?? options.acceptedSourceIds ?? []);
-  const values =
-    resolved ?? (kind === "public" ? options.scope.publicSourceIds : options.scope.subscriptionIds);
+  const values = resolved ?? options.scope.publicSourceIds;
   return values
-    .filter((id) => id.startsWith(`${kind}:`) || !id.includes(":"))
-    .map((id) => (id.startsWith(`${kind}:`) ? id.slice(kind.length + 1) : id));
+    .filter((id) => id.startsWith("public:") || !id.includes(":"))
+    .map((id) => (id.startsWith("public:") ? id.slice("public:".length) : id));
 };
 
 const chatFilters = (query: NormalizedInternalQuery): Statement.Fragment[] => {
@@ -313,7 +292,7 @@ export const compilePublicDocumentsQuery = (
   const reason = targetStatus(query.targets, "public_documents");
   if (reason !== undefined)
     return branchNotApplicable("public_documents", cap, reason, query.order);
-  const sourceIds = sourceIdsForQuery(query, options, "public");
+  const sourceIds = sourceIdsForQuery(query, options);
   const textPredicate = queryPredicate(
     "d.search_vector",
     query,
@@ -347,86 +326,6 @@ where ${where}
 order by ${literalFragment(order)}, encode(convert_to(d.source_id::text, 'UTF8'), 'hex') asc, encode(convert_to(d.document_id::text, 'UTF8'), 'hex') asc
 limit ${cap + 1}`;
   return { branch: "public_documents", order: query.order, status: "applicable", cap, statement };
-};
-
-export const compilePublisherDocumentsQuery = (
-  input: InternalQuery | NormalizedInternalQuery,
-  options: PhysicalCompilerOptions,
-): CompiledPhysicalQuery => {
-  const query = normalizedQuery(input);
-  const cap = positiveBranchCap(options.branchCap);
-  const reason = targetStatus(query.targets, "publisher_documents");
-  if (reason !== undefined)
-    return branchNotApplicable("publisher_documents", cap, reason, query.order);
-  if (
-    (query.targets.find((target) => target.kind === "documents")?.filters.countries?.length ?? 0) >
-    0
-  ) {
-    return branchNotApplicable(
-      "publisher_documents",
-      cap,
-      "unsupported_country_filter",
-      query.order,
-    );
-  }
-  const sourceIds = sourceIdsForQuery(query, options, "publisher");
-  const textPredicate = queryPredicate(
-    "v.search_vector",
-    query,
-    "language_to_regconfig(v.language)",
-  );
-  const predicates = [
-    ...(textPredicate === null ? [] : [textPredicate]),
-    ...documentFilters(
-      query,
-      {
-        languageColumn: "v.language",
-        documentTypeColumn: "documents.media_type",
-        publishedAtColumn: "issues.published_at",
-      },
-      sourceIds,
-    ),
-  ];
-  const where = Statement.and(predicates.length === 0 ? ["1 = 0"] : predicates);
-  const score =
-    textPredicate === null
-      ? literalFragment("0")
-      : queryRank("v.search_vector", query, "language_to_regconfig(v.language)");
-  const order =
-    query.order === "oldest"
-      ? "issues.published_at asc"
-      : query.order === "newest"
-        ? "issues.published_at desc"
-        : "score desc";
-  const accessPredicate =
-    options.scope.accessIds.length === 0
-      ? literalFragment("1 = 0")
-      : frag`deliveries.access_id::text in (${sqlList(options.scope.accessIds)})`;
-  const subscriptionPredicate =
-    sourceIds.length === 0
-      ? literalFragment("1 = 0")
-      : frag`subscriptions.id::text in (${sqlList(sourceIds)})`;
-  const statement = frag`select subscriptions.id::text as "subscriptionId", issues.id::text as "issueId", documents.id::text as "documentId", v.id::text as "snapshotId", v.publisher_extraction_id::text as "publisherExtractionId", v.content_hash as "contentHash", documents.title, subscriptions.name as "sourceDisplayName", issues.published_at as "publishedAt", v.language, documents.media_type as "documentType", v.text_char_count as "textCharCount", ${score} as score
-from issue_deliveries deliveries
-join issue_delivery_recipients recipients on recipients.issue_id = deliveries.issue_id and recipients.client_company_id = deliveries.client_company_id and recipients.user_id = ${options.scope.userId}
-join publisher_issues issues on issues.id = deliveries.issue_id and issues.status = 'published' and issues.restricted_at is null and issues.deleted_at is null
-join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-join publisher_companies companies on companies.id = subscriptions.publisher_company_id
-join hartlib_documents documents on documents.issue_id = issues.id and documents.deleted_at is null
-join hartlib_document_versions v on v.id = documents.current_version_id and v.hartlib_document_id = documents.id
-where ${accessPredicate}
-  and deliveries.client_company_id = ${options.scope.companyId}
-  and ${subscriptionPredicate}
-  and ${where}
-order by ${literalFragment(order)}, encode(convert_to(subscriptions.id::text, 'UTF8'), 'hex') asc, encode(convert_to(issues.id::text, 'UTF8'), 'hex') asc, encode(convert_to(documents.id::text, 'UTF8'), 'hex') asc, encode(convert_to(v.id::text, 'UTF8'), 'hex') asc
-limit ${cap + 1}`;
-  return {
-    branch: "publisher_documents",
-    order: query.order,
-    status: "applicable",
-    cap,
-    statement,
-  };
 };
 
 export const compileChatMessagesQuery = (
@@ -464,7 +363,7 @@ export const compileChatMessagesQuery = (
 from (
   select m.*, ${sanitizedContent} as sanitized_chat_content
   from chat_messages m
-  ${currentMessageJoin}join chats c on c.id = m.chat_id and c.deleted_at is null and c.company_id = ${options.scope.companyId}
+  ${currentMessageJoin}join chats c on c.id = m.chat_id and c.company_id = ${options.scope.companyId}
   where m.chat_id = ${options.scope.chatId}
     and exists (
       select 1
@@ -485,6 +384,5 @@ export const compilePhysicalQueryBranches = (
   options: PhysicalCompilerOptions,
 ): readonly CompiledPhysicalQuery[] => [
   compilePublicDocumentsQuery(input, options),
-  compilePublisherDocumentsQuery(input, options),
   compileChatMessagesQuery(input, options),
 ];

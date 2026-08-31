@@ -49,9 +49,9 @@ const request = {
 
 describe("exact provider-shaped request gate", () => {
   it.each([
-    ["system", [{ role: "system", content: "System policy." }], 15, 8],
-    ["user", [{ role: "user", content: "Bonjour le monde." }], 16, 9],
-    ["assistant", [{ role: "assistant", content: "A complete answer." }], 16, 8],
+    ["system", [{ role: "system", content: "System policy." }], 8],
+    ["user", [{ role: "user", content: "Bonjour le monde." }], 9],
+    ["assistant", [{ role: "assistant", content: "A complete answer." }], 8],
     [
       "tool observation",
       [
@@ -62,24 +62,18 @@ describe("exact provider-shaped request gate", () => {
           content: '{"text":"Evidence"}',
         },
       ],
-      19,
       12,
     ],
-  ] as const)("has a golden token count for the %s role", (_name, messages, main, fast) => {
-    for (const [modelId, expected] of [
-      ["glm-5.2", main],
-      ["glm-5-turbo", fast],
-    ] as const) {
-      expect(
-        resolveRegisteredModel(modelId).countRequestTokens({
-          requestClass: "fast",
-          model: modelId,
-          messages,
-          requestedOutputTokens: 64,
-          reasoning: "medium",
-        }),
-      ).toBe(expected);
-    }
+  ] as const)("has a golden token count for the %s role", (_name, messages, expected) => {
+    expect(
+      resolveRegisteredModel("glm-5-turbo").countRequestTokens({
+        requestClass: "fast",
+        model: "glm-5-turbo",
+        messages,
+        requestedOutputTokens: 64,
+        reasoning: "medium",
+      }),
+    ).toBe(expected);
   });
 
   it("has a golden count for the complete accumulated tool transcript", () => {
@@ -91,28 +85,20 @@ describe("exact provider-shaped request gate", () => {
         properties: { answer: { type: "string" } },
       },
     } as const satisfies ProviderRequest;
-    const main = resolveRegisteredModel("glm-5.2");
     const fast = resolveRegisteredModel("glm-5-turbo");
-    expect(main.countRequestTokens({ ...withSchema, model: "glm-5.2" })).toBe(197);
     expect(fast.countRequestTokens(withSchema)).toBe(199);
     const explicitStrictFalse = {
       ...request,
       tools: request.tools?.map((tool) => ({ ...tool, strict: false })),
     } satisfies ProviderRequest;
-    expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toBe(
-      renderOfficialGlmProviderRequest(explicitStrictFalse, "glm-5.2"),
+    expect(renderOfficialGlmProviderRequest(request)).toBe(
+      renderOfficialGlmProviderRequest(explicitStrictFalse),
     );
-    expect(main.countRequestTokens({ ...request, model: "glm-5.2" })).toBe(
-      main.countRequestTokens({ ...explicitStrictFalse, model: "glm-5.2" }),
-    );
-    expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<tool_call>");
-    expect(renderOfficialGlmProviderRequest(request, "glm-5.2")).toContain("<|observation|>");
+    expect(renderOfficialGlmProviderRequest(request)).toContain("<tool_call>");
+    expect(renderOfficialGlmProviderRequest(request)).toContain("<|observation|>");
   });
 
-  it.each([
-    ["glm-5.2", [17, 156, 242]],
-    ["glm-5-turbo", [10, 159, 265]],
-  ] as const)(
+  it.each([["glm-5-turbo", [10, 159, 265]]] as const)(
     "pins %s counts for zero, one, and three Pi function definitions",
     (modelId, expected) => {
       const definitions = ["alpha", "beta", "gamma"].map((id) => ({
@@ -202,8 +188,8 @@ describe("exact provider-shaped request gate", () => {
   });
 
   it("gates input plus explicit requested output against both limits", () => {
-    const model = resolveRegisteredModel("glm-5.2");
-    const modelRequest = { ...request, model: "glm-5.2" } satisfies ProviderRequest;
+    const model = resolveRegisteredModel("glm-5-turbo");
+    const modelRequest = { ...request, model: "glm-5-turbo" } satisfies ProviderRequest;
     const measurement = exactProviderRequestGate(modelRequest, model, {
       inputTokens: 100_000,
       outputTokens: 16_384,
@@ -217,59 +203,55 @@ describe("exact provider-shaped request gate", () => {
     ).toThrow(/output allowance/);
   });
 
-  it.each([
-    ["glm-5.2", 171],
-    ["glm-5-turbo", 173],
-  ] as const)("gates %s exactly at limit - 1, limit, and limit + 1", (modelId, expected) => {
-    const model = resolveRegisteredModel(modelId);
-    const modelRequest = { ...request, model: modelId } satisfies ProviderRequest;
-    const exactInput = model.countRequestTokens(modelRequest);
-    expect(exactInput).toBe(expected);
+  it.each([["glm-5-turbo", 173]] as const)(
+    "gates %s exactly at limit - 1, limit, and limit + 1",
+    (modelId, expected) => {
+      const model = resolveRegisteredModel(modelId);
+      const modelRequest = { ...request, model: modelId } satisfies ProviderRequest;
+      const exactInput = model.countRequestTokens(modelRequest);
+      expect(exactInput).toBe(expected);
 
-    expect(() =>
-      exactProviderRequestGate(modelRequest, model, {
-        inputTokens: exactInput - 1,
-        outputTokens: 64,
-      }),
-    ).toThrow(new RegExp(`only ${exactInput - 1} fit`));
-    expect(
-      exactProviderRequestGate(modelRequest, model, {
-        inputTokens: exactInput,
-        outputTokens: 64,
-      }).passed,
-    ).toBe(true);
-    expect(
-      exactProviderRequestGate(modelRequest, model, {
-        inputTokens: exactInput + 1,
-        outputTokens: 64,
-      }).passed,
-    ).toBe(true);
-  });
+      expect(() =>
+        exactProviderRequestGate(modelRequest, model, {
+          inputTokens: exactInput - 1,
+          outputTokens: 64,
+        }),
+      ).toThrow(new RegExp(`only ${exactInput - 1} fit`));
+      expect(
+        exactProviderRequestGate(modelRequest, model, {
+          inputTokens: exactInput,
+          outputTokens: 64,
+        }).passed,
+      ).toBe(true);
+      expect(
+        exactProviderRequestGate(modelRequest, model, {
+          inputTokens: exactInput + 1,
+          outputTokens: 64,
+        }).passed,
+      ).toBe(true);
+    },
+  );
 
   it("verifies both parity-proven default registry models at startup", () => {
-    expect(verifyRegisteredModelsAtStartup().map((model) => model.id)).toEqual([
-      "glm-5.2",
-      "glm-5-turbo",
-    ]);
+    expect(verifyRegisteredModelsAtStartup().map((model) => model.id)).toEqual(["glm-5-turbo"]);
   });
 
   it("rejects unregistered models at startup", () => {
     expect(() => resolveRegisteredModel("glm-unknown")).toThrow(/no pinned exact tokenizer/);
   });
 
-  it("keeps the historical model available only through the compatibility resolver", () => {
+  it("rejects every model other than the current runtime model", () => {
     expect(resolveRuntimeModel("glm-5-turbo").id).toBe("glm-5-turbo");
-    expect(() => resolveRuntimeModel("glm-5.2")).toThrow(/evaluation\/compatibility-only/);
-    expect(resolveRegisteredModel("glm-5.2").id).toBe("glm-5.2");
+    expect(() => resolveRuntimeModel("glm-5-legacy")).toThrow(/no pinned exact tokenizer/);
   });
 
-  it.each(["glm-5.2", "glm-5-turbo"] as const)(
+  it.each(["glm-5-turbo"] as const)(
     "property: %s exact gating is monotone and equivalent to the registered inequality",
     (modelId) => {
       const model = resolveRegisteredModel(modelId);
       const modelRequest = { ...request, model: modelId } satisfies ProviderRequest;
       const exactInput = model.countRequestTokens(modelRequest);
-      let state = modelId === "glm-5.2" ? 0x52_52_52_52 : 0x50_50_50_50;
+      let state = 0x50_50_50_50;
       const next = (): number => {
         state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
         return state;

@@ -1,101 +1,132 @@
-import type * as React from "react";
+import { forwardRef, type HTMLAttributes, type ThHTMLAttributes } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { cn } from "../../lib/utils";
 
-export function Table({ className, ...props }: React.HTMLAttributes<HTMLTableElement>) {
-  return (
+export function TableScroll({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("w-full overflow-x-auto", className)} {...props} />;
+}
+export const Table = forwardRef<HTMLTableElement, HTMLAttributes<HTMLTableElement>>(
+  ({ className, ...props }, ref) => (
     <table
-      data-slot="table"
-      className={cn("w-full caption-bottom border-collapse", className)}
+      ref={ref}
+      className={cn("w-full border-collapse text-left font-sans text-[13px]", className)}
       {...props}
     />
-  );
-}
-
-export function TableHeader({
+  ),
+);
+Table.displayName = "Table";
+export function THead({
   className,
-  stickyHeader,
+  sticky,
   ...props
-}: React.HTMLAttributes<HTMLTableSectionElement> & {
-  stickyHeader?: boolean;
+}: HTMLAttributes<HTMLTableSectionElement> & { sticky?: boolean }) {
+  return <thead className={cn("bg-paper", sticky && "sticky top-0 z-10", className)} {...props} />;
+}
+export const TBody = forwardRef<HTMLTableSectionElement, HTMLAttributes<HTMLTableSectionElement>>(
+  ({ className, ...props }, ref) => <tbody ref={ref} className={className} {...props} />,
+);
+TBody.displayName = "TBody";
+export const TFoot = forwardRef<HTMLTableSectionElement, HTMLAttributes<HTMLTableSectionElement>>(
+  ({ className, ...props }, ref) => (
+    <tfoot ref={ref} className={cn("bg-paper/95", className)} {...props} />
+  ),
+);
+TFoot.displayName = "TFoot";
+export const Tr = forwardRef<HTMLTableRowElement, HTMLAttributes<HTMLTableRowElement>>(
+  ({ className, ...props }, ref) => (
+    <tr
+      ref={ref}
+      className={cn(
+        "transition-colors duration-100 hover:bg-paper-deep/50 data-[selected=true]:bg-accent/5",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Tr.displayName = "Tr";
+export const Th = forwardRef<HTMLTableCellElement, ThHTMLAttributes<HTMLTableCellElement>>(
+  ({ className, ...props }, ref) => (
+    <th
+      ref={ref}
+      scope="col"
+      className={cn(
+        "caps-label h-8 whitespace-nowrap border-b border-line-2 pr-3 text-left text-ink-2 first:pl-2",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Th.displayName = "Th";
+export const Td = forwardRef<HTMLTableCellElement, HTMLAttributes<HTMLTableCellElement>>(
+  ({ className, ...props }, ref) => (
+    <td
+      ref={ref}
+      className={cn(
+        "h-[34px] border-b border-line py-0 pr-3 align-middle text-ink first:pl-2",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
+Td.displayName = "Td";
+export function SortableTh({
+  direction,
+  onSort,
+  onSortShift,
+  sortRank,
+  className,
+  children,
+}: {
+  direction: false | "asc" | "desc";
+  onSort: () => void;
+  onSortShift?: () => void;
+  sortRank?: number;
+  className?: string;
+  children: React.ReactNode;
 }) {
   return (
-    <thead
-      data-slot="table-header"
-      className={cn(
-        "border-b border-rule text-left text-[11px] font-medium uppercase tracking-wider text-faint",
-        stickyHeader && "sticky top-0 z-10",
-        className,
-      )}
-      {...props}
-    />
+    <Th
+      aria-sort={direction === "asc" ? "ascending" : direction === "desc" ? "descending" : "none"}
+      className={cn("p-0", className)}
+    >
+      <button
+        type="button"
+        className="caps-label flex h-8 w-full items-center gap-1 pr-3 text-left text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-accent"
+        onClick={(event) => (event.shiftKey && onSortShift ? onSortShift() : onSort())}
+      >
+        {children}
+        {direction === "asc" ? (
+          <ArrowUp className="size-3 text-accent" aria-hidden="true" />
+        ) : direction === "desc" ? (
+          <ArrowDown className="size-3 text-accent" aria-hidden="true" />
+        ) : (
+          <ArrowUpDown className="size-3 opacity-40" aria-hidden="true" />
+        )}
+        {sortRank && sortRank > 1 ? (
+          <span className="font-mono text-[9px] text-accent">{sortRank}</span>
+        ) : null}
+      </button>
+    </Th>
   );
 }
-
-export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
-  return <tbody data-slot="table-body" className={className} {...props} />;
-}
-
-export function TableFooter({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLTableSectionElement>) {
+export function TableSkeleton({ rows = 8, cols }: { rows?: number; cols: number }) {
   return (
-    <tfoot
-      data-slot="table-footer"
-      className={cn("border-t border-rule font-medium text-ink last:border-b-0", className)}
-      {...props}
-    />
-  );
-}
-
-export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
-  return (
-    <tr
-      data-slot="table-row"
-      className={cn("data-[state=selected]:bg-surface", className)}
-      {...props}
-    />
-  );
-}
-
-export function TableHead({
-  className,
-  ...props
-}: React.ThHTMLAttributes<HTMLTableHeaderCellElement>) {
-  return (
-    <th
-      data-slot="table-head"
-      className={cn("h-6 px-3 py-1 text-left align-middle font-normal", className)}
-      {...props}
-    />
-  );
-}
-
-export function TableCell({
-  className,
-  ...props
-}: React.TdHTMLAttributes<HTMLTableDataCellElement>) {
-  return (
-    <td
-      data-slot="table-cell"
-      className={cn(
-        "h-9 border-b border-rule px-3 py-1.5 align-middle text-sm text-ink",
-        className,
-      )}
-      {...props}
-    />
-  );
-}
-
-export function TableCaption({
-  className,
-  ...props
-}: React.HTMLAttributes<HTMLTableCaptionElement>) {
-  return (
-    <caption
-      data-slot="table-caption"
-      className={cn("mt-2 text-xs text-muted", className)}
-      {...props}
-    />
+    <>
+      {Array.from({ length: rows }, (_, r) => (
+        <tr key={r} aria-hidden="true">
+          {Array.from({ length: cols }, (_, c) => (
+            <td key={c} className="h-[34px] border-b border-line pr-3 first:pl-2">
+              <div
+                className="h-2.5 animate-pulse-soft bg-paper-deep"
+                style={{ width: `${35 + ((r * 13 + c * 29) % 55)}%` }}
+              />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
   );
 }

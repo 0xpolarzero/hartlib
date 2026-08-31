@@ -75,6 +75,7 @@ import type {
 import type { RetrievalPlanResult } from "../retrieval/retrieval";
 import {
   InternalQueryPlanProviderSchema,
+  PHYSICAL_QUERY_BRANCHES,
   QueryReviewProviderSchema,
   type BranchCoverage,
   type InternalQueryTarget,
@@ -176,8 +177,6 @@ const preSealCitationChangeSessionId = "50000000-0000-4000-8000-000000000092";
 const preSealCitationDeleteSessionId = "50000000-0000-4000-8000-000000000093";
 const preSealExposureCountSessionId = "50000000-0000-4000-8000-000000000094";
 const preSealMemoryRetrySessionId = "50000000-0000-4000-8000-000000000095";
-const preSealUserRecoverySessionId = "50000000-0000-4000-8000-000000000097";
-const preSealCompanyRecoverySessionId = "50000000-0000-4000-8000-000000000098";
 const preSealManifestSessionId = "50000000-0000-4000-8000-000000000099";
 const preSealResolutionSessionId = "50000000-0000-4000-8000-000000000100";
 const postSealUsageTamperSessionId = "50000000-0000-4000-8000-000000000101";
@@ -268,15 +267,6 @@ const structuredRetrievalBranchCoverageFor = (
     {
       queryOrdinal: 1,
       branch: "public_documents",
-      status: hasDocumentTarget ? "applicable" : "not_applicable",
-      ...(hasDocumentTarget ? {} : { reason: "scope_chat_messages" as const }),
-      hitCount: hasDocumentTarget ? documentHitCount : 0,
-      truncated: false,
-      cap: 25,
-    },
-    {
-      queryOrdinal: 1,
-      branch: "publisher_documents",
       status: hasDocumentTarget ? "applicable" : "not_applicable",
       ...(hasDocumentTarget ? {} : { reason: "scope_chat_messages" as const }),
       hitCount: hasDocumentTarget ? documentHitCount : 0,
@@ -423,9 +413,7 @@ const canonicalAiConfig: CanonicalAiConfig = {
   webResearchProvider: "",
 };
 
-// Evaluation preflight intentionally exercises rejected historical model
-// overrides. Keep that escape hatch local to this explicit evaluation helper;
-// the live WorkerConfig contract remains the exact turbo literal.
+// Evaluation preflight validates the exact live model contract.
 type EvaluationWorkerConfigOverrides = Omit<
   Partial<WorkerConfig>,
   "aiMainModel" | "aiFastModel"
@@ -867,7 +855,7 @@ class OversizedSelectorBoundary implements PiRuntimeBoundary {
     ) {
       throw new Error("structured review request has an invalid fused source-proof inventory");
     }
-    if (input.coverage.length !== input.queries.length * 3) {
+    if (input.coverage.length !== input.queries.length * PHYSICAL_QUERY_BRANCHES.length) {
       throw new Error("structured review request has incomplete branch coverage");
     }
     this.reviewResultCount = input.results.length;
@@ -968,8 +956,6 @@ const completeDurableCaptureSession = async (
     | "preseal_exposure_count"
     | "preseal_stale_memory_retry"
     | "preseal_terminal_memory_mismatch"
-    | "preseal_user_recovery_deleted"
-    | "preseal_company_recovery_deleted"
     | "preseal_manifest_delete"
     | "preseal_duplicate_resolution"
     | "structured_review_preview_missing"
@@ -1209,31 +1195,14 @@ const completeDurableCaptureSession = async (
             },
           ];
       if (binding.kind === "document") {
-        const locator: FinalSourceRecord["locator"] =
-          binding.source.kind === "publisher"
-            ? {
-                kind: "document",
-                sourceId: binding.source.sourceId as `publisher:${string}`,
-                documentId: binding.documentId,
-                snapshotId: binding.snapshotId,
-                contentHash: binding.contentHash,
-                ranges: selection.ranges,
-                publisherIssueId: binding.source.issueId,
-                publisherDocumentId: binding.source.documentId,
-                publisherExtractionId:
-                  binding.publisherExtractionId ??
-                  (() => {
-                    throw new Error("publisher evaluation binding lacks its extraction identity");
-                  })(),
-              }
-            : {
-                kind: "document",
-                sourceId: binding.source.sourceId,
-                documentId: binding.documentId,
-                snapshotId: binding.snapshotId,
-                contentHash: binding.contentHash,
-                ranges: selection.ranges,
-              };
+        const locator: FinalSourceRecord["locator"] = {
+          kind: "document",
+          sourceId: binding.source.sourceId,
+          documentId: binding.documentId,
+          snapshotId: binding.snapshotId,
+          contentHash: binding.contentHash,
+          ranges: selection.ranges,
+        };
         return {
           sourceKey,
           locator,
@@ -1249,7 +1218,7 @@ const completeDurableCaptureSession = async (
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
             ...(row.topology === "specialized"
-              ? { publishedAt: CanonicalEvaluationDocumentTimestamp }
+              ? { publishedAt: new Date(CanonicalEvaluationDocumentTimestamp).toISOString() }
               : {}),
           },
           uses,
@@ -1705,23 +1674,13 @@ const completeDurableCaptureSession = async (
         const ranges = ledgerSource.ranges;
         const identity =
           binding.kind === "document"
-            ? binding.source.kind === "publisher"
-              ? {
-                  kind: "publisher_document" as const,
-                  subscriptionId: binding.source.sourceId,
-                  issueId: binding.source.issueId,
-                  documentId: binding.documentId,
-                  snapshotId: binding.snapshotId,
-                  publisherExtractionId: binding.publisherExtractionId!,
-                  contentHash: binding.contentHash,
-                }
-              : {
-                  kind: "public_document" as const,
-                  sourceId: binding.source.sourceId,
-                  documentId: binding.documentId,
-                  snapshotId: binding.snapshotId,
-                  contentHash: binding.contentHash,
-                }
+            ? {
+                kind: "public_document" as const,
+                sourceId: binding.source.sourceId,
+                documentId: binding.documentId,
+                snapshotId: binding.snapshotId,
+                contentHash: binding.contentHash,
+              }
             : binding.kind === "chat_message"
               ? {
                   kind: "chat_message" as const,
@@ -1778,13 +1737,6 @@ const completeDurableCaptureSession = async (
                 documentId: record.locator.documentId,
                 snapshotId: record.locator.snapshotId,
                 contentHash: record.locator.contentHash,
-                ...("publisherIssueId" in record.locator
-                  ? {
-                      publisherExtractionId: record.locator.publisherExtractionId,
-                      publisherIssueId: record.locator.publisherIssueId,
-                      publisherDocumentId: record.locator.publisherDocumentId,
-                    }
-                  : {}),
                 text,
                 ranges,
                 label: record.label,
@@ -2712,26 +2664,11 @@ const completeDurableCaptureSession = async (
           .join("\n…\n");
         const identity = (() => {
           if (binding.kind === "document") {
-            if (binding.source.kind === "public") {
-              return {
-                kind: "public_document" as const,
-                sourceId: binding.source.sourceId,
-                documentId: binding.documentId,
-                snapshotId: binding.snapshotId,
-                contentHash: binding.contentHash,
-              };
-            }
-            const publisherExtractionId = binding.publisherExtractionId;
-            if (publisherExtractionId === null) {
-              throw new Error("publisher preview binding lacks extraction identity");
-            }
             return {
-              kind: "publisher_document" as const,
-              subscriptionId: binding.source.sourceId,
-              issueId: binding.source.issueId,
+              kind: "public_document" as const,
+              sourceId: binding.source.sourceId,
               documentId: binding.documentId,
               snapshotId: binding.snapshotId,
-              publisherExtractionId,
               contentHash: binding.contentHash,
             };
           }
@@ -2760,15 +2697,10 @@ const completeDurableCaptureSession = async (
               : (() => {
                   throw new Error("structured review preview source kind is not supported");
                 })();
-        const publisherExtractionId =
-          binding.kind === "document" && binding.publisherExtractionId !== null
-            ? binding.publisherExtractionId
-            : undefined;
         const recordWithoutDigest = {
           identity,
           snapshotId,
           contentHash,
-          ...(publisherExtractionId === undefined ? {} : { publisherExtractionId }),
           fastTokenCount: model.countTextTokens(preview),
           mainTokenCount: model.countTextTokens(preview),
           previewRanges,
@@ -2799,25 +2731,11 @@ const completeDurableCaptureSession = async (
     const structuredIdentityFor = (details: NonNullable<ReturnType<typeof markerDetailsFor>>) => {
       const { binding, text } = details;
       if (binding.kind === "document") {
-        if (binding.source.kind === "public") {
-          return {
-            kind: "public_document" as const,
-            sourceId: binding.source.sourceId,
-            documentId: binding.documentId,
-            snapshotId: binding.snapshotId,
-            contentHash: binding.contentHash,
-          };
-        }
-        if (binding.publisherExtractionId === null) {
-          throw new Error("structured output publisher binding lacks extraction identity");
-        }
         return {
-          kind: "publisher_document" as const,
-          subscriptionId: binding.source.sourceId,
-          issueId: binding.source.issueId,
+          kind: "public_document" as const,
+          sourceId: binding.source.sourceId,
           documentId: binding.documentId,
           snapshotId: binding.snapshotId,
-          publisherExtractionId: binding.publisherExtractionId,
           contentHash: binding.contentHash,
         };
       }
@@ -2856,9 +2774,7 @@ const completeDurableCaptureSession = async (
         const branch =
           identity.kind === "chat_message"
             ? ("chat_messages" as const)
-            : identity.kind === "publisher_document"
-              ? ("publisher_documents" as const)
-              : ("public_documents" as const);
+            : ("public_documents" as const);
         const value = {
           kind:
             identity.kind === "chat_message" ? ("chat_message" as const) : ("document" as const),
@@ -2873,9 +2789,6 @@ const completeDurableCaptureSession = async (
           snapshotId: identity.kind === "chat_message" ? identity.messageId : identity.snapshotId,
           contentHash:
             identity.kind === "chat_message" ? identity.sanitizedContentHash : identity.contentHash,
-          ...(identity.kind === "publisher_document"
-            ? { publisherExtractionId: identity.publisherExtractionId }
-            : {}),
           fastTokenCount: previewTokenCount,
           mainTokenCount: previewTokenCount,
           previewBytes,
@@ -2924,9 +2837,6 @@ const completeDurableCaptureSession = async (
         identity: candidate.identity,
         snapshotId: candidate.value.snapshotId,
         contentHash: candidate.value.contentHash,
-        ...(candidate.value.publisherExtractionId === undefined
-          ? {}
-          : { publisherExtractionId: candidate.value.publisherExtractionId }),
         previewRanges: candidate.value.previewRanges,
         previewBytes: candidate.value.previewBytes,
         fastTokenCount: candidate.value.fastTokenCount,
@@ -3040,9 +2950,6 @@ const completeDurableCaptureSession = async (
                         __hartlibSourceIdentity: {
                           snapshotId: details.binding.snapshotId,
                           contentHash: details.binding.contentHash,
-                          ...(details.binding.publisherExtractionId === null
-                            ? {}
-                            : { publisherExtractionId: details.binding.publisherExtractionId }),
                           source: details.binding.source,
                         },
                       }
@@ -3674,6 +3581,7 @@ const completeDurableCaptureSession = async (
             payload: {
               providerRequestIndex: 0,
               agentRole: "memory_extractor",
+              repairConsumed: false,
               modelId: "glm-5-turbo",
               requestSha256Hex: fixtureProviderRequestSha256Hex,
               sourceExposureProofSha256Hexes: [],
@@ -3730,6 +3638,7 @@ const completeDurableCaptureSession = async (
             payload: {
               providerRequestIndex: 0,
               agentRole: "memory_extractor",
+              repairConsumed: false,
               modelId: "glm-5-turbo",
               requestSha256Hex: "d".repeat(64),
               sourceExposureProofSha256Hexes: [],
@@ -3747,7 +3656,7 @@ const completeDurableCaptureSession = async (
           const stopReason = request.stopReason;
           const modelId =
             tamper === "clarification_model_mismatch" && request.taskId === "plan-turn"
-              ? ("glm-5.2" as const)
+              ? ("invalid-model" as const)
               : request.modelId;
           const inputTokens =
             tamper === "clarification_input_mismatch" && request.taskId === "plan-turn"
@@ -3784,6 +3693,7 @@ const completeDurableCaptureSession = async (
             payload: {
               providerRequestIndex,
               agentRole: request.agentRole,
+              repairConsumed: false,
               modelId,
               requestSha256Hex: providerRequestDigest,
               sourceExposureProofSha256Hexes: providerEvidence.proofs,
@@ -3865,6 +3775,7 @@ const completeDurableCaptureSession = async (
             payload: {
               providerRequestIndex: 1,
               agentRole: "context_manifest",
+              repairConsumed: false,
               modelId: "glm-5-turbo",
               requestSha256Hex: "b".repeat(64),
               sourceExposureProofSha256Hexes: [],
@@ -4178,6 +4089,7 @@ const completeDurableCaptureSession = async (
                 payload: {
                   providerRequestIndex: 0,
                   agentRole: "direct_answer",
+                  repairConsumed: false,
                   modelId: "glm-5-turbo",
                   requestSha256Hex: retryProviderRequestSha256Hex,
                   sourceExposureProofSha256Hexes: retrySidecar.proofs,
@@ -4298,9 +4210,6 @@ const completeDurableCaptureSession = async (
                           ranges:
                             source.uses.find((use) => use.consumerTaskId === "single-answer")
                               ?.ranges ?? [],
-                          ...(source.locator.publisherExtractionId === undefined
-                            ? {}
-                            : { publisherExtractionId: source.locator.publisherExtractionId }),
                         },
                       }
                     : {}),
@@ -4625,6 +4534,7 @@ const completeDurableCaptureSession = async (
               payload: {
                 providerRequestIndex: 0,
                 agentRole: "direct_answer",
+                repairConsumed: false,
                 modelId: "glm-5-turbo",
                 requestSha256Hex: retryProviderRequestSha256Hex,
                 sourceExposureProofSha256Hexes: retrySidecar.proofs,
@@ -4719,9 +4629,6 @@ const completeDurableCaptureSession = async (
                         snapshotId: documentBinding.snapshotId,
                         contentHash: documentBinding.contentHash,
                         ranges: details.ranges,
-                        ...(documentBinding.publisherExtractionId === null
-                          ? {}
-                          : { publisherExtractionId: documentBinding.publisherExtractionId }),
                       },
                     }
                   : {}),
@@ -4822,9 +4729,6 @@ const completeDurableCaptureSession = async (
                         contentHash: locator.contentHash,
                         ranges:
                           source.uses.find((use) => use.consumerTaskId === taskId)?.ranges ?? [],
-                        ...(locator.publisherExtractionId === undefined
-                          ? {}
-                          : { publisherExtractionId: locator.publisherExtractionId }),
                       },
                     }
                   : {}),
@@ -5172,10 +5076,20 @@ const completeDurableCaptureSession = async (
       const forgedExposureProof =
         exposureMarker === undefined
           ? ""
-          : providerVisibleSourceExposureProofSha256Hex({
-              ...exposureMarker,
-              visibleTokenCount: forgedExposureCount,
-            });
+          : providerVisibleSourceExposureProofSha256Hex(
+              {
+                ...exposureMarker,
+                visibleTokenCount: forgedExposureCount,
+              },
+              {
+                // Deliberately forge the field binding along with the count so
+                // this tamper path cannot rely on the removed one-argument form.
+                messageIndex: 0,
+                sourceOrdinal: 0,
+                serializedField: "forged.exposure",
+                orderedSourceDescriptor: "forged-exposure",
+              },
+            );
       await runDb(
         isolatedDatabaseUrl(),
         Effect.gen(function* () {
@@ -5217,9 +5131,7 @@ const completeDurableCaptureSession = async (
               yield* sql`
                 update assistant_message_source_uses
                 set rendered_token_count = rendered_token_count + 1
-                where assistant_message_id = (
-                  select assistant_message_id from ai_runs where id = ${row.runId}
-                ) and source_key = ${sourceMap[0]!.sourceKey}
+                where run_id = ${row.runId} and source_key = ${sourceMap[0]!.sourceKey}
               `;
               yield* sql`
                 update ai_run_events
@@ -5311,20 +5223,6 @@ const completeDurableCaptureSession = async (
                   to_jsonb(((payload->>'proposalCount')::int + 1))
                 )
                 where run_id = ${row.runId} and kind = 'memory_extraction_result'
-              `;
-              break;
-            case "preseal_user_recovery_deleted":
-              yield* sql`
-                update platform_users
-                set recovery_deleted_at = now(), purge_after = now() + interval '180 days'
-                where id = ${manifest.userId}
-              `;
-              break;
-            case "preseal_company_recovery_deleted":
-              yield* sql`
-                update client_companies
-                set recovery_deleted_at = now(), purge_after = now() + interval '180 days'
-                where id = ${manifest.companyId}
               `;
               break;
             case "preseal_manifest_delete":
@@ -5729,10 +5627,7 @@ const completeDurableCaptureSession = async (
 const beginFocusedProductionGraphCase = async (
   targetSessionId: string,
   targetCaseId = focusedProductionCaseId,
-  providerServiceId:
-    | "deterministic_test"
-    | "zai_coding_plan_official"
-    | "openai_compatible_custom" = "zai_coding_plan_official",
+  providerServiceId: "deterministic_test" | "zai_coding_plan_official" = "zai_coding_plan_official",
 ) => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   const manifests = await seedEvaluationSession(
@@ -5794,10 +5689,7 @@ const executeFocusedProductionGraphCase = async (
 const beginFocusedGeneralPlannerCase = async (
   targetSessionId: string,
   caseId: string,
-  providerServiceId:
-    | "deterministic_test"
-    | "zai_coding_plan_official"
-    | "openai_compatible_custom" = "zai_coding_plan_official",
+  providerServiceId: "deterministic_test" | "zai_coding_plan_official" = "zai_coding_plan_official",
 ) => {
   await createEvaluationSession(isolatedDatabaseUrl(), targetSessionId);
   const manifests = await seedEvaluationSession(
@@ -5918,7 +5810,7 @@ const focusedProductionRuntimeEvidence = (aiRunId: string) =>
         select sources.kind, sources.locator
         from ai_runs runs
         join assistant_message_sources sources
-          on sources.assistant_message_id = runs.assistant_message_id
+          on sources.run_id = runs.id
         where runs.id = ${aiRunId}
         order by sources.source_key
       `;
@@ -6048,14 +5940,6 @@ describe("structured retrieval marker projections", () => {
       {
         queryOrdinal: 1,
         branch: "public_documents",
-        status: "applicable",
-        hitCount: 1,
-        truncated: false,
-        cap: 25,
-      },
-      {
-        queryOrdinal: 1,
-        branch: "publisher_documents",
         status: "applicable",
         hitCount: 1,
         truncated: false,
@@ -6318,7 +6202,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           select source_key as "sourceKey", kind, locator,
                  memory_revision_id::text as "memoryRevisionId"
           from assistant_message_sources
-          where assistant_message_id = (select assistant_message_id from ai_runs where id = ${manifest.aiRunId})
+          where run_id = ${manifest.aiRunId}
           order by source_key
         `;
         const uses = yield* sql<{
@@ -6331,7 +6215,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           select source_key as "sourceKey", consumer_task_id as "consumerTaskId",
                  topic_id as "topicId", context_order as "contextOrder", ranges
           from assistant_message_source_uses
-          where assistant_message_id = (select assistant_message_id from ai_runs where id = ${manifest.aiRunId})
+          where run_id = ${manifest.aiRunId}
           order by source_key, context_order
         `;
         const revisions = yield* sql<{
@@ -7286,7 +7170,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     expect(Array.isArray(memories.entries)).toBe(true);
     expect(memories.entries).toHaveLength(4);
     expect(boundary.reviewResultCount).toBe(6);
-    expect(boundary.reviewCoverageCount).toBe(3);
+    expect(boundary.reviewCoverageCount).toBe(PHYSICAL_QUERY_BRANCHES.length);
     expect(boundary.selectedMemoryCount).toBe(4);
     expect(internalMeasurements).toHaveLength(2);
     expect(memoryMeasurements).toHaveLength(2);
@@ -7546,16 +7430,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         /Failed to execute statement|append-only|source-serialization proof|visible/u,
       ],
       [
-        preSealUserRecoverySessionId,
-        "preseal_user_recovery_deleted",
-        /evaluation tenant is unavailable/u,
-      ],
-      [
-        preSealCompanyRecoverySessionId,
-        "preseal_company_recovery_deleted",
-        /evaluation tenant is unavailable/u,
-      ],
-      [
         preSealManifestSessionId,
         "preseal_manifest_delete",
         /Failed to execute statement|append-only|manifest cardinality differs/u,
@@ -7583,7 +7457,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       [
         structuredReviewWrongCoordinateSessionId,
         "structured_review_preview_wrong_coordinate",
-        /source exposure binding is absent from its provider measurement/u,
+        /source exposure binding is absent from its provider measurement|source exposure attestation differs from its provider measurement/u,
       ],
       [
         structuredReviewWrongOwnerDigestSessionId,
@@ -8013,6 +7887,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           readonly smithersRunId: string;
           readonly nextEventSeq: number;
           readonly createdAt: Date;
+          readonly currentTimestamp: string;
           readonly startedAt: Date;
           readonly finishedAt: Date;
           readonly assistantMessageId: string;
@@ -8028,7 +7903,9 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
                  runs.acceptance_scope as "acceptanceScope",
                  runs.smithers_run_id as "smithersRunId",
                  runs.next_event_seq as "nextEventSeq",
-                 runs.created_at as "createdAt", runs.started_at as "startedAt",
+                 runs.created_at as "createdAt",
+                 to_char(runs.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "currentTimestamp",
+                 runs.started_at as "startedAt",
                  runs.finished_at as "finishedAt",
                  runs.assistant_message_id::text as "assistantMessageId",
                  runs.citation_namespace as "citationNamespace",
@@ -8083,6 +7960,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       | "smithersRunId"
       | "nextEventSeq"
       | "createdAt"
+      | "currentTimestamp"
       | "startedAt"
       | "finishedAt"
       | "assistantMessageId"
@@ -8101,7 +7979,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
                 market = ${snapshot.market}, acceptance_scope = ${JSON.stringify(snapshot.acceptanceScope)}::jsonb,
                 smithers_run_id = ${snapshot.smithersRunId},
                 next_event_seq = ${snapshot.nextEventSeq},
-                created_at = ${snapshot.createdAt}, started_at = ${snapshot.startedAt},
+                created_at = ${snapshot === original ? snapshot.currentTimestamp : snapshot.createdAt.toISOString()}::timestamptz,
+                started_at = ${snapshot.startedAt},
                 finished_at = ${snapshot.finishedAt},
                 assistant_message_id = ${snapshot.assistantMessageId},
                 citation_namespace = ${snapshot.citationNamespace}
@@ -8187,7 +8066,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         ...original,
         assistantMessageId: foreignAssistantMessageId,
       },
-      /live web exposure lacks its durable quotation/u,
+      /live web exposure lacks its durable quotation|accepted run snapshot differs from its seed/u,
     );
     await expectSealedMutationRejected({ ...original, citationNamespace: "cn_" + "b".repeat(22) });
 
@@ -8460,9 +8339,9 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             order by seq limit 1
           ) answer_start_event on true
           join assistant_message_sources source
-            on source.assistant_message_id = runs.assistant_message_id and source.kind = 'document'
+            on source.run_id = runs.id and source.kind = 'document'
           join assistant_message_source_uses source_use
-            on source_use.assistant_message_id = source.assistant_message_id
+            on source_use.run_id = source.run_id
            and source_use.source_key = source.source_key
           where cases.session_id = ${completeEvidenceTamperSessionId}
             and cases.topology = 'specialized'
@@ -8511,8 +8390,8 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
         yield* sql`
-          insert into platform_users (id, primary_email, display_name, clerk_user_id)
-          values (${foreignUserId}, ${`${foreignUserId}@evaluation.invalid`}, 'Forged evaluator', ${`clerk_${foreignUserId}`})
+          insert into platform_users (id, primary_email, display_name)
+          values (${foreignUserId}, ${`${foreignUserId}@evaluation.invalid`}, 'Forged evaluator')
         `;
         yield* sql`
           insert into client_company_memberships (company_id, user_id, role)
@@ -8522,7 +8401,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     );
     type Mutation =
       | "chat_creator"
-      | "chat_deleted"
       | "current_content"
       | "current_author"
       | "current_chat"
@@ -8556,7 +8434,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       | "observation_created"
       | "exposure_id"
       | "exposure_created"
-      | "exposure_publisher"
       | "terminal_id"
       | "terminal_key"
       | "terminal_owner"
@@ -8584,11 +8461,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
           switch (mutation) {
             case "chat_creator":
               yield* sql`update chats set user_id = ${restore ? target.chatUserId : foreignUserId} where id = ${target.chatId}`;
-              break;
-            case "chat_deleted":
-              yield* restore
-                ? sql`update chats set deleted_at = null, deleted_by_user_id = null, purge_after = null where id = ${target.chatId}`
-                : sql`update chats set deleted_at = now(), deleted_by_user_id = ${foreignUserId}, purge_after = now() + interval '1 day' where id = ${target.chatId}`;
               break;
             case "current_content":
               yield* sql`update chat_messages set content = ${restore ? target.currentMessageContent : `${target.currentMessageContent} forged`} where id = ${target.currentMessageId}`;
@@ -8705,9 +8577,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             case "exposure_created":
               yield* sql`update ai_source_exposures set created_at = ${restore ? target.exposureCreatedAt : new Date(target.exposureCreatedAt.getTime() + 1)} where id = ${target.exposureId}`;
               break;
-            case "exposure_publisher":
-              yield* sql`update ai_source_exposures set publisher_issue_id = ${restore ? null : "forged-issue"}, publisher_document_id = ${restore ? null : "forged-document"} where id = ${target.exposureId}`;
-              break;
             case "terminal_id":
               yield* sql`update ai_run_events set id = ${restore ? target.terminalEventId : forgedTerminalEventId} where id = ${restore ? forgedTerminalEventId : target.terminalEventId}`;
               break;
@@ -8739,33 +8608,33 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
                 : sql`update ai_run_events set event = jsonb_set(event, '{attempt}', '-1'::jsonb), emission_key = ${target.answerStartEmissionKey.replace(/:[0-9]+$/u, ":-1")} where id = ${target.answerStartEventId}`;
               break;
             case "source_label":
-              yield* sql`update assistant_message_sources set display_label = ${restore ? target.sourceLabel : "forged label"} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey}`;
+              yield* sql`update assistant_message_sources set display_label = ${restore ? target.sourceLabel : "forged label"} where run_id = ${target.runId} and source_key = ${target.sourceKey}`;
               break;
             case "source_provenance":
-              yield* sql`update assistant_message_sources set public_provenance = ${JSON.stringify(restore ? target.sourceProvenance : { ...target.sourceProvenance, forged: true })}::jsonb where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey}`;
+              yield* sql`update assistant_message_sources set public_provenance = ${JSON.stringify(restore ? target.sourceProvenance : { ...target.sourceProvenance, forged: true })}::jsonb where run_id = ${target.runId} and source_key = ${target.sourceKey}`;
               break;
             case "source_created":
-              yield* sql`update assistant_message_sources set created_at = ${restore ? target.sourceCreatedAt : new Date(target.sourceCreatedAt.getTime() + 1)} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey}`;
+              yield* sql`update assistant_message_sources set created_at = ${restore ? target.sourceCreatedAt : new Date(target.sourceCreatedAt.getTime() + 1)} where run_id = ${target.runId} and source_key = ${target.sourceKey}`;
               break;
             case "source_use_consumer":
-              yield* sql`update assistant_message_source_uses set consumer_task_id = ${restore ? target.sourceUseConsumer : "forged-consumer"} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${restore ? "forged-consumer" : target.sourceUseConsumer}`;
+              yield* sql`update assistant_message_source_uses set consumer_task_id = ${restore ? target.sourceUseConsumer : "forged-consumer"} where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${restore ? "forged-consumer" : target.sourceUseConsumer}`;
               break;
             case "source_use_topic":
-              yield* sql`update assistant_message_source_uses set topic_id = ${restore ? target.sourceUseTopic : target.sourceUseTopic === null ? "t1" : null} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
+              yield* sql`update assistant_message_source_uses set topic_id = ${restore ? target.sourceUseTopic : target.sourceUseTopic === null ? "t1" : null} where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
               break;
             case "source_use_tokens":
-              yield* sql`update assistant_message_source_uses set rendered_token_count = ${restore ? target.sourceUseRenderedTokens : target.sourceUseRenderedTokens + 1} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
+              yield* sql`update assistant_message_source_uses set rendered_token_count = ${restore ? target.sourceUseRenderedTokens : target.sourceUseRenderedTokens + 1} where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
               break;
             case "source_use_order":
-              yield* sql`update assistant_message_source_uses set context_order = ${restore ? target.sourceUseContextOrder : target.sourceUseContextOrder + 1000} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
+              yield* sql`update assistant_message_source_uses set context_order = ${restore ? target.sourceUseContextOrder : target.sourceUseContextOrder + 1000} where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
               break;
             case "source_use_ranges":
               yield* restore
-                ? sql`update assistant_message_source_uses set ranges = ${JSON.stringify(target.sourceUseRanges)}::jsonb where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`
-                : sql`update assistant_message_source_uses set ranges = case when ranges = '[]'::jsonb then '[{"charStart":0,"charEnd":1}]'::jsonb else '[]'::jsonb end where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
+                ? sql`update assistant_message_source_uses set ranges = ${JSON.stringify(target.sourceUseRanges)}::jsonb where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`
+                : sql`update assistant_message_source_uses set ranges = case when ranges = '[]'::jsonb then '[{"charStart":0,"charEnd":1}]'::jsonb else '[]'::jsonb end where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
               break;
             case "source_use_created":
-              yield* sql`update assistant_message_source_uses set created_at = ${restore ? target.sourceUseCreatedAt : new Date(target.sourceUseCreatedAt.getTime() + 1)} where assistant_message_id = ${target.assistantMessageId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
+              yield* sql`update assistant_message_source_uses set created_at = ${restore ? target.sourceUseCreatedAt : new Date(target.sourceUseCreatedAt.getTime() + 1)} where run_id = ${target.runId} and source_key = ${target.sourceKey} and consumer_task_id = ${target.sourceUseConsumer}`;
               break;
             case "memory_created":
               yield* sql`update user_memory_revisions set created_at = ${restore ? memoryTarget.createdAt : new Date(memoryTarget.createdAt.getTime() + 1)} where id = ${memoryTarget.revisionId}`;
@@ -8815,7 +8684,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     };
     for (const mutation of [
       "chat_creator",
-      "chat_deleted",
       "current_content",
       "current_author",
       "current_chat",
@@ -8845,7 +8713,6 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       "observation_chat",
       "observation_created",
       "exposure_created",
-      "exposure_publisher",
       "terminal_key",
       "terminal_owner",
       "terminal_created",
@@ -9050,7 +8917,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: documentMetadataTamperSessionId,
         tamper: "tampered_document_reconstruction" as const,
         error:
-          /Failed to execute statement|public exposure is not bound to the exact immutable document|publisher exposure is not bound to the exact version extraction relation/u,
+          /Failed to execute statement|public exposure is not bound to the exact immutable document/u,
       },
       {
         sessionId: memoryRevisionTamperSessionId,
@@ -9130,7 +8997,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
         sessionId: arbitraryTaskTamperSessionId,
         tamper: "arbitrary_internal_task" as const,
         error:
-          /unknown canonical provider task specialized\/forged-retrieve-internal|source exposure has a foreign task owner|lacks terminal provider usage|stage-incompatible|structured retrieval review preview is not exact/u,
+          /unknown canonical provider task specialized\/forged-retrieve-internal|source exposure has a foreign task owner|structured retrieval review preview has a foreign owner|lacks terminal provider usage|stage-incompatible|structured retrieval review preview is not exact/u,
       },
     ];
     for (const scenario of cases) {
@@ -9214,7 +9081,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
             cached_tokens, reasoning_tokens, total_tokens, stop_reason
           ) values (
             ${row.runId}, 'test-provider', 0, 0, 0, 'evaluation_general_planner',
-            'glm-5.2', 'deterministic_test', 10, 2, 0, 0, 12, 'stop'
+            'glm-5-turbo', 'deterministic_test', 10, 2, 0, 0, 12, 'stop'
           )
         `;
       }),
@@ -9230,7 +9097,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
     ).rejects.toThrow(/Failed to execute statement/u);
     for (const mutation of [
       `execution_config_sha256_hex = '${"f".repeat(64)}'`,
-      "provider_endpoint_identity = 'openai_compatible_custom:https://compatible.example/v1'",
+      "provider_endpoint_identity = 'zai_coding_plan_official:https://compatible.example/v1'",
     ]) {
       await expect(
         runDb(
@@ -9326,7 +9193,7 @@ describe.skipIf(sourceDatabaseUrl === undefined)("trusted canonical evaluation p
       executeEvaluationSession(
         isolatedDatabaseUrl(),
         sessionId,
-        canonicalEvaluationWorkerConfig({ aiMainModel: "glm-5.2" }),
+        canonicalEvaluationWorkerConfig({ aiMainModel: "invalid-model" }),
       ),
     ).rejects.toThrow(/aiMainModel/u);
     const unstartedState = await runDb(
@@ -9411,6 +9278,7 @@ describe("trusted provider accounting", () => {
       payload: {
         providerRequestIndex: 0,
         agentRole: "evaluation_general_planner",
+        repairConsumed: false,
         modelId: "glm-5-turbo",
         requestSha256Hex: fixtureProviderRequestSha256Hex,
         sourceExposureProofSha256Hexes: [],
@@ -9553,7 +9421,7 @@ describe("trusted provider accounting", () => {
       deriveTrustedPromptMeasurements("general_planner", "wrong-model-case", usage, [
         {
           ...unmatched,
-          payload: { ...unmatched.payload, modelId: "glm-5.2" },
+          payload: { ...unmatched.payload, modelId: "invalid-model" },
         },
         measurements[0],
       ]),
@@ -9675,7 +9543,7 @@ describe("trusted provider accounting", () => {
     ).toThrow(/duplicate provider measurements/u);
     expect(() =>
       deriveTrustedPromptMeasurements("general_planner", "case", usage, [
-        { ...measurements[0], payload: { ...measurements[0].payload, modelId: "glm-5.2" } },
+        { ...measurements[0], payload: { ...measurements[0].payload, modelId: "invalid-model" } },
       ]),
     ).toThrow(/invalid exact provider measurement/u);
     expect(() =>

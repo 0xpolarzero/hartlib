@@ -84,7 +84,6 @@ const StructuredRetrievalResultSchema = z
         identity: CanonicalIdentitySchema,
         snapshotId: z.string().min(1),
         contentHash: z.string().min(1),
-        publisherExtractionId: z.string().optional(),
         previewRanges: z.array(
           z.strictObject({ charStart: z.number().int().nonnegative(), charEnd: z.number().int() }),
         ),
@@ -653,15 +652,6 @@ describe("deterministic internal retrieval and citation", () => {
     },
     {
       queryOrdinal: 1,
-      branch: "publisher_documents" as const,
-      status: "not_applicable" as const,
-      reason: "scope_documents" as const,
-      hitCount: 0,
-      truncated: false,
-      cap: 2,
-    },
-    {
-      queryOrdinal: 1,
       branch: "chat_messages" as const,
       status: "not_applicable" as const,
       reason: "scope_documents" as const,
@@ -708,15 +698,6 @@ describe("deterministic internal retrieval and citation", () => {
           order: "relevance" as const,
           status: "applicable" as const,
           hits: [hit],
-          cap: 2,
-          truncated: false,
-        },
-        {
-          queryOrdinal: 1,
-          branch: "publisher_documents" as const,
-          status: "not_applicable" as const,
-          reason: "scope_documents" as const,
-          hits: [],
           cap: 2,
           truncated: false,
         },
@@ -776,7 +757,6 @@ describe("deterministic internal retrieval and citation", () => {
     });
     expect(result.branches.map((branch) => branch.branch)).toEqual([
       "public_documents",
-      "publisher_documents",
       "chat_messages",
     ]);
     expect(result.fused.results.map((candidate) => candidate.resultId)).toEqual(["r1"]);
@@ -1583,15 +1563,6 @@ const runDeterministicProductionWorkflow = async (
       branch: "public_documents" as const,
       status: "applicable" as const,
       hitCount: 1,
-      truncated: false,
-      cap: 2,
-    },
-    {
-      queryOrdinal: 1,
-      branch: "publisher_documents" as const,
-      status: "not_applicable" as const,
-      reason: "scope_documents" as const,
-      hitCount: 0,
       truncated: false,
       cap: 2,
     },

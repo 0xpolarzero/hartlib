@@ -19,14 +19,15 @@
       "@hartlib/config/*": ["packages/config/src/*"],
       "@hartlib/docs": ["packages/docs/src/index.ts"],
       "@hartlib/docs/*": ["packages/docs/src/*"],
-      "@hartlib/demo-data": ["packages/demo-data/src/index.ts"],
       "@hartlib/source-ingestion": ["packages/source-ingestion/src/index.ts"],
       "@hartlib/workspace": ["packages/workspace/src/index.ts"],
       "@hartlib/workspace/*": ["packages/workspace/src/*"],
       "@hartlib/i18n": ["packages/i18n/src/index.ts"],
       "@hartlib/shared": ["packages/shared/src/index.ts"],
       "@hartlib/shared/*": ["packages/shared/src/*"],
-      "@hartlib/ui": ["packages/ui/src/index.ts"]
+      "@hartlib/ui": ["packages/ui/src/index.ts"],
+      "@hartlib/ui/styles/document": ["packages/ui/src/styles/document-style.ts"],
+      "@hartlib/ui/*": ["packages/ui/src/*"]
     }
   }
 }

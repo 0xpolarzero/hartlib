@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   compileChatMessagesQuery,
   compilePhysicalQueryBranches,
-  compilePublisherDocumentsQuery,
   compilePublicDocumentsQuery,
 } from "./compile-query-spec";
 import { PHYSICAL_QUERY_BRANCHES } from "./query-spec";
@@ -13,8 +12,6 @@ const scope = {
   chatId: "chat-1",
   companyId: "company-1",
   publicSourceIds: ["public-source"],
-  subscriptionIds: ["subscription-1"],
-  accessIds: ["access-1"],
   excludedMessageIds: ["recent-1"],
 } as const;
 
@@ -70,14 +67,10 @@ describe("Phase B physical compilers", () => {
   it("uses the canonical physical branch order", () => {
     const branches = compilePhysicalQueryBranches(query, options);
     expect(branches.map((branch) => branch.branch)).toEqual(PHYSICAL_QUERY_BRANCHES);
-    expect(branches.map((branch) => branch.status)).toEqual([
-      "applicable",
-      "applicable",
-      "applicable",
-    ]);
+    expect(branches.map((branch) => branch.status)).toEqual(["applicable", "applicable"]);
   });
 
-  it("marks unlisted target branches and unsupported publisher filters without SQL", () => {
+  it("marks unlisted target branches without SQL", () => {
     const documentQuery = {
       ...query,
       targets: [query.targets[0]!],
@@ -95,20 +88,6 @@ describe("Phase B physical compilers", () => {
       branch: "public_documents",
       status: "not_applicable",
       reason: "scope_chat_messages",
-    });
-    const countryQuery = {
-      ...query,
-      targets: [
-        {
-          kind: "documents" as const,
-          filters: { countries: ["FR"] },
-        },
-      ],
-    };
-    expect(compilePublisherDocumentsQuery(countryQuery, options)).toMatchObject({
-      branch: "publisher_documents",
-      status: "not_applicable",
-      reason: "unsupported_country_filter",
     });
   });
 
@@ -166,7 +145,6 @@ describe("Phase B physical compilers", () => {
     };
     const compiled = [
       compilePublicDocumentsQuery(bounded, options),
-      compilePublisherDocumentsQuery(bounded, options),
       compileChatMessagesQuery(bounded, options),
     ] as const;
 
@@ -182,12 +160,7 @@ describe("Phase B physical compilers", () => {
     expect(publicSql).toContain("d.published_at < ");
     expect(publicSql).not.toContain("d.published_at <= ");
 
-    const publisherSql = literalSql(compiled[1].statement);
-    expect(publisherSql).toContain("issues.published_at >= ");
-    expect(publisherSql).toContain("issues.published_at < ");
-    expect(publisherSql).not.toContain("issues.published_at <= ");
-
-    const chatSql = literalSql(compiled[2].statement);
+    const chatSql = literalSql(compiled[1].statement);
     expect(chatSql).toContain("m.created_at >= ");
     expect(chatSql).toContain("m.created_at < ");
     expect(chatSql).not.toContain("m.created_at <= ");

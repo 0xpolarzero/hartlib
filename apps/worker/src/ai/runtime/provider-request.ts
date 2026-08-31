@@ -43,7 +43,7 @@ export interface ProviderToolDefinition {
 }
 
 export interface ProviderRequest {
-  /** Budget class is independent of model identity; evaluation may use historical captures. */
+  /** Budget class is independent of model identity. */
   readonly requestClass: "fast" | "main";
   readonly model: string;
   readonly messages: readonly ProviderMessage[];
@@ -98,9 +98,7 @@ export const serializeExactAnswerRequest = (
 });
 
 /**
- * Request shape accepted by the live chat runtime.  Historical model IDs stay
- * available to explicit evaluation/compatibility code through ProviderRequest,
- * but they must never cross the production Pi boundary.
+ * Request shape accepted by the live chat runtime.
  */
 export type LiveProviderRequest = Omit<ProviderRequest, "model"> & {
   readonly model: "glm-5-turbo";
@@ -112,7 +110,7 @@ export const isLiveProviderRequest = (request: ProviderRequest): request is Live
 export const requireLiveProviderRequest = (request: ProviderRequest): LiveProviderRequest => {
   if (!isLiveProviderRequest(request)) {
     throw new Error(
-      `live AI provider requests require model glm-5-turbo; ${request.model} is evaluation/compatibility-only`,
+      `live AI provider requests require model glm-5-turbo; received ${request.model}`,
     );
   }
   assertProviderRequestIsRedacted(request);
@@ -138,7 +136,7 @@ export type CodeOwnedSourceExposureProof = ProviderVisibleSourceExposureMarker &
   readonly chatReconstruction?: AiChatExposureReconstruction | undefined;
   /** Hash of the immutable source body, kept only in the code-owned sidecar. */
   readonly immutableContentHash?: string | undefined;
-  /** Commitment to namespace, version, and publisher/external identity fields. */
+  /** Commitment to namespace and immutable source identity fields. */
   readonly immutableSourceIdentityCommitment?: string | undefined;
   /** Commitment to the exact source identity and provider-visible range fields. */
   readonly immutableSourceCommitment?: string | undefined;
@@ -153,9 +151,6 @@ export type CodeOwnedSourceExposureProof = ProviderVisibleSourceExposureMarker &
   readonly visibleByteCount?: number | undefined;
   /** Canonical source locator needed to persist document exposure proofs. */
   readonly documentReconstruction?: AiDocumentExposureReconstruction | undefined;
-  /** Publisher owner fields needed to bind namespaced publisher identities. */
-  readonly publisherIssueId?: string | undefined;
-  readonly publisherDocumentId?: string | undefined;
   /** Optional caller-supplied binding; the gate re-derives and checks it. */
   readonly messageIndex?: number | undefined;
   readonly serializedField?: string | undefined;
@@ -227,14 +222,8 @@ export const serializeAnswerSource = (source: {
 
 export const providerVisibleSourceExposureProofSha256Hex = (
   marker: ProviderVisibleSourceExposureMarker,
-  binding?: ProviderVisibleSourceExposureProofBinding,
+  binding: ProviderVisibleSourceExposureProofBinding,
 ): string => {
-  // Array.prototype.map passes the element index as the second argument.
-  // Keep the one-argument helper compatible with existing attestation callers.
-  const exactBinding =
-    binding !== null && typeof binding === "object" && !Array.isArray(binding)
-      ? binding
-      : undefined;
   return createHash("sha256")
     .update(
       stableJson({
@@ -243,7 +232,7 @@ export const providerVisibleSourceExposureProofSha256Hex = (
         contentItemIdentity: marker.contentItemIdentity,
         exposureStage: marker.exposureStage,
         visibleTokenCount: marker.visibleTokenCount,
-        ...(exactBinding === undefined ? {} : { binding: exactBinding }),
+        binding,
       }),
     )
     .digest("hex");
@@ -420,8 +409,6 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     "orderedSourceDescriptor",
     "publicDocumentId",
     "documentReconstruction",
-    "publisherIssueId",
-    "publisherDocumentId",
     "sourceToolCallId",
     "sourceResultIndex",
   ]);
@@ -452,14 +439,7 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
       const ranges = record.ranges;
       return (
         Object.keys(record).every((key) =>
-          new Set([
-            "sourceId",
-            "documentId",
-            "snapshotId",
-            "contentHash",
-            "publisherExtractionId",
-            "ranges",
-          ]).has(key),
+          new Set(["sourceId", "documentId", "snapshotId", "contentHash", "ranges"]).has(key),
         ) &&
         typeof record.sourceId === "string" &&
         record.sourceId.length > 0 &&
@@ -469,9 +449,6 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
         record.snapshotId.length > 0 &&
         typeof record.contentHash === "string" &&
         /^[a-f0-9]{64}$/u.test(record.contentHash) &&
-        (record.publisherExtractionId === undefined ||
-          (typeof record.publisherExtractionId === "string" &&
-            record.publisherExtractionId.length > 0)) &&
         Array.isArray(ranges) &&
         ranges.every((range) => {
           if (typeof range !== "object" || range === null || Array.isArray(range)) return false;
@@ -510,10 +487,6 @@ const isCodeOwnedSourceExposureProof = (value: unknown): value is CodeOwnedSourc
     validDocumentReconstruction &&
     validChatReconstruction &&
     (proof.sourceKind !== "chat_message" || chatReconstruction !== undefined) &&
-    (proof.publisherIssueId === undefined ||
-      (typeof proof.publisherIssueId === "string" && proof.publisherIssueId.length > 0)) &&
-    (proof.publisherDocumentId === undefined ||
-      (typeof proof.publisherDocumentId === "string" && proof.publisherDocumentId.length > 0)) &&
     validRange &&
     (proof.visibleByteCount === undefined ||
       (typeof proof.visibleByteCount === "number" &&
@@ -589,12 +562,8 @@ const invalidDocumentNamespace = (context: string): never => {
   throw sourceExposureFailure(`${context} lacks an exact document source namespace`);
 };
 
-const hasExactDocumentSourceId = (
-  kind: "public" | "publisher",
-  sourceId: unknown,
-): sourceId is string =>
-  typeof sourceId === "string" &&
-  (kind === "public" ? /^public:[^:\s]+$/u : /^publisher:[^:\s]+$/u).test(sourceId);
+const hasExactDocumentSourceId = (sourceId: unknown): sourceId is string =>
+  typeof sourceId === "string" && /^public:[^:\s]+$/u.test(sourceId);
 
 const documentNamespaceFromValue = (
   value: unknown,
@@ -605,32 +574,11 @@ const documentNamespaceFromValue = (
   if (value.kind === "public") {
     if (
       Object.keys(value).some((key) => key !== "kind" && key !== "sourceId") ||
-      !hasExactDocumentSourceId("public", value.sourceId)
+      !hasExactDocumentSourceId(value.sourceId)
     ) {
       return invalidDocumentNamespace(context);
     }
     return { kind: "public", sourceId: value.sourceId };
-  }
-  if (value.kind === "publisher") {
-    if (
-      Object.keys(value).some(
-        (key) => key !== "kind" && key !== "sourceId" && key !== "issueId" && key !== "documentId",
-      ) ||
-      !hasExactDocumentSourceId("publisher", value.sourceId) ||
-      typeof value.issueId !== "string" ||
-      value.issueId.length === 0 ||
-      typeof value.documentId !== "string" ||
-      value.documentId.length === 0 ||
-      value.documentId !== documentId
-    ) {
-      return invalidDocumentNamespace(context);
-    }
-    return {
-      kind: "publisher",
-      sourceId: value.sourceId,
-      issueId: value.issueId,
-      documentId: value.documentId,
-    };
   }
   return invalidDocumentNamespace(context);
 };
@@ -647,7 +595,6 @@ const HIDDEN_PROVIDER_TOOL_RESULT_FIELDS = new Set([
   SOURCE_IDENTITY_FIELD,
   "snapshotId",
   "contentHash",
-  "publisherExtractionId",
   "source",
 ]);
 
@@ -1541,7 +1488,7 @@ const documentIdFromLogicalIdentity = (logicalSourceIdentity: string): string | 
   const separator = logicalSourceIdentity.indexOf(":", prefix.length);
   if (separator < 0) return undefined;
   const kind = logicalSourceIdentity.slice(prefix.length, separator);
-  if (kind !== "public" && kind !== "publisher") return undefined;
+  if (kind !== "public") return undefined;
   try {
     const value = JSON.parse(logicalSourceIdentity.slice(separator + 1)) as unknown;
     if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return undefined;
@@ -1562,16 +1509,9 @@ const isCanonicalDocumentLogicalIdentity = (logicalSourceIdentity: string): bool
     const value = JSON.parse(logicalSourceIdentity.slice(separator + 1)) as unknown;
     if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return false;
     if (kind === "public") {
-      return value.length === 2 && hasExactDocumentSourceId("public", value[0]);
+      return value.length === 2 && hasExactDocumentSourceId(value[0]);
     }
-    return (
-      kind === "publisher" &&
-      value.length === 4 &&
-      hasExactDocumentSourceId("publisher", value[0]) &&
-      value[1]!.length > 0 &&
-      value[2]!.length > 0 &&
-      value[2] === value[3]
-    );
+    return false;
   } catch {
     return false;
   }
@@ -1819,8 +1759,7 @@ const validatePrivateDocumentIdentity = (
 ): DocumentEvidenceNamespace => {
   if (
     Object.keys(privateIdentity).some(
-      (key) =>
-        !["snapshotId", "contentHash", "publisherExtractionId", "source", "ranges"].includes(key),
+      (key) => !["snapshotId", "contentHash", "source", "ranges"].includes(key),
     )
   ) {
     throw sourceExposureFailure(`${context} has unknown immutable identity fields`);
@@ -1837,16 +1776,6 @@ const validatePrivateDocumentIdentity = (
     canonicalPrivateDocumentRanges(privateIdentity.ranges, context);
   }
   const namespace = documentNamespaceFromValue(privateIdentity.source, documentId, context);
-  if (
-    namespace.kind === "publisher" &&
-    (typeof privateIdentity.publisherExtractionId !== "string" ||
-      privateIdentity.publisherExtractionId.length === 0)
-  ) {
-    throw sourceExposureFailure(`${context} lacks its publisher extraction identity`);
-  }
-  if (namespace.kind === "public" && Object.hasOwn(privateIdentity, "publisherExtractionId")) {
-    throw sourceExposureFailure(`${context} has publisher identity on a public document`);
-  }
   return namespace;
 };
 
@@ -1975,8 +1904,6 @@ export const providerSourceExposureProofFromToolResult = (
             : undefined
         : undefined;
     let documentReconstruction: AiDocumentExposureReconstruction | undefined;
-    let publisherIssueId: string | undefined;
-    let publisherDocumentId: string | undefined;
     if (marker.sourceKind === "document") {
       const privateIdentity = privateIdentityForExposure(toolName, result, index);
       if (privateIdentity === undefined) {
@@ -2005,23 +1932,14 @@ export const providerSourceExposureProofFromToolResult = (
             documentId,
             snapshotId: privateIdentity.snapshotId as string,
             contentHash: privateIdentity.contentHash as string,
-            ...(privateIdentity.publisherExtractionId === undefined
-              ? {}
-              : { publisherExtractionId: privateIdentity.publisherExtractionId as string }),
             ranges,
           };
-          if (namespace.kind === "publisher") {
-            publisherIssueId = namespace.issueId;
-            publisherDocumentId = namespace.documentId;
-          }
         }
         if (
           (Object.hasOwn(result, "snapshotId") &&
             result.snapshotId !== privateIdentity.snapshotId) ||
           (Object.hasOwn(result, "contentHash") &&
             result.contentHash !== privateIdentity.contentHash) ||
-          (Object.hasOwn(result, "publisherExtractionId") &&
-            result.publisherExtractionId !== privateIdentity.publisherExtractionId) ||
           (Object.hasOwn(result, "source") &&
             stableJson(
               documentNamespaceFromValue(result.source, documentId, `${toolName} document result`),
@@ -2136,8 +2054,6 @@ export const providerSourceExposureProofFromToolResult = (
         : { charEnd: sourcePrivateIdentity.charEnd }),
       ...(item.visibleByteCount === undefined ? {} : { visibleByteCount: item.visibleByteCount }),
       ...(documentReconstruction === undefined ? {} : { documentReconstruction }),
-      ...(publisherIssueId === undefined ? {} : { publisherIssueId }),
-      ...(publisherDocumentId === undefined ? {} : { publisherDocumentId }),
       immutableSourceCommitment: providerVisibleSourceExposureCommitment(
         marker,
         providerVisibleBinding,

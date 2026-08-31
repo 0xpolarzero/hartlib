@@ -28,7 +28,7 @@ export interface AiPhaseLogEntry {
   readonly occurredAt?: string | undefined;
   readonly taskId?: string | undefined;
   readonly topicId?: "t1" | "t2" | "t3" | undefined;
-  readonly model?: "glm-5.2" | "glm-5-turbo" | undefined;
+  readonly model?: "glm-5-turbo" | undefined;
   readonly durationMs?: number | undefined;
   readonly attempt?: number | undefined;
   readonly loopIteration?: number | undefined;
@@ -262,12 +262,16 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiSafePhaseLogFiel
     ...(entry.requestedOutputTokens === undefined
       ? {}
       : { requestedOutputTokens: entry.requestedOutputTokens }),
-    ...(entry.usableInputTokens === undefined ? {} : { usableInputTokens: entry.usableInputTokens }),
+    ...(entry.usableInputTokens === undefined
+      ? {}
+      : { usableInputTokens: entry.usableInputTokens }),
     ...(entry.afterInputTokens === undefined ? {} : { afterInputTokens: entry.afterInputTokens }),
     ...(entry.itemCount === undefined ? {} : { itemCount: entry.itemCount }),
     ...(entry.sourceCount === undefined ? {} : { sourceCount: entry.sourceCount }),
     ...(entry.topicCount === undefined ? {} : { topicCount: entry.topicCount }),
-    ...(entry.conversationCount === undefined ? {} : { conversationCount: entry.conversationCount }),
+    ...(entry.conversationCount === undefined
+      ? {}
+      : { conversationCount: entry.conversationCount }),
     ...(entry.memoryCount === undefined ? {} : { memoryCount: entry.memoryCount }),
     ...(entry.consumerCount === undefined ? {} : { consumerCount: entry.consumerCount }),
     ...(entry.queryCount === undefined ? {} : { queryCount: entry.queryCount }),
@@ -302,10 +306,7 @@ export const safeAiPhaseLogFields = (entry: AiPhaseLogEntry): AiSafePhaseLogFiel
     ...(errorCategory === undefined
       ? {}
       : {
-          errorMessage: sanitizeAiRuntimeDiagnosticMessage(
-            errorCategory,
-            entry.errorMessage,
-          ),
+          errorMessage: sanitizeAiRuntimeDiagnosticMessage(errorCategory, entry.errorMessage),
         }),
     ...(entry.outcome === undefined ? {} : { outcome: entry.outcome }),
   };

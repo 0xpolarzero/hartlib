@@ -30,7 +30,6 @@ export interface AiDocumentExposureReconstruction {
   readonly snapshotId: string;
   /** SHA-256 hex digest of the immutable stored document text. */
   readonly contentHash: string;
-  readonly publisherExtractionId?: string | undefined;
   /** Already normalized, non-overlapping UTF-16 ranges into that text. */
   readonly ranges: readonly { readonly charStart: number; readonly charEnd: number }[];
 }
@@ -56,8 +55,6 @@ export interface AiSourceExposureInput {
   /** Private immutable chat identity and exact source-use ranges. */
   readonly chatReconstruction?: AiChatExposureReconstruction | undefined;
   readonly logicalSourceIdentity: string;
-  readonly publisherIssueId?: string | undefined;
-  readonly publisherDocumentId?: string | undefined;
   readonly contentItemIdentity: string;
   readonly exposureStage: string;
   readonly visibleTokenCount: number;
@@ -147,10 +144,7 @@ export interface AiRunUsageInput {
   readonly agentRole: string;
   readonly modelId: string;
   /** Exact transport implementation, not a caller-declared capture label. */
-  readonly providerServiceId:
-    | "zai_coding_plan_official"
-    | "deterministic_test"
-    | "openai_compatible_custom";
+  readonly providerServiceId: "zai_coding_plan_official" | "deterministic_test";
   readonly usage: ModelUsage;
 }
 
@@ -294,9 +288,6 @@ const sourceExposureAttestationPayloadForProof = (
         snapshotId: input.documentReconstruction.snapshotId,
         documentContentHash: input.documentReconstruction.contentHash,
         documentRanges: input.documentReconstruction.ranges,
-        ...(input.documentReconstruction.publisherExtractionId === undefined
-          ? {}
-          : { publisherExtractionId: input.documentReconstruction.publisherExtractionId }),
       }),
 });
 
@@ -306,8 +297,6 @@ export const assertCanonicalDocumentExposureIdentity = (
     | "sourceKind"
     | "logicalSourceIdentity"
     | "contentItemIdentity"
-    | "publisherIssueId"
-    | "publisherDocumentId"
     | "providerSerializationProofBinding"
     | "documentReconstruction"
     | "requireCanonicalDocumentIdentity"
@@ -333,15 +322,8 @@ export const assertCanonicalDocumentExposureIdentity = (
     return;
   }
   const reconstruction = input.documentReconstruction;
-  // Mixed public and publisher provenance must fail with the owner error.
   if (
-    reconstruction.sourceId.startsWith("public:") &&
-    (input.publisherIssueId !== undefined || input.publisherDocumentId !== undefined)
-  ) {
-    throw new Error("publisher document identity does not match database ownership");
-  }
-  if (
-    !/^(?:public|publisher):[^:\s]+$/u.test(reconstruction.sourceId) ||
+    !/^public:[^:\s]+$/u.test(reconstruction.sourceId) ||
     !/^[a-f0-9]{64}$/u.test(reconstruction.contentHash) ||
     reconstruction.ranges.length === 0 ||
     reconstruction.ranges.some(
@@ -354,48 +336,16 @@ export const assertCanonicalDocumentExposureIdentity = (
   ) {
     throw new Error("document exposure reconstruction is not canonical");
   }
-  const isPublisherSource = reconstruction.sourceId.startsWith("publisher:");
-  if (!isPublisherSource && reconstruction.publisherExtractionId !== undefined) {
-    throw new Error("public document exposure cannot carry publisher extraction identity");
-  }
-  if (isPublisherSource && reconstruction.publisherExtractionId === undefined) {
-    throw new Error("publisher document exposure requires its extraction identity");
-  }
-  if (isPublisherSource && input.publisherDocumentId !== reconstruction.documentId) {
-    throw new Error("publisher document identity does not match database ownership");
-  }
   for (let index = 1; index < reconstruction.ranges.length; index += 1) {
     if (reconstruction.ranges[index - 1]!.charEnd >= reconstruction.ranges[index]!.charStart) {
       throw new Error("document exposure reconstruction ranges are not canonical");
     }
   }
-  const logicalSourceIdentity = reconstruction.sourceId.startsWith("public:")
-    ? namespacedDocumentEvidenceIdentity(
-        { kind: "public", sourceId: reconstruction.sourceId },
-        reconstruction.documentId,
-      )
-    : input.publisherIssueId !== undefined && input.publisherDocumentId !== undefined
-      ? namespacedDocumentEvidenceIdentity(
-          {
-            kind: "publisher",
-            sourceId: reconstruction.sourceId,
-            issueId: input.publisherIssueId,
-            documentId: input.publisherDocumentId,
-          },
-          reconstruction.documentId,
-        )
-      : undefined;
-  if (logicalSourceIdentity === undefined) {
-    throw new Error("document exposure reconstruction lacks its canonical owner identity");
-  }
+  const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
+    { kind: "public", sourceId: reconstruction.sourceId },
+    reconstruction.documentId,
+  );
   if (input.logicalSourceIdentity !== logicalSourceIdentity) {
-    if (
-      reconstruction.sourceId.startsWith("publisher:") &&
-      input.publisherIssueId !== undefined &&
-      input.publisherDocumentId !== undefined
-    ) {
-      throw new Error("publisher document identity does not match database ownership");
-    }
     throw new Error("document exposure logical identity differs from its reconstruction");
   }
   if (
@@ -856,8 +806,6 @@ export const insertAiSourceExposure = (
               and provider_request_index = ${input.providerRequestIndex}
               and source_kind = ${input.sourceKind}
               and logical_source_identity = ${input.logicalSourceIdentity}
-              and publisher_issue_id::text is not distinct from ${input.publisherIssueId ?? null}
-              and publisher_document_id::text is not distinct from ${input.publisherDocumentId ?? null}
               and content_item_identity = ${storedContentItemIdentity}
               and exposure_stage = ${input.exposureStage}
               and visible_token_count = ${input.visibleTokenCount}
@@ -868,7 +816,6 @@ export const insertAiSourceExposure = (
               and document_ranges is not distinct from ${documentRangesJson}::jsonb
               and chat_content_hash is not distinct from ${chatContentHash}
               and chat_ranges is not distinct from ${chatRangesJson}::jsonb
-              and publisher_extraction_id::text is not distinct from ${input.documentReconstruction?.publisherExtractionId ?? null}
             for update
           `;
           if (matching.length !== 1) {
@@ -884,8 +831,6 @@ export const insertAiSourceExposure = (
               provider_request_index,
               source_kind,
               logical_source_identity,
-              publisher_issue_id,
-              publisher_document_id,
               content_item_identity,
               exposure_stage,
               visible_token_count,
@@ -895,8 +840,7 @@ export const insertAiSourceExposure = (
               content_hash,
               document_ranges,
               chat_content_hash,
-              chat_ranges,
-              publisher_extraction_id
+              chat_ranges
             )
             values (
               ${input.runId},
@@ -906,8 +850,6 @@ export const insertAiSourceExposure = (
               ${input.providerRequestIndex},
               ${input.sourceKind},
               ${input.logicalSourceIdentity},
-              ${input.publisherIssueId ?? null},
-              ${input.publisherDocumentId ?? null},
               ${storedContentItemIdentity},
               ${input.exposureStage},
               ${input.visibleTokenCount},
@@ -917,8 +859,7 @@ export const insertAiSourceExposure = (
               ${input.documentReconstruction?.contentHash ?? null},
               ${documentRangesJson}::jsonb,
               ${chatContentHash},
-              ${chatRangesJson}::jsonb,
-              ${input.documentReconstruction === undefined ? null : (input.documentReconstruction.publisherExtractionId ?? null)}
+              ${chatRangesJson}::jsonb
             )
           `;
           inserted = true;
@@ -1005,7 +946,7 @@ export const insertAiSourceExposure = (
           kind: "source_exposure_attestation",
           payload: attestationPayload,
         });
-        // A legacy row may predate its attestation. Replaying it is still
+        // A retained row may predate its attestation. Replaying it is still
         // idempotent after the missing attestation is repaired in this same
         // transaction.
         return inserted;

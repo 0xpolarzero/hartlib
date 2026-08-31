@@ -1,136 +1,128 @@
-import { useEffect, useState, type ComponentPropsWithoutRef, type KeyboardEvent } from "react";
-
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Pencil } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { uiMessage } from "../../lib/format";
+import { useAnnounce } from "../../lib/announce";
+import { AutoTextarea } from "./controls";
 
 export const editableFieldChromeClass =
-  "rounded-sm border border-rule/70 bg-paper/35 outline-none [@media(hover:hover)_and_(pointer:fine)]:hover:border-rule [@media(hover:hover)_and_(pointer:fine)]:hover:bg-paper/70 focus:border-ring focus:bg-paper focus:ring-2 focus:ring-ring/20 focus:ring-offset-1 focus:ring-offset-background";
+  "rounded-tiny border border-line-2 bg-paper/35 outline-none hover:border-ink-3 focus:border-ink focus:ring-2 focus:ring-accent/20";
 
-type InlineEditableFieldBaseProps = {
+export type InlineEditableFieldProps = {
   value: string;
+  onSave: (value: string) => void | Promise<void>;
+  multiline?: boolean;
+  placeholder?: string;
   ariaLabel: string;
-  onChange: (value: string) => void;
-  commitDelayMs?: number;
+  className?: string;
+  largeThreshold?: number;
+  saveAnnouncement?: string;
+  locale?: string;
 };
 
-export type InlineEditableFieldProps = InlineEditableFieldBaseProps &
-  (
-    | ({
-        multiline?: false;
-      } & Omit<
-        ComponentPropsWithoutRef<"input">,
-        "aria-label" | "className" | "defaultValue" | "onChange" | "value"
-      > & {
-          className?: string;
-        })
-    | ({
-        multiline: true;
-      } & Omit<
-        ComponentPropsWithoutRef<"textarea">,
-        "aria-label" | "className" | "defaultValue" | "onChange" | "value"
-      > & {
-          className?: string;
-        })
-  );
-
-export function InlineEditableField(props: InlineEditableFieldProps) {
-  const {
-    value,
-    ariaLabel,
-    multiline,
-    onChange,
-    commitDelayMs = 150,
-    className,
-    ...fieldProps
-  } = props;
+export function InlineEditableField({
+  value,
+  onSave,
+  multiline = false,
+  placeholder,
+  ariaLabel,
+  className,
+  largeThreshold = 60,
+  saveAnnouncement,
+  locale = "en-US",
+}: InlineEditableFieldProps) {
+  const announce = useAnnounce();
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
-  const [focused, setFocused] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const committing = useRef(false);
 
   useEffect(() => {
-    if (!focused) {
-      setDraft(value);
+    if (!editing) setDraft(value);
+  }, [editing, value]);
+
+  useLayoutEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const large = multiline || value.length > largeThreshold || draft.includes("\n");
+
+  const commit = async () => {
+    if (committing.current) return;
+    committing.current = true;
+    const next = draft.trim();
+    setEditing(false);
+    if (next === value || (next === "" && value === "")) {
+      committing.current = false;
+      return;
     }
-  }, [focused, value]);
+    setSaving(true);
+    try {
+      await onSave(next);
+      announce.status(saveAnnouncement ?? uiMessage(locale, "ui.inlineEditSaved"));
+    } finally {
+      setSaving(false);
+      committing.current = false;
+    }
+  };
 
-  useEffect(() => {
-    if (draft === value) return;
-    const timeout = window.setTimeout(() => onChange(draft), commitDelayMs);
-    return () => window.clearTimeout(timeout);
-  }, [commitDelayMs, draft, onChange, value]);
-
-  function commit() {
-    if (draft !== value) onChange(draft);
-  }
-
-  if (multiline) {
-    const textareaProps = fieldProps as Omit<
-      ComponentPropsWithoutRef<"textarea">,
-      "aria-label" | "className" | "defaultValue" | "onChange" | "value"
-    >;
-
+  if (!editing) {
     return (
-      <textarea
-        {...textareaProps}
-        value={draft}
-        rows={focused ? 4 : 1}
-        onBlur={(event) => {
-          setFocused(false);
-          commit();
-          textareaProps.onBlur?.(event);
-        }}
-        onChange={(event) => setDraft(event.target.value)}
-        onFocus={(event) => {
-          setFocused(true);
-          textareaProps.onFocus?.(event);
-        }}
-        onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
-          if (event.key === "Escape") {
-            setDraft(value);
-            event.currentTarget.blur();
-          }
-          textareaProps.onKeyDown?.(event);
-        }}
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        aria-label={`${uiMessage(locale, "ui.inlineEditEditLabel")} — ${ariaLabel}`}
         className={cn(
-          editableFieldChromeClass,
-          "w-full resize-none px-2 py-1 text-sm leading-5 text-ink",
-          focused ? "min-h-24" : "min-h-7 truncate",
+          "group/edit -mx-1.5 -mb-0.5 flex w-full items-baseline gap-1.5 rounded-tiny border-b border-transparent px-1.5 py-0.5 text-left",
+          "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+          "hover:border-line-2 hover:bg-paper-deep/70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+          saving && "animate-pulse-soft",
           className,
         )}
-        aria-label={ariaLabel}
-      />
+      >
+        <span className={cn("min-w-0 flex-1 truncate", !value && "text-ink-2 italic")}>
+          {value || placeholder}
+        </span>
+        <Pencil
+          aria-hidden="true"
+          className="size-3 shrink-0 self-center text-ink-3 opacity-0 transition-opacity duration-100 group-hover/edit:opacity-100 group-focus/edit:opacity-100"
+        />
+      </button>
     );
   }
 
-  const inputProps = fieldProps as Omit<
-    ComponentPropsWithoutRef<"input">,
-    "aria-label" | "className" | "defaultValue" | "onChange" | "value"
-  >;
-
   return (
-    <input
-      {...inputProps}
-      value={draft}
-      onBlur={(event) => {
-        setFocused(false);
-        commit();
-        inputProps.onBlur?.(event);
-      }}
-      onChange={(event) => setDraft(event.target.value)}
-      onFocus={(event) => {
-        setFocused(true);
-        inputProps.onFocus?.(event);
-      }}
-      onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-        if (event.key === "Escape") {
-          setDraft(value);
-          event.currentTarget.blur();
-        }
-        inputProps.onKeyDown?.(event);
-      }}
-      className={cn(editableFieldChromeClass, "w-full px-1 py-0.5 text-sm text-ink", className)}
-      aria-label={ariaLabel}
-    />
+    <span className={cn("block", className)}>
+      <AutoTextarea
+        ref={inputRef}
+        value={draft}
+        maxRows={large ? 12 : 1}
+        aria-label={ariaLabel}
+        placeholder={placeholder}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(value);
+            setEditing(false);
+          } else if (event.key === "Enter" && (!event.shiftKey || !large)) {
+            event.preventDefault();
+            void commit();
+          }
+        }}
+        onBlur={() => void commit()}
+        className={cn(
+          "animate-enter-fade w-full",
+          large && "min-h-24 border-b-2 border-b-accent bg-surface p-2",
+          editableFieldChromeClass,
+        )}
+      />
+      {large && (
+        <span className="mt-1 block font-mono text-[10px] text-ink-2">
+          {uiMessage(locale, "ui.inlineEditHint")}
+        </span>
+      )}
+    </span>
   );
 }

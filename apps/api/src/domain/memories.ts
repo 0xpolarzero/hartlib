@@ -45,7 +45,7 @@ export const makeMemoryRoutes = (
     execute: (request) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, { databaseLayer });
         if (!authentication.authenticated) {
           return json({ error: "unauthorized" }, { status: 401 });
         }
@@ -61,7 +61,7 @@ export const makeMemoryRoutes = (
     execute: (request, _url, pathParameters, _input) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, { databaseLayer });
         if (!authentication.authenticated) {
           return json({ error: "unauthorized" }, { status: 401 });
         }
@@ -85,7 +85,7 @@ export const makeMemoryRoutes = (
     execute: (request, _url, pathParameters, input) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, { databaseLayer });
         if (!authentication.authenticated) {
           return json({ error: "unauthorized" }, { status: 401 });
         }
@@ -104,7 +104,7 @@ export const makeMemoryRoutes = (
     execute: (request, _url, pathParameters) =>
       Effect.gen(function* () {
         const config = yield* loadApiConfig;
-        const authentication = yield* resolveRequestIdentity(request, config);
+        const authentication = yield* resolveRequestIdentity(request, config, { databaseLayer });
         if (!authentication.authenticated) {
           return json({ error: "unauthorized" }, { status: 401 });
         }

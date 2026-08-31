@@ -173,9 +173,9 @@ describe("exact Pi boundary", () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
-  it("routes a saved provider endpoint despite live runtime drift", async () => {
+  it("routes the saved official provider endpoint despite live runtime drift", async () => {
     const complete = vi.fn(async (model) => {
-      expect(model.baseUrl).toBe("https://custom.example/v1");
+      expect(model.baseUrl).toBe("https://api.z.ai/api/coding/paas/v4");
       return assistant("saved endpoint");
     });
     const boundary = new ExactPiBoundary({
@@ -186,8 +186,8 @@ describe("exact Pi boundary", () => {
     });
 
     boundary.bindAcceptedProviderProfile({
-      providerServiceId: "openai_compatible_custom",
-      providerEndpointIdentity: "openai_compatible_custom:https://custom.example/v1",
+      providerServiceId: "zai_coding_plan_official",
+      providerEndpointIdentity: officialProviderEndpoint,
       fastModelId: "glm-5-turbo",
       mainModelId: "glm-5-turbo",
     });
@@ -298,7 +298,7 @@ describe("exact Pi boundary", () => {
     expect(complete).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects a historical model before any measurement, hook, or transport", async () => {
+  it("rejects a non-current model before any measurement, hook, or transport", async () => {
     const complete = vi.fn(async () => assistant("must not run"));
     const onMeasurement = vi.fn();
     const boundary = new ExactPiBoundary({
@@ -306,7 +306,7 @@ describe("exact Pi boundary", () => {
       complete: complete as never,
       hooks: { onMeasurement },
     });
-    const historical = { ...request, model: "glm-5.2" };
+    const invalidModel = { ...request, model: "invalid-model" };
 
     await expect(
       inTask(
@@ -314,7 +314,7 @@ describe("exact Pi boundary", () => {
         coordinates.attempt,
         // Deliberately bypass the production type gate to verify the runtime
         // fail-closed check for malformed resumed state.
-        () => boundary.complete(historical as unknown as LiveProviderRequest, coordinates),
+        () => boundary.complete(invalidModel as unknown as LiveProviderRequest, coordinates),
         coordinates.loopIteration,
       ),
     ).rejects.toThrow(/\[invalid_workflow_output\]/u);

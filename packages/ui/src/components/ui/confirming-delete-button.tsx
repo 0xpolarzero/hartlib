@@ -1,76 +1,99 @@
 import { Check, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-
 import { cn } from "../../lib/utils";
 import { Button } from "./button";
-
-export type ConfirmingDeleteButtonProps = {
-  confirmLabel: string;
-  idleLabel: string;
+import { uiMessage } from "../../lib/format";
+export interface ConfirmingDeleteButtonProps {
   onConfirm: () => void;
+  label?: string;
+  idleLabel?: string;
+  confirmLabel?: string;
+  undoLabel?: string;
+  undo?: () => void;
+  size?: "sm" | "icon-sm" | "icon";
   className?: string;
-};
-
+  locale?: string;
+}
 export function ConfirmingDeleteButton({
-  confirmLabel,
-  idleLabel,
   onConfirm,
+  label,
+  idleLabel,
+  confirmLabel,
+  undoLabel,
+  undo,
+  size = "icon-sm",
   className,
+  locale = "en-US",
 }: ConfirmingDeleteButtonProps) {
-  const [confirming, setConfirming] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
+  const resolvedIdleLabel = idleLabel ?? uiMessage(locale, "action.delete");
+  const resolvedConfirmLabel = confirmLabel ?? uiMessage(locale, "action.confirm");
+  const resolvedUndoLabel = undoLabel ?? uiMessage(locale, "ui.undo");
+  const [armed, setArmed] = useState(false);
+  const [showUndo, setShowUndo] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    if (!confirming) return;
-
-    function handlePointerDown(event: PointerEvent) {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      setConfirming(false);
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setConfirming(false);
+    if (!armed && !showUndo) return;
+    const timer = window.setTimeout(() => {
+      setArmed(false);
+      setShowUndo(false);
+    }, 6000);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setArmed(false);
+        setShowUndo(false);
       }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [confirming]);
-
+    document.addEventListener("keydown", onKey);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [armed, showUndo]);
   return (
-    <div ref={rootRef} className={cn("flex justify-end leading-none", className)}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className={cn(
-          "!size-5",
-          confirming
-            ? "text-destructive [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-destructive"
-            : "text-faint/70 [@media(hover:hover)_and_(pointer:fine)]:hover:bg-rule/45 [@media(hover:hover)_and_(pointer:fine)]:hover:text-destructive focus-visible:text-destructive",
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (confirming) {
-            onConfirm();
-            setConfirming(false);
-            return;
-          }
-          setConfirming(true);
-        }}
-        aria-label={confirming ? confirmLabel : idleLabel}
-      >
-        {confirming ? (
-          <Check className="size-3.5" aria-hidden="true" />
-        ) : (
-          <Trash2 className="size-3.5" aria-hidden="true" />
-        )}
-      </Button>
-    </div>
+    <span ref={ref} className={cn("inline-flex items-center gap-1", className)}>
+      {armed ? (
+        <>
+          <Button
+            ref={(node) => node?.focus()}
+            variant="destructive"
+            size="sm"
+            aria-label={resolvedConfirmLabel}
+            onClick={() => {
+              setArmed(false);
+              onConfirm();
+              if (undo) setShowUndo(true);
+            }}
+          >
+            <Check className="size-3" />
+            {resolvedConfirmLabel}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setArmed(false)}>
+            {uiMessage(locale, "ui.cancel")}
+          </Button>
+        </>
+      ) : showUndo && undo ? (
+        <Button
+          variant="link"
+          size="sm"
+          onClick={() => {
+            undo();
+            setShowUndo(false);
+          }}
+        >
+          {resolvedUndoLabel}
+        </Button>
+      ) : (
+        <Button
+          variant="ghost"
+          size={size}
+          aria-label={label ?? resolvedIdleLabel}
+          title={label ?? resolvedIdleLabel}
+          className="text-danger hover:text-danger"
+          onClick={() => setArmed(true)}
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
+      )}
+    </span>
   );
 }

@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import { file } from "bun";
 import { describe, expect, it } from "vitest";
 import {
   assertReadablePdfText,
@@ -28,6 +27,33 @@ const atomSource = {
   ...rssSource,
   discoveryUrl: "https://example.test/atom.xml",
 } as const satisfies PublicSourceDefinition;
+
+const fixturePdfBytes = (): Uint8Array => {
+  const text = "Official parliamentary report " + "x".repeat(180);
+  const stream = `BT\n/F1 12 Tf\n72 700 Td\n(${text}) Tj\nET\n`;
+  const bodies = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /ProcSet [/PDF /Text] /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, body] of bodies.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  }
+  const crossReferenceOffset = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
+  pdf += `${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n `)
+    .join("\n")}\n`;
+  pdf += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\n`;
+  pdf += `startxref\n${crossReferenceOffset}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
 
 const response = (url: string, body: string, contentType = "text/xml"): FetchResponse => ({
   url,
@@ -410,11 +436,7 @@ describe("feed adapters", () => {
   });
 
   it("falls back from obsolete opendata HTML to the canonical official PDF and preserves exact bytes", async () => {
-    const fixtureUrl = new URL(
-      "../../../apps/demo/public/demo/pdfs/atlas-regfin-2026-06-17.pdf",
-      import.meta.url,
-    );
-    const pdfBytes = new Uint8Array(await file(fixtureUrl).arrayBuffer());
+    const pdfBytes = fixturePdfBytes();
     const requestedUrls: string[] = [];
     const fetcher = async (url: string): Promise<FetchResponse> => {
       requestedUrls.push(url);

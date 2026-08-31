@@ -97,7 +97,7 @@ describe("final source-map validation", () => {
     ).toThrow("single answer has a non-single source consumer");
   });
 
-  it("rejects non-normalized document ranges and incomplete publisher provenance", () => {
+  it("rejects non-normalized document ranges and incomplete public provenance", () => {
     const document: FinalSourceRecord = {
       sourceKey: sourceKey(1),
       locator: {
@@ -138,17 +138,6 @@ describe("final source-map validation", () => {
         citationNamespace,
       ),
     ).toThrow("document use range exceeds locator union");
-    expect(() =>
-      assertFinalSourceMap(
-        singleAnswer([
-          {
-            ...document,
-            locator: { ...documentLocator, publisherIssueId: "issue-1" } as never,
-          },
-        ]),
-        citationNamespace,
-      ),
-    ).toThrow("publisher document identity is incomplete");
     for (const citationUrl of [
       "http://example.com/report",
       "https://user@example.com/report",
@@ -168,12 +157,12 @@ describe("final source-map validation", () => {
         singleAnswer([
           {
             ...document,
-            locator: { ...documentLocator, sourceId: "publisher:source-1" } as never,
+            locator: { ...documentLocator, sourceId: "legacy:source-1" } as never,
           },
         ]),
         citationNamespace,
       ),
-    ).toThrow("public document source identity is incomplete");
+    ).toThrow("document locator identity is incomplete");
     for (const sourceId of [
       "source-1",
       " public:source-1",
@@ -194,22 +183,6 @@ describe("final source-map validation", () => {
         sourceId,
       ).toThrow("document locator identity is incomplete");
     }
-    expect(() =>
-      assertFinalSourceMap(
-        singleAnswer([
-          {
-            ...document,
-            locator: {
-              ...documentLocator,
-              sourceId: "publisher:source-1",
-              publisherIssueId: "issue-1",
-              publisherDocumentId: "other-document",
-            },
-          },
-        ]),
-        citationNamespace,
-      ),
-    ).toThrow("publisher document provenance is incomplete");
     expect(() =>
       assertFinalSourceMap(
         singleAnswer([

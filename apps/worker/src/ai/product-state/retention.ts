@@ -49,12 +49,6 @@ const purgeOneMemory = (
         const owner = owners[0];
         if (owner === undefined) return null;
 
-        const legalHoldScopeKey = `user:${owner.userId}`;
-        yield* sql`
-          select pg_advisory_xact_lock(
-            hashtextextended(${`hartlib:legal-hold:${legalHoldScopeKey}`}, 0)
-          )
-        `;
         yield* lockUserMemories(owner.userId);
         yield* sql`
           select users.id
@@ -65,17 +59,12 @@ const purgeOneMemory = (
         const eligible = yield* sql<IdRow>`
           select memories.id::text
           from user_memories memories
-          left join platform_users users on users.id = memories.user_id
           where memories.id = ${memoryId}
             and memories.deleted_at is not null
             and (
               memories.provenance_only_at is not null
               or memories.deleted_at < now()
                 - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
-            )
-            and coalesce(users.legal_hold, false) = false
-            and not hartlib_has_active_legal_hold(
-              array['user:' || memories.user_id]::text[]
             )
           for update of memories
         `;
@@ -154,15 +143,10 @@ export const purgeUserMemoryTombstones = (
     let expiredCandidates = yield* sql<CandidateRow>`
       select memories.id::text
       from user_memories memories
-      left join platform_users users on users.id = memories.user_id
       where memories.deleted_at is not null
         and memories.provenance_only_at is null
         and memories.deleted_at < now()
           - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
-        and coalesce(users.legal_hold, false) = false
-        and not hartlib_has_active_legal_hold(
-          array['user:' || memories.user_id]::text[]
-        )
       order by memories.deleted_at, memories.id
       limit ${expiredBudget}
     `;
@@ -170,7 +154,6 @@ export const purgeUserMemoryTombstones = (
     const provenanceCandidates = yield* sql<CandidateRow>`
       select memories.id::text
       from user_memories memories
-      left join platform_users users on users.id = memories.user_id
       where memories.deleted_at is not null
         and memories.provenance_only_at is not null
         and not exists (
@@ -180,10 +163,6 @@ export const purgeUserMemoryTombstones = (
             on revisions.id = sources.memory_revision_id
           where revisions.memory_id = memories.id
         )
-        and coalesce(users.legal_hold, false) = false
-        and not hartlib_has_active_legal_hold(
-          array['user:' || memories.user_id]::text[]
-        )
       order by memories.provenance_only_at, memories.id
       limit ${provenanceBudget}
     `;
@@ -192,15 +171,10 @@ export const purgeUserMemoryTombstones = (
       const additionalExpiredCandidates = yield* sql<CandidateRow>`
         select memories.id::text
         from user_memories memories
-        left join platform_users users on users.id = memories.user_id
         where memories.deleted_at is not null
           and memories.provenance_only_at is null
           and memories.deleted_at < now()
             - (${MEMORY_TOMBSTONE_RETENTION_MS} * interval '1 millisecond')
-          and coalesce(users.legal_hold, false) = false
-          and not hartlib_has_active_legal_hold(
-            array['user:' || memories.user_id]::text[]
-          )
         order by memories.deleted_at, memories.id
         offset ${expiredCandidates.length}
         limit ${unusedBudget}

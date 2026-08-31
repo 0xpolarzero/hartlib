@@ -12,13 +12,11 @@
     "test": "bun ../../scripts/test-with-postgres.ts apps/worker/src"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1075.0",
     "@earendil-works/pi-ai": "0.80.3",
     "@effect/platform-bun": "4.0.0-beta.92",
     "@effect/sql-pg": "4.0.0-beta.92",
     "@hartlib/config": "workspace:*",
     "@hartlib/database": "workspace:*",
-    "@hartlib/i18n": "workspace:*",
     "@hartlib/shared": "workspace:*",
     "@hartlib/source-ingestion": "workspace:*",
     "@huggingface/jinja": "0.5.9",
@@ -27,7 +25,6 @@
     "@smithers-orchestrator/driver": "0.31.0",
     "effect": "4.0.0-beta.92",
     "effect3": "npm:effect@3.21.4",
-    "resend": "6.16.0",
     "smithers-orchestrator": "0.31.0",
     "zod": "4.4.3"
   },

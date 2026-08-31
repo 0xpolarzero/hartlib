@@ -1,12 +1,8 @@
 import { Schema } from "effect";
-import * as SchemaGetter from "effect/SchemaGetter";
 
 import { normalizeDomainAllowlist } from "./web-policy";
 
-export type AiProviderServiceId =
-  | "zai_coding_plan_official"
-  | "deterministic_test"
-  | "openai_compatible_custom";
+export type AiProviderServiceId = "zai_coding_plan_official" | "deterministic_test";
 
 /** Exact provider service and endpoint identity captured at acceptance. */
 export type AiProviderEndpointIdentity = string;
@@ -15,8 +11,6 @@ export interface RunAcceptanceScope {
   readonly userId: string;
   readonly chatId: string;
   readonly companyId: string;
-  readonly subscriptionIds: readonly string[];
-  readonly accessIds: readonly string[];
   readonly publicSourceIds: readonly string[];
   readonly memoryMode: "private_owner" | "disabled";
   readonly memoryRevisionIds: readonly string[];
@@ -36,8 +30,6 @@ const acceptanceScopeKeys = new Set([
   "userId",
   "chatId",
   "companyId",
-  "subscriptionIds",
-  "accessIds",
   "publicSourceIds",
   "memoryMode",
   "memoryRevisionIds",
@@ -87,14 +79,6 @@ export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
   if (typeof record.companyId !== "string" || !uuidPattern.test(record.companyId)) {
     throw new Error("acceptance scope companyId is invalid");
   }
-  const subscriptionIds = canonicalStrings(record.subscriptionIds, "subscriptionIds");
-  if (subscriptionIds.some((item) => !uuidPattern.test(item))) {
-    throw new Error("acceptance scope subscriptionIds are invalid");
-  }
-  const accessIds = canonicalStrings(record.accessIds, "accessIds");
-  if (accessIds.some((item) => !uuidPattern.test(item))) {
-    throw new Error("acceptance scope accessIds are invalid");
-  }
   const publicSourceIds = canonicalStrings(record.publicSourceIds, "publicSourceIds");
   const memoryRevisionIds = canonicalStrings(record.memoryRevisionIds, "memoryRevisionIds");
   if (memoryRevisionIds.some((item) => !uuidPattern.test(item))) {
@@ -112,11 +96,7 @@ export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
   if (!record.webRequested && record.webEnabled) {
     throw new Error("web cannot be enabled when it was not requested");
   }
-  if (
-    record.provider !== "zai_coding_plan_official" &&
-    record.provider !== "deterministic_test" &&
-    record.provider !== "openai_compatible_custom"
-  ) {
+  if (record.provider !== "zai_coding_plan_official" && record.provider !== "deterministic_test") {
     throw new Error("acceptance scope provider is invalid");
   }
   if (
@@ -161,8 +141,6 @@ export const parseRunAcceptanceScope = (value: unknown): RunAcceptanceScope => {
     userId: record.userId,
     chatId: record.chatId,
     companyId: record.companyId,
-    subscriptionIds,
-    accessIds,
     publicSourceIds,
     memoryMode: record.memoryMode,
     memoryRevisionIds,
@@ -181,8 +159,6 @@ export const makeRunAcceptanceScope = (args: {
   readonly userId: string;
   readonly chatId: string;
   readonly companyId: string;
-  readonly subscriptionIds?: readonly string[];
-  readonly accessIds?: readonly string[];
   readonly publicSourceIds?: readonly string[];
   readonly memoryMode?: "private_owner" | "disabled";
   readonly memoryRevisionIds?: readonly string[];
@@ -200,19 +176,11 @@ export const makeRunAcceptanceScope = (args: {
     args.providerEndpointIdentity ??
     (provider === "zai_coding_plan_official"
       ? "zai_coding_plan_official:https://api.z.ai/api/coding/paas/v4"
-      : provider === "deterministic_test"
-        ? "deterministic_test:deterministic"
-        : (() => {
-            throw new Error(
-              "custom provider acceptance scopes must include the exact endpoint identity",
-            );
-          })());
+      : "deterministic_test:deterministic");
   return parseRunAcceptanceScope({
     userId: args.userId,
     chatId: args.chatId,
     companyId: args.companyId,
-    subscriptionIds: [...(args.subscriptionIds ?? [])].sort(),
-    accessIds: [...(args.accessIds ?? [])].sort(),
     publicSourceIds: [...(args.publicSourceIds ?? [])].sort(),
     memoryMode: args.memoryMode ?? "private_owner",
     memoryRevisionIds: [...(args.memoryRevisionIds ?? [])].sort(),
@@ -334,57 +302,10 @@ const CanonicalCitationRecord = Schema.Union([
   Schema.Struct({ ...CitationBase, ...WebLocatorBase, quote: PublicCitationQuote }),
 ]);
 
-const LegacyCitationRecord = Schema.Union([
-  Schema.Struct({
-    ...CitationBase,
-    ...DocumentLocator,
-    quote: Schema.optional(PublicCitationQuote),
-  }),
-  Schema.Struct({
-    ...CitationBase,
-    ...ChatMessageLocator,
-    quote: Schema.optional(PublicCitationQuote),
-  }),
-  Schema.Struct({
-    ...CitationBase,
-    ...MemoryLocator,
-    quote: Schema.optional(PublicCitationQuote),
-  }),
-  // Web citations used a required string quote before the canonical citation
-  // projection. The compatibility decoder also accepts an omitted or null
-  // value so old mixed-version responses normalize to the one null state.
-  Schema.Struct({
-    ...CitationBase,
-    ...WebLocatorBase,
-    quote: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, PublicCitationQuote]))),
-  }),
-]);
-
-type CanonicalCitationRecord = Schema.Schema.Type<typeof CanonicalCitationRecord>;
-type LegacyCitationRecord = Schema.Schema.Type<typeof LegacyCitationRecord>;
-
-const normalizeLegacyCitationRecord = (value: LegacyCitationRecord): CanonicalCitationRecord => {
-  const quote = value.quote;
-  const normalizedQuote =
-    quote === undefined || quote === null
-      ? null
-      : typeof quote === "string"
-        ? Schema.decodeUnknownSync(PublicCitationQuote)({ text: quote })
-        : quote;
-  return { ...value, quote: normalizedQuote } as CanonicalCitationRecord;
-};
-
-/**
- * Decode the old omitted/non-object quote fields at the wire boundary. The
- * decoded value is always the required canonical `{ text } | null` shape;
- * encoding a canonical value keeps that shape and never emits a legacy string.
+/** Strict canonical citation projection. The quote key is always present and
+ * is either an authorized `{ text }` object or `null`.
  */
-export const PublicCitationRecord = LegacyCitationRecord.pipe(
-  Schema.decodeTo(CanonicalCitationRecord, {
-    decode: SchemaGetter.transform(normalizeLegacyCitationRecord),
-    encode: SchemaGetter.transform((value: CanonicalCitationRecord) => value),
-  }),
-);
+export const PublicCitationRecord = CanonicalCitationRecord;
 export type PublicCitationRecord = Schema.Schema.Type<typeof PublicCitationRecord>;
 
 export const PublicSourceRecord = Schema.Union([
@@ -416,6 +337,11 @@ export const UserMessageRunOutcome = Schema.Union([
     errorCode: Schema.String,
     retryable: Schema.Boolean,
     failedAt: Schema.String,
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    status: Schema.Literal("stopped"),
+    stoppedAt: Schema.String,
   }),
 ]);
 export type UserMessageRunOutcome = Schema.Schema.Type<typeof UserMessageRunOutcome>;
@@ -450,7 +376,6 @@ export const GetChatResponse = Schema.Struct({
     memoryMode: Schema.Literals(["private_owner", "disabled"]),
     createdAt: Schema.String,
     updatedAt: Schema.String,
-    archivedAt: Schema.NullOr(Schema.String),
   }),
   messages: Schema.Array(ChatMessage),
   effectiveWebPolicy: EffectiveWebPolicy,
@@ -488,9 +413,12 @@ export const SendChatMessageAccepted = Schema.Struct({
 });
 export type SendChatMessageAccepted = Schema.Schema.Type<typeof SendChatMessageAccepted>;
 
+export const AiRunStopResponse = Schema.Struct({ runId: Schema.String });
+export type AiRunStopResponse = Schema.Schema.Type<typeof AiRunStopResponse>;
+
 export const ActiveAiRunConflict = Schema.Struct({
   code: Schema.Literal("active_ai_run"),
-  conflictScope: Schema.Literals(["chat", "user"]),
+  conflictScope: Schema.Literal("chat"),
   activeRun: AiRunDescriptor,
 });
 export type ActiveAiRunConflict = Schema.Schema.Type<typeof ActiveAiRunConflict>;
@@ -542,93 +470,9 @@ export const MemoryRevisionResponse = Schema.Struct({
 });
 export type MemoryRevisionResponse = Schema.Schema.Type<typeof MemoryRevisionResponse>;
 
-export const CreateProductChatRequest = Schema.Struct({
-  companyId: Schema.String,
-  memoryMode: Schema.Literals(["private_owner", "disabled"]),
-  sourceAccessIds: Schema.optional(Schema.Array(Schema.String)),
-}).pipe(
-  Schema.check(
-    Schema.makeFilter<{
-      readonly companyId: string;
-      readonly memoryMode: "private_owner" | "disabled";
-      readonly sourceAccessIds?: ReadonlyArray<string> | undefined;
-    }>((value) => {
-      const ids = value.sourceAccessIds;
-      return ids === undefined || new Set(ids).size === ids.length
-        ? undefined
-        : "sourceAccessIds must be unique";
-    }),
-  ),
-);
-export type CreateProductChatRequest = Schema.Schema.Type<typeof CreateProductChatRequest>;
-
-export const ProductChatSummary = Schema.Struct({
-  id: Schema.String,
-  companyId: Schema.String,
-  creatorUserId: Schema.String,
-  memoryMode: Schema.Literals(["private_owner", "disabled"]),
-  sharedAt: Schema.NullOr(Schema.String),
-  archivedAt: Schema.NullOr(Schema.String),
-  replacedByChatId: Schema.NullOr(Schema.String),
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
-  sourceCount: Schema.Number,
-});
-export type ProductChatSummary = Schema.Schema.Type<typeof ProductChatSummary>;
-
-export const ProductChatListResponse = Schema.Struct({
-  chats: Schema.Array(ProductChatSummary),
-});
-export const CreateProductChatResponse = Schema.Struct({
-  chat: Schema.Struct({
-    id: Schema.String,
-    memoryMode: Schema.Literals(["private_owner", "disabled"]),
-    sourceAccessIds: Schema.Array(Schema.String),
-    createdAt: Schema.String,
-  }),
-});
-
-const chatIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-
-/** Lowercase canonical UUID used for chat and replacement identities. */
-export const ChatIdUuid = Schema.String.pipe(
-  Schema.check(Schema.isPattern(chatIdPattern)),
-  Schema.check(Schema.isLowercased()),
-);
-export type ChatIdUuid = Schema.Schema.Type<typeof ChatIdUuid>;
-
 /**
- * The client generates the replacement UUID before the request. It is both the
- * optimistic identity shown while the reset is pending and the replay key: a
- * retry with the same old id and replacement id returns the same committed row.
+ * Request usage records the model work performed for one request attempt.
  */
-export const ResetProductChatRequest = Schema.Struct({
-  replacementChatId: ChatIdUuid,
-});
-export type ResetProductChatRequest = Schema.Schema.Type<typeof ResetProductChatRequest>;
-
-/**
- * The replacement projection is complete so the client never needs a follow-up
- * read. It starts empty and writable with the copied company, memory mode, and
- * source set; the archived predecessor id is returned for lineage.
- */
-export const ResetProductChatResponse = Schema.Struct({
-  archivedChatId: Schema.String,
-  replacement: GetChatResponse.pipe(
-    Schema.check(
-      Schema.makeFilter<GetChatResponse>((value) =>
-        value.chat.archivedAt === null &&
-        value.messages.length === 0 &&
-        value.activeRun === null &&
-        value.canWrite
-          ? undefined
-          : "reset replacement must be empty, active, and writable",
-      ),
-    ),
-  ),
-});
-export type ResetProductChatResponse = Schema.Schema.Type<typeof ResetProductChatResponse>;
-
 export const RequestModelUsage = Schema.Struct({
   scope: Schema.Literal("request"),
   kind: Schema.Literal("model"),
@@ -669,9 +513,6 @@ export const RunUsage = Schema.Struct({
     billedUnits: Schema.NullOr(Schema.Number),
   }),
 });
-
-export const UsageEventPayload = Schema.Union([RequestModelUsage, RequestWebUsage, RunUsage]);
-export type UsageEventPayload = Schema.Schema.Type<typeof UsageEventPayload>;
 
 export const PublicContextConsumer = Schema.Struct({
   consumer: Schema.Literals(["direct", "topic", "synthesis"]),
@@ -775,7 +616,7 @@ export const AiRunActivityEvent = Schema.Struct({
   sourceCount: Schema.optional(Schema.Number),
   resultCount: Schema.optional(Schema.Number),
   reason: Schema.optional(Schema.Literals(["search_adjusted", "source_validation_failed"])),
-  /** Stable run identity; optional for backwards-compatible replay of old rows. */
+  /** Stable run identity when the outcome is tied to a persisted run. */
   runId: Schema.optional(SafeRunIdentity),
   /** RFC 3339 time at which the worker emitted this transition. */
   occurredAt: Schema.optional(SafeActivityTimestamp),
@@ -840,10 +681,11 @@ const PublicAiRunDebugHistory = Schema.Array(PublicAiRunDebugEvent).pipe(
 
 export const PublicAiRunDebug = Schema.Struct({
   runId: SafeRunIdentity,
-  status: Schema.Literals(["queued", "running", "succeeded", "failed"]),
+  status: Schema.Literals(["queued", "running", "succeeded", "failed", "stopped"]),
   startedAt: Schema.NullOr(SafeActivityTimestamp),
   finishedAt: Schema.NullOr(SafeActivityTimestamp),
   failedAt: Schema.NullOr(SafeActivityTimestamp),
+  stoppedAt: Schema.NullOr(SafeActivityTimestamp),
   lastSequence: Schema.NullOr(SafeDebugCount),
   stages: PublicAiRunDebugStages,
   history: PublicAiRunDebugHistory,
@@ -900,11 +742,6 @@ export interface AiRunActivityProjection {
   readonly activities: readonly AiRunActivityEvent[];
   readonly history: readonly AiRunActivityEvent[];
 }
-
-export const emptyAiRunActivityProjection = (): AiRunActivityProjection => ({
-  activities: [],
-  history: [],
-});
 
 export const aiRunActivityTransitionKey = (event: AiRunActivityEvent): string =>
   [
@@ -967,22 +804,6 @@ export const failActiveAiRunActivity = (
   }
   return projection;
 };
-
-export const AiRunActivityFailureCode = Schema.Literals([
-  "plan_turn_failed",
-  "internal_retrieval_failed",
-  "memory_selector_failed",
-  "web_research_failed",
-  "context_assembly_failed",
-  "context_compaction_failed",
-  "answer_failed",
-  "topic_answer_failed",
-  "synthesis_failed",
-  "memory_extraction_failed",
-  "finalization_failed",
-  "workflow_resume_incompatible",
-]);
-export type AiRunActivityFailureCode = Schema.Schema.Type<typeof AiRunActivityFailureCode>;
 
 export const activityCodeForAiRunError = (code: string): AiRunActivityCode => {
   switch (code) {
@@ -1076,19 +897,6 @@ export const activityCodeForPhase = (phase: string): AiRunActivityCode | undefin
   }
 };
 
-export const activityStageForPhase = (phase: string): AiRunActivityStage | undefined => {
-  const code = activityCodeForPhase(phase);
-  return code === undefined ? undefined : activityStageForCode(code);
-};
-
-export const activityCodeForFailure = (code: string): AiRunActivityCode =>
-  activityCodeForAiRunError(code);
-
-export const activityFailureReasonForAiRunError = (
-  code: string,
-): "source_validation_failed" | undefined =>
-  code.includes("source") || code.includes("context") ? "source_validation_failed" : undefined;
-
 export const AiRunEvent = Schema.Union([
   AiRunActivityEvent,
   Schema.Struct({ type: Schema.Literal("run_started") }),
@@ -1116,6 +924,10 @@ export const AiRunEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("usage"), ...RunUsage.fields }),
   Schema.Struct({ type: Schema.Literal("done"), assistantMessageId: Schema.String }),
   Schema.Struct({
+    type: Schema.Literal("stopped"),
+    assistantMessageId: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
     type: Schema.Literal("error"),
     code: Schema.String,
     retryable: Schema.Boolean,
@@ -1128,4 +940,3 @@ export const AiRunEvent = Schema.Union([
   }),
 ]);
 export type AiRunEvent = Schema.Schema.Type<typeof AiRunEvent>;
-export type AiRunErrorEvent = Extract<AiRunEvent, { readonly type: "error" }>;

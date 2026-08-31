@@ -10,8 +10,7 @@ export const assertWorkerAiProviderPosture = (config: WorkerConfig): void => {
   if (config.nodeEnv === "production") {
     throw new Error(PRODUCTION_DECISIONS_BLOCKER);
   }
-  // GLM-5.2 remains registered for explicit evaluation/compatibility calls,
-  // but the live worker has one exact runtime model posture for both roles.
+  // The live worker has one exact model posture for both request classes.
   resolveRuntimeModel(config.aiMainModel);
   resolveRuntimeModel(config.aiFastModel);
   verifyRegisteredModelsAtStartup([config.aiMainModel, config.aiFastModel]);

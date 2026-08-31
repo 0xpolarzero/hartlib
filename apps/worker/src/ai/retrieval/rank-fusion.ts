@@ -29,7 +29,7 @@ export {
 
 export type RetrievalCanonicalIdentity = Extract<
   CanonicalIdentity,
-  { readonly kind: "public_document" | "publisher_document" | "chat_message" }
+  { readonly kind: "public_document" | "chat_message" }
 >;
 
 const utf8 = new TextEncoder();
@@ -168,7 +168,6 @@ const identityMatchesBranch = (
   identity: RetrievalCanonicalIdentity,
 ): boolean =>
   (branch === "public_documents" && identity.kind === "public_document") ||
-  (branch === "publisher_documents" && identity.kind === "publisher_document") ||
   (branch === "chat_messages" && identity.kind === "chat_message");
 
 const assertBranch = <T>(branch: RankedBranchResult<T>): void => {
@@ -231,8 +230,6 @@ const physicalIdentityAnchor = (identity: RetrievalCanonicalIdentity): string =>
   switch (identity.kind) {
     case "public_document":
       return JSON.stringify(["public_document", identity.documentId]);
-    case "publisher_document":
-      return JSON.stringify(["publisher_document", identity.documentId]);
     case "chat_message":
       return JSON.stringify(["chat_message", identity.messageId]);
   }

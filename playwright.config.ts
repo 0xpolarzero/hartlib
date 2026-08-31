@@ -3,12 +3,12 @@ import { defineConfig, devices } from "@playwright/test";
 import { e2ePortsFromBase, parseE2ePortBase } from "./tests/e2e/ports";
 
 const aiChatE2e = process.env.HARTLIB_E2E_STACK === "1";
-const { demo: e2eDemoPort, web: e2eWebPort } = e2ePortsFromBase(parseE2ePortBase());
+const { demo: e2eDemoPort } = e2ePortsFromBase(parseE2ePortBase());
 const e2eDemoStorageState = {
   cookies: [
     {
       name: "hartlib_demo",
-      value: "demo-user",
+      value: process.env.HARTLIB_E2E_VISITOR_ID ?? "00000000-0000-4000-8000-000000000001",
       domain: "127.0.0.1",
       path: "/",
       httpOnly: true,
@@ -34,11 +34,6 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "chromium",
-      testMatch: "apps/web/tests/**/*.{spec,test}.ts",
-      use: { ...devices["Desktop Chrome"] },
-    },
-    {
       name: "hartlib-ai-chat-runtime",
       testMatch: "tests/e2e/**/*.spec.ts",
       use: {
@@ -47,21 +42,12 @@ export default defineConfig({
         storageState: e2eDemoStorageState,
       },
     },
-    {
-      name: "hartlib-platform",
-      testMatch: "tests/platform-e2e/**/*.spec.ts",
-      use: {
-        ...devices["Desktop Chrome"],
-        baseURL: `http://127.0.0.1:${e2eWebPort}`,
-        storageState: e2eDemoStorageState,
-      },
-    },
   ],
   ...(aiChatE2e
     ? {}
     : {
         webServer: {
-          command: "bun run dev:web",
+          command: "bun run dev:demo",
           url: "http://localhost:5173",
           reuseExistingServer: true,
         },

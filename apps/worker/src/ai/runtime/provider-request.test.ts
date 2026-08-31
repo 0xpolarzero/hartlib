@@ -552,10 +552,10 @@ describe("provider-visible source exposure proofs", () => {
     );
   });
 
-  it("accepts the live model and rejects historical model IDs", () => {
+  it("accepts the live model and rejects non-current model IDs", () => {
     const request = reviewRequest([], []);
     expect(requireLiveProviderRequest(request).model).toBe("glm-5-turbo");
-    expect(() => requireLiveProviderRequest({ ...request, model: "glm-5.2" })).toThrow(
+    expect(() => requireLiveProviderRequest({ ...request, model: "invalid-model" })).toThrow(
       /glm-5-turbo/u,
     );
   });
@@ -575,7 +575,7 @@ describe("provider-visible source exposure proofs", () => {
     expect(request.requestedOutputTokens).toBe(64);
   });
 
-  it("accepts current provider tool markers without a serial compatibility path", () => {
+  it("accepts current provider tool markers", () => {
     const text = "memory evidence";
     const request = memoryToolRequest(text);
     expect(
@@ -1535,45 +1535,6 @@ describe("provider-visible source exposure proofs", () => {
         countTextTokens,
       ),
     ).toHaveLength(2);
-  });
-  it("accepts opaque publisher document identities without rebinding them", () => {
-    const text = "publisher evidence";
-    const range = { charStart: 0, charEnd: text.length };
-    const logicalSourceIdentity = namespacedDocumentEvidenceIdentity(
-      {
-        kind: "publisher",
-        sourceId: "publisher:subscription-1",
-        issueId: "issue-1",
-        documentId: "doc-1",
-      },
-      "doc-1",
-    );
-    const call: ProviderToolCall = {
-      id: "publisher-search",
-      name: "search_evidence",
-      arguments: { query: "publisher" },
-    };
-    const marker: CodeOwnedSourceExposureProof = {
-      sourceKind: "document",
-      logicalSourceIdentity,
-      contentItemIdentity: `${logicalSourceIdentity}:snapshot-1:${sha256Base64Url(
-        JSON.stringify([range]),
-      )}`,
-      exposureStage: "evaluation_general_planner_search",
-      visibleTokenCount: countTextTokens(text),
-      visibleText: text,
-      sourceToolCallId: call.id,
-      sourceResultIndex: 0,
-    };
-    const result = {
-      matches: [{ kind: "document", documentId: "doc-1", text, ...range }],
-    };
-    expect(
-      providerRequestSourceExposureProofs(
-        requestWithToolExchanges([{ call, result }], [marker]),
-        countTextTokens,
-      ),
-    ).toHaveLength(1);
   });
   it("binds every ordered passage from a plural read result", () => {
     const call: ProviderToolCall = {

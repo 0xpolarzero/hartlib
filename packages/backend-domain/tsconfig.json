@@ -6,7 +6,6 @@
   "include": [
     "src/**/*.ts",
     "../../packages/shared/src/**/*.ts",
-    "../../packages/workspace/src/client-workspace.ts",
     "../../packages/workspace/src/common.ts"
   ]
 }

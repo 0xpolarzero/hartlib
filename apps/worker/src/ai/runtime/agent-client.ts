@@ -20,7 +20,7 @@ import {
   providerSourceExposureProofFromToolResult,
   redactProviderToolResult,
 } from "./provider-request";
-import { aiRunErrorCodeForRole, aiRuntimeDiagnosticMessage, toAiRuntimeError } from "./errors";
+import { aiRunErrorCodeForRole, toAiRuntimeError } from "./errors";
 import { requireCurrentTaskCoordinates } from "./task-cancellation";
 import { resolveRuntimeModel } from "./model-registry";
 

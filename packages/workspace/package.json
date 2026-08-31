@@ -4,8 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./client-workspace": "./src/client-workspace.ts",
-    "./common": "./src/common.ts"
+    "./common": "./src/common.ts",
+    "./demo-public-sources": "./src/demo-public-sources.ts"
   },
   "scripts": {
     "build": "tsc -b --noEmit",
@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@effect/sql-pg": "4.0.0-beta.92",
-    "@hartlib/shared": "workspace:*",
     "effect": "4.0.0-beta.92"
   },
   "devDependencies": {

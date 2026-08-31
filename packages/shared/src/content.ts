@@ -20,8 +20,8 @@ export function isMarket(value: string): value is Market {
   return (MARKETS as readonly string[]).includes(value);
 }
 
-export type SourceKind = "publisher" | "public";
-export const SourceKindSchema = Schema.Literals(["publisher", "public"]);
+export type SourceKind = "public";
+export const SourceKindSchema = Schema.Literals(["public"]);
 
 export const ContentMetrics = Schema.Struct({
   // Public-source analytics are not collected by the public-source ingestion
@@ -43,9 +43,6 @@ export const ContentDocument = Schema.Struct({
   textPreview: Schema.String,
   canonicalUrl: Schema.NullOr(Schema.String),
   hostedContentUrl: Schema.NullOr(Schema.String),
-  fileName: Schema.NullOr(Schema.String),
-  pageCount: Schema.NullOr(Schema.Number),
-  storagePath: Schema.NullOr(Schema.String),
   metrics: ContentMetrics,
 });
 export type ContentDocument = Schema.Schema.Type<typeof ContentDocument>;
@@ -56,7 +53,7 @@ export const ContentPublication = Schema.Struct({
   sourceKind: SourceKindSchema,
   title: Schema.String,
   publicationDate: Schema.NullOr(Schema.String),
-  status: Schema.Literals(["published", "scheduled"]),
+  status: Schema.Literal("published"),
   summary: Schema.String,
   canonicalUrl: Schema.NullOr(Schema.String),
   documents: Schema.Array(ContentDocument),
@@ -67,7 +64,6 @@ export type ContentPublication = Schema.Schema.Type<typeof ContentPublication>;
 export const ContentSource = Schema.Struct({
   id: Schema.String,
   kind: SourceKindSchema,
-  publisherCompanyId: Schema.NullOr(Schema.String),
   clientCompanyId: Schema.String,
   name: Schema.String,
   publisherName: Schema.String,
@@ -88,3 +84,8 @@ export const PublicSourcesResponse = Schema.Struct({
   publications: Schema.Array(ContentPublication),
 });
 export type PublicSourcesResponse = Schema.Schema.Type<typeof PublicSourcesResponse>;
+
+export const UpdateClientPublicSourceRequest = Schema.Struct({ enabled: Schema.Boolean });
+export type UpdateClientPublicSourceRequest = Schema.Schema.Type<
+  typeof UpdateClientPublicSourceRequest
+>;

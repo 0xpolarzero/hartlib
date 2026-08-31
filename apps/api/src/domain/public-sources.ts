@@ -15,92 +15,84 @@ import { resolveRequestIdentity, type RequestIdentityResult } from "../auth";
 import { ApiDatabaseLayer, type ApiDatabaseLayer as ApiDatabaseLayerType } from "../database";
 import { loadApiConfig, type ApiConfig } from "../config";
 import { ensureDemoChat } from "@hartlib/backend-domain/chat-runtime";
-import {
-  requestIdForAudit,
-  updateClientPublicSource,
-  WorkspaceAuthorizationError,
-} from "@hartlib/workspace";
+import { requestIdForAudit, WorkspaceAuthorizationError } from "@hartlib/workspace/common";
+import { updateDemoPublicSource } from "@hartlib/workspace/demo-public-sources";
 import { json, jsonFromSchema, type Route } from "../http";
 import { withAdministrativeAuditing } from "./administrative-audit";
 
 export { publicSourcesResponseFromRows } from "@hartlib/backend-domain/public-sources";
 
-export const publicSourcesRoute: Route = {
-  method: "GET",
-  path: "/v1/public-sources",
-  execute: (request, _url, _pathParameters, input) =>
-    Effect.gen(function* () {
-      const authentication = yield* resolveRequestIdentity(request, yield* loadApiConfig);
-      if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
-      if (authentication.identity.mode !== "demo") {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      const market = input.query.market as Market | undefined;
-      // The demo route has no company id in its URL. Resolve the same
-      // deterministic workspace used by chat, then project only its enabled
-      // public-source settings. Production clients use the company-scoped
-      // workspace route instead.
-      const chat = yield* ensureDemoChat(authentication.identity.userId).pipe(
-        Effect.provide(ApiDatabaseLayer),
-      );
-      return yield* listPublicSources(market, chat.company_id).pipe(
-        Effect.provide(ApiDatabaseLayer),
-        Effect.map((response) => jsonFromSchema(PublicSourcesResponse, response)),
-      );
-    }),
-};
+export const makePublicSourceRoutes = (
+  databaseLayer: ApiDatabaseLayerType = ApiDatabaseLayer,
+): readonly Route[] => {
+  const publicSourcesRoute: Route = {
+    method: "GET",
+    path: "/v1/public-sources",
+    execute: (request, _url, _pathParameters, input) =>
+      Effect.gen(function* () {
+        const authentication = yield* resolveRequestIdentity(request, yield* loadApiConfig, {
+          databaseLayer,
+        });
+        if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
+        const market = input.query.market as Market | undefined;
+        const chat = yield* ensureDemoChat(authentication.identity.userId).pipe(
+          Effect.provide(databaseLayer),
+        );
+        return yield* listPublicSources(market, chat.company_id).pipe(
+          Effect.provide(databaseLayer),
+          Effect.map((response) => jsonFromSchema(PublicSourcesResponse, response)),
+        );
+      }),
+  };
 
-export const publicSourceToggleRoute: Route = {
-  method: "PUT",
-  path: "/v1/public-sources/:sourceId",
-  execute: (request, _url, pathParameters, input) =>
-    Effect.gen(function* () {
-      const authentication = yield* resolveRequestIdentity(request, yield* loadApiConfig);
-      if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
-      if (authentication.identity.mode !== "demo") {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      const sourceId = pathParameters.sourceId!;
-      if (sourceId.trim() === "" || sourceId.length > 200) {
-        return json({ code: "invalid_body" }, { status: 400 });
-      }
-      const requestId = requestIdForAudit(request) ?? crypto.randomUUID();
-      const chat = yield* ensureDemoChat(authentication.identity.userId).pipe(
-        Effect.provide(ApiDatabaseLayer),
-      );
-      const body = input.body as UpdateClientPublicSourceRequest;
-      const result = yield* updateClientPublicSource({
-        identity: authentication.identity,
-        companyId: chat.company_id,
-        sourceId,
-        enabled: body.enabled,
-        requestId,
-      }).pipe(
-        Effect.provide(ApiDatabaseLayer),
-        Effect.match({
-          onFailure: (error) => ({ ok: false as const, error }),
-          onSuccess: (value) => ({ ok: true as const, value }),
-        }),
-      );
-      if (!result.ok) {
-        const error = result.error;
-        if (error instanceof WorkspaceAuthorizationError) {
-          return json({ code: error.code }, { status: error.code === "mfa_required" ? 403 : 404 });
+  const publicSourceToggleRoute: Route = {
+    method: "PUT",
+    path: "/v1/public-sources/:sourceId",
+    execute: (request, _url, pathParameters, input) =>
+      Effect.gen(function* () {
+        const authentication = yield* resolveRequestIdentity(request, yield* loadApiConfig, {
+          databaseLayer,
+        });
+        if (!authentication.authenticated) return json({ error: "unauthorized" }, { status: 401 });
+        const sourceId = pathParameters.sourceId!;
+        const requestId = requestIdForAudit(request) ?? crypto.randomUUID();
+        const market = input.query.market as Market | undefined;
+        const chat = yield* ensureDemoChat(authentication.identity.userId).pipe(
+          Effect.provide(databaseLayer),
+        );
+        const body = input.body as UpdateClientPublicSourceRequest;
+        const result = yield* updateDemoPublicSource({
+          identity: authentication.identity,
+          companyId: chat.company_id,
+          sourceId,
+          enabled: body.enabled,
+          ...(market === undefined ? {} : { market }),
+          requestId,
+        }).pipe(
+          Effect.provide(databaseLayer),
+          Effect.match({
+            onFailure: (error) => ({ ok: false as const, error }),
+            onSuccess: (value) => ({ ok: true as const, value }),
+          }),
+        );
+        if (!result.ok) {
+          const error = result.error;
+          if (error instanceof WorkspaceAuthorizationError) {
+            return json({ code: error.code }, { status: error.code === "forbidden" ? 403 : 404 });
+          }
+          return yield* Effect.fail(error);
         }
-        return yield* Effect.fail(error);
-      }
-      const market = input.query.market as Market | undefined;
-      return yield* listPublicSources(market, chat.company_id).pipe(
-        Effect.provide(ApiDatabaseLayer),
-        Effect.map((response) => jsonFromSchema(PublicSourcesResponse, response)),
-      );
-    }),
+        return yield* listPublicSources(market, chat.company_id).pipe(
+          Effect.provide(databaseLayer),
+          Effect.map((response) => jsonFromSchema(PublicSourcesResponse, response)),
+        );
+      }),
+  };
+
+  return withAdministrativeAuditing([publicSourcesRoute, publicSourceToggleRoute], databaseLayer);
 };
 
-export const publicSourceRoutes: readonly Route[] = withAdministrativeAuditing(
-  [publicSourcesRoute, publicSourceToggleRoute],
-  ApiDatabaseLayer,
-);
+export const publicSourceRoutes = makePublicSourceRoutes();
 
 export const publicSourceDocumentResponseFromRow = (row: RawPublicSourceDocument): Response => {
   const mediaType = displayablePublicSourceMediaType(row.media_type);
@@ -134,6 +126,7 @@ export const makePublicSourceDocumentContentRoute = (
   resolveIdentity: (
     request: Request,
     config: ApiConfig,
+    options?: { readonly databaseLayer?: ApiDatabaseLayerType | undefined },
   ) => Effect.Effect<RequestIdentityResult, Error> = resolveRequestIdentity,
 ): Route => ({
   method: "GET",
@@ -141,16 +134,16 @@ export const makePublicSourceDocumentContentRoute = (
   corsPolicy: "explicit-origin",
   execute: (request, _url, pathParameters) =>
     Effect.gen(function* () {
-      const authentication = yield* resolveIdentity(request, yield* loadApiConfig);
+      const authentication = yield* resolveIdentity(request, yield* loadApiConfig, {
+        databaseLayer,
+      });
       if (!authentication.authenticated) return json({ error: "not_found" }, { status: 404 });
-      let demoCompanyId: string | null = null;
-      if (authentication.identity.mode === "demo") {
-        demoCompanyId = yield* ensureDemoChat(authentication.identity.userId).pipe(
-          Effect.provide(databaseLayer),
-          Effect.map((chat) => chat.company_id),
-          Effect.catch(() => Effect.succeed(null)),
-        );
-      }
+      const demoCompanyId = yield* ensureDemoChat(authentication.identity.userId).pipe(
+        Effect.provide(databaseLayer),
+        Effect.map((chat) => chat.company_id),
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      if (demoCompanyId === null) return json({ error: "not_found" }, { status: 404 });
       const row = yield* readAuthorizedPublicSourceDocument(
         authentication.identity,
         pathParameters.documentId!,

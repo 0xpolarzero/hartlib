@@ -44,12 +44,15 @@ import {
 export type PreviewRange = ExactTextRange;
 
 const SEARCH_OPERATOR_WORDS = new Set(["and", "or", "not"]);
-const searchTerms = (terms: string): readonly string[] =>
-  !isWellFormedUtf16(terms)
-    ? []
-    : (terms.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}_'’-]*/gu) ?? []).filter(
-        (term) => !SEARCH_OPERATOR_WORDS.has(normalizeAndCaseFold(term)),
-      );
+const searchTerms = (terms: string): readonly string[] => {
+  if (!isWellFormedUtf16(terms)) return [];
+  const words = (terms.match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}_'’-]*/gu) ?? []).filter(
+    (term) => !SEARCH_OPERATOR_WORDS.has(normalizeAndCaseFold(term)),
+  );
+  if (words.length > 0) return words;
+  const trimmed = terms.trim();
+  return trimmed === "" ? [] : [trimmed];
+};
 
 const mergeRanges = (ranges: readonly PreviewRange[]): readonly PreviewRange[] => {
   const merged: PreviewRange[] = [];
@@ -98,10 +101,12 @@ export const previewFromImmutableText = (
   terms: string | undefined,
   maxChars: number,
 ): { readonly snippet: string; readonly ranges: readonly PreviewRange[] } | null => {
-  if (text.length === 0 || !Number.isFinite(maxChars) || maxChars < 1) return null;
-  if (terms?.trim().length === 0 || terms === undefined) {
+  if (text.length === 0 || !isWellFormedUtf16(text) || !Number.isFinite(maxChars) || maxChars < 1)
+    return null;
+  if (terms === undefined) {
     return exactPrefixPreview(text, maxChars);
   }
+  if (terms.trim().length === 0) return null;
   const normalizedTerms = searchTerms(terms);
   if (normalizedTerms.length === 0) return null;
   const allRanges = mergeRanges(findNormalizedSubstringRanges(text, normalizedTerms));
@@ -136,11 +141,8 @@ export interface PhysicalSearchValue {
 
 export interface PhysicalSearchRow {
   readonly sourceId?: string | undefined;
-  readonly subscriptionId?: string | undefined;
-  readonly issueId?: string | undefined;
   readonly documentId?: string | undefined;
   readonly snapshotId?: string | undefined;
-  readonly publisherExtractionId?: string | undefined;
   readonly contentHash?: string | undefined;
   readonly messageId?: string | undefined;
   readonly author?: string | undefined;
@@ -254,25 +256,7 @@ const identityFromRow = (
       contentHash: row.contentHash,
     };
   }
-  if (
-    row.subscriptionId === undefined ||
-    row.issueId === undefined ||
-    row.documentId === undefined ||
-    row.snapshotId === undefined ||
-    row.publisherExtractionId === undefined ||
-    row.contentHash === undefined
-  ) {
-    throw new Error("publisher search row is missing immutable identity");
-  }
-  return {
-    kind: "publisher_document",
-    subscriptionId: row.subscriptionId,
-    issueId: row.issueId,
-    documentId: row.documentId,
-    snapshotId: row.snapshotId,
-    publisherExtractionId: row.publisherExtractionId,
-    contentHash: row.contentHash,
-  };
+  throw new Error(`unsupported retrieval branch: ${branch}`);
 };
 
 const valueFromRow = (
@@ -389,7 +373,6 @@ export interface HydratedText {
   readonly text: string;
   readonly snapshotId?: string | undefined;
   readonly contentHash?: string | undefined;
-  readonly publisherExtractionId?: string | undefined;
   readonly label?: string | null | undefined;
   readonly date?: string | Date | null | undefined;
   readonly kind?: "document" | "chat_message" | undefined;
@@ -413,7 +396,6 @@ export interface HydratedReviewValue extends PhysicalSearchValue {
   readonly text: string;
   readonly snapshotId: string;
   readonly contentHash: string;
-  readonly publisherExtractionId?: string | undefined;
   readonly fastTokenCount: number;
   readonly mainTokenCount: number;
   readonly previewBytes: Uint8Array;
@@ -457,12 +439,6 @@ const verifyHydratedIdentity = (
     }
   } else if (identity.contentHash !== contentHash || sha256Hex(hydrated.text) !== contentHash) {
     throw new RetrievalHydrationError("hash_mismatch", "immutable document content hash changed");
-  }
-  if (
-    identity.kind === "publisher_document" &&
-    identity.publisherExtractionId !== hydrated.publisherExtractionId
-  ) {
-    throw new RetrievalHydrationError("snapshot_mismatch", "publisher extraction binding changed");
   }
   return { snapshotId, contentHash, text: visibleText };
 };
@@ -523,9 +499,6 @@ export const hydrateFusedResults = (
       text: proof.text,
       snapshotId: proof.snapshotId,
       contentHash: proof.contentHash,
-      ...(hydrated.publisherExtractionId === undefined
-        ? {}
-        : { publisherExtractionId: hydrated.publisherExtractionId }),
     };
     if (
       !Number.isSafeInteger(value.fullTokenCount) ||
@@ -557,7 +530,6 @@ export interface RetrievalPreviewExposure {
   readonly identity: RetrievalCanonicalIdentity;
   readonly snapshotId: string;
   readonly contentHash: string;
-  readonly publisherExtractionId?: string | undefined;
   readonly previewRanges: readonly PreviewRange[];
   readonly previewBytes: Uint8Array;
   readonly fastTokenCount: number;
@@ -589,35 +561,12 @@ const hydrateFusedResultsFromDatabase = (
                 where d.source_id = ${identity.sourceId}
                   and d.document_id = ${identity.documentId}
               `)[0]
-          : identity.kind === "publisher_document"
-            ? (yield* sql<HydratedText>`
-                  select v.canonical_text as text, v.id::text as "snapshotId",
-                         v.content_hash as "contentHash",
-                         v.publisher_extraction_id::text as "publisherExtractionId",
-                         documents.title as label, issues.published_at as date
-                  from hartlib_documents documents
-                  join hartlib_document_versions v on v.id = documents.current_version_id
-                  join publisher_issues issues on issues.id = documents.issue_id
-                  join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-                  join issue_deliveries deliveries on deliveries.issue_id = issues.id
-                    and deliveries.subscription_id = subscriptions.id
-                    and deliveries.client_company_id = ${options.scope.companyId}
-                    and deliveries.access_id::text = any(${options.scope.accessIds}::text[])
-                  join issue_delivery_recipients recipients on recipients.issue_id = deliveries.issue_id
-                    and recipients.client_company_id = deliveries.client_company_id
-                    and recipients.user_id = ${options.scope.userId}
-                  where subscriptions.id::text = ${identity.subscriptionId}
-                    and issues.id::text = ${identity.issueId}
-                    and documents.id::text = ${identity.documentId}
-                    and v.id::text = ${identity.snapshotId}
-                    and v.publisher_extraction_id::text = ${identity.publisherExtractionId}
-                `)[0]
-            : (yield* sql<HydratedText>`
+          : (yield* sql<HydratedText>`
                   select m.content as text, m.id::text as "snapshotId",
                          m.author, m.id::text as "messageId", m.created_at as date,
                          encode(digest(convert_to(${sanitizedChatContentSql("m.content", "m.author")}, 'UTF8'), 'sha256'), 'hex') as "contentHash"
                   from chat_messages m
-                  join chats c on c.id = m.chat_id and c.deleted_at is null
+                  join chats c on c.id = m.chat_id
                     and c.company_id = ${options.scope.companyId}
                   where m.id::text = ${identity.messageId}
                     and m.chat_id = ${options.scope.chatId}
@@ -639,9 +588,6 @@ const hydrateFusedResultsFromDatabase = (
       identity: result.identity,
       snapshotId: result.value.snapshotId,
       contentHash: result.value.contentHash,
-      ...(result.value.publisherExtractionId === undefined
-        ? {}
-        : { publisherExtractionId: result.value.publisherExtractionId }),
       previewRanges: result.value.previewRanges,
       previewBytes: result.value.previewBytes,
       fastTokenCount: result.value.fastTokenCount,

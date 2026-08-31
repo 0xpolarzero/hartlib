@@ -12,17 +12,12 @@
   "dependencies": {
     "@hartlib/api-client": "workspace:*",
     "@hartlib/config": "workspace:*",
-    "@hartlib/demo-data": "workspace:*",
     "@hartlib/docs": "workspace:*",
     "@hartlib/i18n": "workspace:*",
     "@hartlib/shared": "workspace:*",
-    "@hartlib/source-ingestion": "workspace:*",
     "@hartlib/ui": "workspace:*",
-    "effect": "4.0.0-beta.92",
-    "lucide-react": "1.21.0",
     "react": "19.2.7",
-    "react-dom": "19.2.7",
-    "react-intl": "10.1.14"
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.1",

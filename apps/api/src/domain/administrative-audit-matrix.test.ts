@@ -42,25 +42,6 @@ describe("canonical API architecture", () => {
     expect(classified).toEqual(actual);
   });
 
-  it("keeps chat reset in the personal chat lifecycle exemption only", () => {
-    const resetKey = mutationRouteKey("POST", "/v1/chats/:chatId/reset");
-    const exemptions = authenticatedMutationAuditExemptions.filter(
-      (entry) => mutationRouteKey(entry.method, entry.path) === resetKey,
-    );
-    const administrative = administrativeMutationAuditMatrix.filter(
-      (entry) => mutationRouteKey(entry.method, entry.path) === resetKey,
-    );
-
-    expect(exemptions).toEqual([
-      {
-        method: "POST",
-        path: "/v1/chats/:chatId/reset",
-        reason: "personal_chat_lifecycle",
-      },
-    ]);
-    expect(administrative).toEqual([]);
-  });
-
   it("requires succeeded and bounded denied outcomes for every administrative mutation", () => {
     for (const entry of administrativeMutationAuditMatrix) {
       const route = routes.find(
@@ -77,8 +58,6 @@ describe("canonical API architecture", () => {
       expect(entry.deniedReasonCodes.length).toBeGreaterThan(0);
       expect(entry.deniedReasonCodes.every((reason) => boundedCode.test(reason))).toBe(true);
       expect(entry.deniedReasonCodes).toContain("forbidden");
-      expect(entry.deniedReasonCodes).toContain("mfa_required");
-      expect(entry.deniedReasonCodes).toContain("idempotency_conflict");
     }
   });
 

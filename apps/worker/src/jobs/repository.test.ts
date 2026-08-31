@@ -188,35 +188,6 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
     );
   });
 
-  it("deduplicates a completed recurring time bucket without reviving it", async () => {
-    await runDb(
-      Effect.gen(function* () {
-        yield* resetDatabase;
-        const repository = yield* makePgJobRepository(60_000);
-        const first = yield* repository.enqueue({
-          kind: "purge_expired_exports",
-          payload: { value: "first" },
-          uniqueKey: "maintenance:purge_expired_exports:bucket-1",
-          reviveTerminal: false,
-        });
-        const claimed = yield* repository.claimNext;
-        yield* repository.markCompleted(claimed!);
-        const duplicate = yield* repository.enqueue({
-          kind: "purge_expired_exports",
-          payload: { value: "forged-revival" },
-          uniqueKey: "maintenance:purge_expired_exports:bucket-1",
-          reviveTerminal: false,
-        });
-        expect(duplicate.id).toBe(first.id);
-        expect((yield* jobRows)[0]).toMatchObject({
-          status: "completed",
-          attempts: 1,
-          payload: { value: "first" },
-        });
-      }),
-    );
-  });
-
   it("keeps backfill queued behind a running poll for the same source", async () => {
     await runDb(
       Effect.gen(function* () {
@@ -362,6 +333,56 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
     );
   });
 
+  it("reclaims a stale demo purge after a worker restart", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const sql = yield* PgClient.PgClient;
+        const firstRepository = yield* makePgJobRepository(1);
+        const visitorId = "00000000-0000-4000-8000-0000000000a2";
+        yield* firstRepository.enqueue({
+          kind: "demo_identity_purge",
+          payload: { visitorId },
+          uniqueKey: `demo-identity-purge:${visitorId}`,
+        });
+
+        const firstClaim = yield* firstRepository.claimNext;
+        expect(firstClaim).toMatchObject({
+          kind: "demo_identity_purge",
+          attempts: 1,
+          payload: { visitorId },
+        });
+        const firstOwner = firstClaim?.lockedBy;
+        expect(firstOwner).toMatch(/^hartlib-worker:/);
+
+        // Simulate a crashed process. A fresh repository instance must reclaim
+        // the durable row once its lock expires, with no in-memory state.
+        yield* sql`
+          update jobs
+          set locked_at = now() - interval '5 minutes'
+          where unique_key = ${`demo-identity-purge:${visitorId}`}
+        `;
+        const restartedRepository = yield* makePgJobRepository(1);
+        const reclaimed = yield* restartedRepository.claimNext;
+        expect(reclaimed).toMatchObject({
+          kind: "demo_identity_purge",
+          attempts: 2,
+          payload: { visitorId },
+        });
+        expect(reclaimed?.lockedBy).toMatch(/^hartlib-worker:/);
+        expect(reclaimed?.lockedBy).not.toBe(firstOwner);
+        yield* restartedRepository.markCompleted(reclaimed!);
+
+        const [row] = yield* sql<{ readonly status: string; readonly attempts: number }>`
+          select status, attempts
+          from jobs
+          where unique_key = ${`demo-identity-purge:${visitorId}`}
+        `;
+        expect(row).toEqual({ status: "completed", attempts: 2 });
+      }),
+    );
+  });
+
   it("concurrently reclaims an exhausted stale AI chat job instead of stranding its product run", async () => {
     await runDb(
       Effect.gen(function* () {
@@ -493,6 +514,57 @@ describe.skipIf(!databaseUrl)("postgres job repository", () => {
           select status from jobs where unique_key = 'ordinary-exhaustion-control'
         `;
         expect(ordinaryAfterFailure?.status).toBe("failed");
+      }),
+    );
+  });
+
+  it("saturates the durable purge attempt counter without overflowing", async () => {
+    await runDb(
+      Effect.gen(function* () {
+        yield* resetDatabase;
+        const sql = yield* PgClient.PgClient;
+        const repository = yield* makePgJobRepository(60_000);
+        const visitorId = "00000000-0000-4000-8000-0000000000a1";
+        const [inserted] = yield* sql<JobRecord>`
+          insert into jobs (
+            kind, payload, unique_key, status, attempts, max_attempts,
+            available_at
+          ) values (
+            'demo_identity_purge',
+            ${sql.json({ visitorId })},
+            ${`demo-identity-purge:${visitorId}`},
+            'queued', 2147483647, 2147483647, now()
+          )
+          returning id, kind, payload, attempts, max_attempts as "maxAttempts",
+                    locked_by as "lockedBy"
+        `;
+
+        const claimed = yield* repository.claimNext;
+        expect(claimed).toMatchObject({
+          id: inserted!.id,
+          kind: "demo_identity_purge",
+          attempts: 2147483647,
+          maxAttempts: 2147483647,
+        });
+
+        yield* repository.markFailed(
+          claimed!,
+          new TrustedJobFailure("purge_identity_not_yet_ready"),
+        );
+        const [row] = yield* sql<{
+          readonly status: string;
+          readonly attempts: number;
+          readonly lastError: string | null;
+        }>`
+          select status, attempts, last_error as "lastError"
+          from jobs
+          where id = ${inserted!.id}
+        `;
+        expect(row).toEqual({
+          status: "retrying",
+          attempts: 2147483647,
+          lastError: "purge_identity_not_yet_ready",
+        });
       }),
     );
   });

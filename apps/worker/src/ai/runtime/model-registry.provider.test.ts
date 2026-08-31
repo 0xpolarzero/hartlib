@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveUnverifiedModelForProviderContract } from "./model-registry";
+import { resolveRegisteredModel } from "./model-registry";
 import {
   normalizeProviderRequest,
   stableJson,
@@ -375,9 +375,6 @@ const toApiPayload = (request: ProviderRequest): Record<string, unknown> => {
               : transport.toolChoice,
         }),
     thinking: { type: transport.reasoning === "minimal" ? "disabled" : "enabled" },
-    ...(transport.model === "glm-5.2" && transport.reasoning !== "minimal"
-      ? { reasoning_effort: "high" }
-      : {}),
     max_tokens: transport.requestedOutputTokens,
     stream: false,
   };
@@ -416,14 +413,12 @@ const providerPromptTokens = async (request: ProviderRequest): Promise<number> =
 };
 
 describe.skipIf(!runLive)("Z.AI exact tokenizer/provider-template parity", () => {
-  for (const modelId of ["glm-5.2", "glm-5-turbo"] as const) {
-    for (const [vectorName, vector] of Object.entries(vectors)) {
-      it(`${modelId}: ${vectorName}`, async () => {
-        const request = { ...baseRequest, ...vector, model: modelId } satisfies ProviderRequest;
-        expect(await providerPromptTokens(request)).toBe(
-          resolveUnverifiedModelForProviderContract(modelId).countRequestTokens(request),
-        );
-      }, 130_000);
-    }
+  for (const [vectorName, vector] of Object.entries(vectors)) {
+    it(`glm-5-turbo: ${vectorName}`, async () => {
+      const request = { ...baseRequest, ...vector, model: "glm-5-turbo" } satisfies ProviderRequest;
+      expect(await providerPromptTokens(request)).toBe(
+        resolveRegisteredModel("glm-5-turbo").countRequestTokens(request),
+      );
+    }, 130_000);
   }
 });

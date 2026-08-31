@@ -529,7 +529,7 @@ const CaptureFieldsSchema = z
     runId: z.uuid(),
     provider: z.literal("zai"),
     modelIds: z
-      .array(z.enum(["glm-5.2", "glm-5-turbo"]))
+      .array(z.literal("glm-5-turbo"))
       .min(1)
       .superRefine((values, context) => {
         if (new Set(values).size !== values.length) {
@@ -699,7 +699,7 @@ const uniqueCoordinateRows = (
 
 const CapturedFusionProvenanceSchema = z.strictObject({
   queryOrdinal: PositiveIntegerSchema,
-  branch: z.enum(["public_documents", "publisher_documents", "chat_messages"]),
+  branch: z.enum(["public_documents", "chat_messages"]),
   rank: PositiveIntegerSchema,
   logicalRank: PositiveIntegerSchema.optional(),
 });
@@ -768,7 +768,6 @@ const CapturedReviewPreviewRecordSchema = z.strictObject({
   identity: CanonicalIdentitySchema,
   snapshotId: nonEmpty,
   contentHash: DigestSchema,
-  publisherExtractionId: nonEmpty.optional(),
   previewRanges: z.array(SourceRangeSchema).min(1),
   previewByteLength: PositiveIntegerSchema,
   previewSha256Hex: DigestSchema,
@@ -1451,7 +1450,7 @@ const CandidateLedgerCaptureRowSchema = z
     }
     const identityCompatible =
       row.kind === "document"
-        ? row.identity.kind === "public_document" || row.identity.kind === "publisher_document"
+        ? row.identity.kind === "public_document"
         : row.identity.kind === row.kind;
     if (!identityCompatible) {
       context.addIssue({

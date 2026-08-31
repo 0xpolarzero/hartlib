@@ -1,7 +1,6 @@
 import {
   canonicalPublicSourceHttpsUrl,
   isCanonicalPublicDocumentSourceId,
-  isCanonicalPublisherDocumentSourceId,
   type AiRunDescriptor,
   type AssistantChatMessage,
   type PublicCitationRecord,
@@ -128,9 +127,6 @@ const assertRunCitationNamespace = (source: SourceRow): void => {
 const compareSourceKeys = (left: string, right: string): number =>
   sourceOrdinalFromKey(left) - sourceOrdinalFromKey(right) || left.localeCompare(right, "en");
 
-const publisherDocumentContentPath =
-  /^\/v1\/issues\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/documents\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/u;
-
 const requiredPublicCitationUrl = (record: Record<string, unknown>, key: string): string => {
   const value = requiredString(record, key);
   if (canonicalPublicSourceHttpsUrl(value) === value) return value;
@@ -149,68 +145,27 @@ const requiredDocumentCitationUrl = (
     throw new Error("invalid persisted document source identity");
   }
   const value = requiredString(provenance, "citationUrl");
-  const publisherIssueValue = locator.publisherIssueId;
-  const publisherDocumentValue = locator.publisherDocumentId;
-  const hasPublisherIssue = typeof publisherIssueValue === "string";
-  const hasPublisherDocument = typeof publisherDocumentValue === "string";
-  if (hasPublisherIssue !== hasPublisherDocument) {
-    throw new Error("invalid persisted publisher document provenance");
-  }
-  const indexedPublisherExtractionId = row.publisher_extraction_id;
-  const indexedPublisherDocument = row.publisher_document_id ?? null;
-  const indexedPublisherIssue = row.publisher_issue_id ?? null;
-  if (!hasPublisherIssue) {
-    if (
-      indexedPublisherExtractionId !== null ||
-      Object.hasOwn(locator, "publisherExtractionId") ||
-      indexedPublisherDocument !== null ||
-      indexedPublisherIssue !== null
-    ) {
-      throw new Error("invalid persisted publisher document provenance");
-    }
-    const documentId = indexed.document_id;
-    const snapshotId = indexed.snapshot_id;
-    const contentHash = indexed.content_hash;
-    const canonicalUrl = indexed.canonical_url;
-    if (
-      isCanonicalPublicDocumentSourceId(sourceId) &&
-      documentId !== null &&
-      documentId !== undefined &&
-      snapshotId !== null &&
-      snapshotId !== undefined &&
-      contentHash !== null &&
-      contentHash !== undefined &&
-      canonicalUrl !== null &&
-      canonicalUrl !== undefined &&
-      locator.documentId === documentId &&
-      locator.snapshotId === snapshotId &&
-      locator.contentHash === contentHash &&
-      value === canonicalUrl &&
-      canonicalPublicSourceHttpsUrl(canonicalUrl) === canonicalUrl
-    ) {
-      return value;
-    }
-    throw new Error("invalid persisted source citationUrl");
-  }
-
-  const snapshotId = requiredString(locator, "snapshotId");
-  const documentId = requiredString(locator, "documentId");
-  const publisherIssueId = requiredString(locator, "publisherIssueId");
-  const publisherDocumentId = requiredString(locator, "publisherDocumentId");
-  const expected = `/v1/issues/${publisherIssueId}/documents/${publisherDocumentId}/content`;
+  const documentId = indexed.document_id;
+  const snapshotId = indexed.snapshot_id;
+  const contentHash = indexed.content_hash;
+  const canonicalUrl = indexed.canonical_url;
   if (
-    !isCanonicalPublisherDocumentSourceId(sourceId) ||
-    indexed.document_id !== documentId ||
-    indexed.snapshot_id !== snapshotId ||
-    indexed.content_hash !== locator.contentHash ||
-    indexedPublisherExtractionId === null ||
-    indexedPublisherDocument !== publisherDocumentId ||
-    indexedPublisherIssue !== publisherIssueId ||
-    publisherDocumentId !== documentId ||
-    !publisherDocumentContentPath.test(value) ||
-    value !== expected
+    !isCanonicalPublicDocumentSourceId(sourceId) ||
+    documentId === null ||
+    documentId === undefined ||
+    snapshotId === null ||
+    snapshotId === undefined ||
+    contentHash === null ||
+    contentHash === undefined ||
+    canonicalUrl === null ||
+    canonicalUrl === undefined ||
+    locator.documentId !== documentId ||
+    locator.snapshotId !== snapshotId ||
+    locator.contentHash !== contentHash ||
+    value !== canonicalUrl ||
+    canonicalPublicSourceHttpsUrl(canonicalUrl) !== canonicalUrl
   ) {
-    throw new Error("invalid persisted publisher document provenance");
+    throw new Error("invalid persisted source citationUrl");
   }
   return value;
 };
@@ -514,11 +469,27 @@ const chatMessageUseRangesForSource = (
   messages: readonly MessageRow[],
 ): void => {
   const messageId = requiredString(locator, "messageId");
+  // A deleted source message deliberately leaves the run-owned citation row
+  // in place. Its foreign key becomes null, so retain the source projection
+  // and expose an unavailable quote instead of failing the whole chat read.
+  // The immutable database trigger already validated the ranges against the
+  // original text; there is no text left here against which to revalidate.
+  if (row.message_id === null || row.message_id === undefined) {
+    for (const use of uses) {
+      if (!Array.isArray(use.ranges)) {
+        throw new Error("invalid persisted chat message source ranges");
+      }
+    }
+    return;
+  }
   if (row.message_id !== messageId) {
     throw new Error("persisted chat message source identity mismatch");
   }
   const sourceMessage = messages.find((message) => message.id === messageId);
-  const assistantMessage = messages.find((message) => message.id === row.assistant_message_id);
+  const assistantMessage =
+    row.assistant_message_id === null
+      ? undefined
+      : messages.find((message) => message.id === row.assistant_message_id);
   if (
     sourceMessage === undefined ||
     assistantMessage === undefined ||
@@ -581,6 +552,10 @@ const validateUseOwnership = (use: SourceUseRow): string => {
     if (use.topic_id !== null) throw new Error("invalid persisted source use topic ownership");
     return consumerTaskId;
   }
+  if (consumerTaskId === "fanout-synthesis") {
+    if (use.topic_id !== null) throw new Error("invalid persisted source use topic ownership");
+    return consumerTaskId;
+  }
   const topicConsumer = /^topic-(t1|t2|t3)-answer$/u.exec(consumerTaskId);
   if (topicConsumer === null || use.topic_id !== topicConsumer[1]) {
     throw new Error("invalid persisted source use topic ownership");
@@ -590,16 +565,25 @@ const validateUseOwnership = (use: SourceUseRow): string => {
 
 const validateConsumerContextOrders = (uses: readonly SourceUseRow[]): void => {
   const byConsumer = new Map<string, SourceUseRow[]>();
-  const modeByAssistantMessage = new Map<string, "single" | "topic">();
+  const modesByRun = new Map<string, Set<"single" | "topic" | "synthesis">>();
   for (const use of uses) {
     const consumerTaskId = validateUseOwnership(use);
-    const mode = consumerTaskId === "single-answer" ? "single" : "topic";
-    const assistantMode = modeByAssistantMessage.get(use.assistant_message_id);
-    if (assistantMode !== undefined && assistantMode !== mode) {
+    const mode =
+      consumerTaskId === "single-answer"
+        ? "single"
+        : consumerTaskId === "fanout-synthesis"
+          ? "synthesis"
+          : "topic";
+    const modes = modesByRun.get(use.run_id) ?? new Set<"single" | "topic" | "synthesis">();
+    if (mode === "single" && (modes.has("topic") || modes.has("synthesis"))) {
       throw new Error("persisted source use mixes consumer modes");
     }
-    modeByAssistantMessage.set(use.assistant_message_id, mode);
-    const ledgerKey = `${use.assistant_message_id}\u0000${consumerTaskId}`;
+    if (mode !== "single" && modes.has("single")) {
+      throw new Error("persisted source use mixes consumer modes");
+    }
+    modes.add(mode);
+    modesByRun.set(use.run_id, modes);
+    const ledgerKey = `${use.run_id}\u0000${consumerTaskId}`;
     const consumerUses = byConsumer.get(ledgerKey) ?? [];
     consumerUses.push(use);
     byConsumer.set(ledgerKey, consumerUses);
@@ -712,50 +696,9 @@ const publicSourceFromRow = (
     case "document":
       assertExactKeys(
         locator,
-        [
-          "kind",
-          "sourceId",
-          "documentId",
-          "snapshotId",
-          "contentHash",
-          "ranges",
-          "publisherExtractionId",
-          "publisherIssueId",
-          "publisherDocumentId",
-        ],
+        ["kind", "sourceId", "documentId", "snapshotId", "contentHash", "ranges"],
         "source locator",
       );
-      const hasPublisherTuple =
-        typeof locator.publisherIssueId === "string" ||
-        typeof locator.publisherDocumentId === "string" ||
-        (row.publisher_extraction_id !== null && row.publisher_extraction_id !== undefined) ||
-        (row.publisher_document_id !== null && row.publisher_document_id !== undefined) ||
-        (row.publisher_issue_id !== null && row.publisher_issue_id !== undefined);
-      if (hasPublisherTuple) {
-        if (locator.publisherExtractionId !== row.publisher_extraction_id) {
-          throw new Error("invalid persisted publisher document provenance");
-        }
-        const sourceName = requiredNonBlankString(provenance, "sourceName");
-        const issueTitle = requiredNonBlankString(provenance, "issueTitle");
-        const publishedAt = requiredNonBlankString(provenance, "publishedAt");
-        if (!Number.isFinite(Date.parse(publishedAt))) {
-          throw new Error("invalid persisted source publishedAt");
-        }
-        return {
-          ...base,
-          kind: "document",
-          sourceName,
-          issueTitle,
-          documentTitle: requiredNonBlankString(provenance, "documentTitle"),
-          url: requiredDocumentCitationUrl(row, locator, provenance),
-          publishedAt,
-          ranges: (() => {
-            const ranges = rangesFrom(locator.ranges);
-            documentUseRanges(ranges, uses);
-            return ranges;
-          })(),
-        };
-      }
       return {
         ...base,
         kind: "document",
@@ -854,10 +797,9 @@ const citationFromSource = (
   quote: PublicCitationQuote,
 ): PublicCitationRecord => {
   const { tokenCount: _tokenCount, topicIds: _topicIds, ...citation } = source;
-  const legacyQuote = source.kind === "web" ? source.quote : null;
   return {
     ...citation,
-    quote: quote ?? (source.kind === "web" ? safeCitationQuote(legacyQuote) : null),
+    quote,
   } as PublicCitationRecord;
 };
 
@@ -901,6 +843,12 @@ const runOutcome = (run: RunRow): UserChatMessage["run"] => {
       failedAt: run.failed_at.toISOString(),
     };
   }
+  if (run.stopped_at !== null) {
+    return { id: run.id, status: "stopped", stoppedAt: run.stopped_at.toISOString() };
+  }
+  if (run.superseded_at !== null) {
+    return { id: run.id, status: "stopped", stoppedAt: run.superseded_at.toISOString() };
+  }
   return run.started_at === null
     ? { id: run.id, status: "queued" }
     : { id: run.id, status: "running" };
@@ -923,10 +871,7 @@ export const chatMessagesResponseFromRows = (
   );
   const sourceByIdentity = new Map<string, SourceRow>();
   for (const sourceRow of sourceRows) {
-    if (!assistantMessageIds.has(sourceRow.assistant_message_id)) {
-      throw new Error("persisted source does not belong to an assistant message");
-    }
-    const identity = `${sourceRow.assistant_message_id}\u0000${sourceRow.source_key}`;
+    const identity = `${sourceRow.run_id}\u0000${sourceRow.source_key}`;
     if (sourceByIdentity.has(identity)) {
       throw new Error("duplicate persisted source key");
     }
@@ -947,7 +892,7 @@ export const chatMessagesResponseFromRows = (
     ) {
       throw new Error("invalid persisted source use metrics");
     }
-    const identity = `${use.assistant_message_id}\u0000${use.source_key}`;
+    const identity = `${use.run_id}\u0000${use.source_key}`;
     if (!sourceByIdentity.has(identity)) {
       throw new Error("persisted source use has no source");
     }
@@ -969,7 +914,16 @@ export const chatMessagesResponseFromRows = (
   }
   validateConsumerContextOrders(useRows);
   for (const sourceRow of sourceRows) {
-    const identity = `${sourceRow.assistant_message_id}\u0000${sourceRow.source_key}`;
+    if (
+      sourceRow.assistant_message_id === null ||
+      !assistantMessageIds.has(sourceRow.assistant_message_id)
+    ) {
+      // The run-owned evidence survives deletion of its visible assistant
+      // projection. It remains available to debug and retention jobs, but it
+      // is not a visible chat message.
+      continue;
+    }
+    const identity = `${sourceRow.run_id}\u0000${sourceRow.source_key}`;
     if ((usesByIdentity.get(identity)?.length ?? 0) === 0) {
       throw new Error("persisted source has no source use");
     }
@@ -977,20 +931,28 @@ export const chatMessagesResponseFromRows = (
   const sourcesByAssistantMessage = new Map<string, PublicSourceRecord[]>();
   const citationQuotesByAssistantMessage = new Map<string, Map<string, PublicCitationQuote>>();
   for (const sourceRow of sourceRows) {
+    if (
+      sourceRow.assistant_message_id === null ||
+      !assistantMessageIds.has(sourceRow.assistant_message_id)
+    ) {
+      // Run-owned evidence without a visible assistant projection remains
+      // durable but must not be decoded into the public chat response.
+      continue;
+    }
     sourceOrdinalFromKey(sourceRow.source_key);
     assertRunCitationNamespace(sourceRow);
-    const uses = [
-      ...usesByIdentity.get(`${sourceRow.assistant_message_id}\u0000${sourceRow.source_key}`)!,
-    ].sort((left, right) => left.context_order - right.context_order);
+    const uses = [...usesByIdentity.get(`${sourceRow.run_id}\u0000${sourceRow.source_key}`)!].sort(
+      (left, right) => left.context_order - right.context_order,
+    );
     const source = publicSourceFromRow(sourceRow, uses, messages);
     assertSourceIdentityDigest(sourceRow);
-    const rows = sourcesByAssistantMessage.get(sourceRow.assistant_message_id) ?? [];
+    const assistantMessageId = sourceRow.assistant_message_id;
+    const rows = sourcesByAssistantMessage.get(assistantMessageId) ?? [];
     rows.push(source);
-    sourcesByAssistantMessage.set(sourceRow.assistant_message_id, rows);
-    const quotes =
-      citationQuotesByAssistantMessage.get(sourceRow.assistant_message_id) ?? new Map();
+    sourcesByAssistantMessage.set(assistantMessageId, rows);
+    const quotes = citationQuotesByAssistantMessage.get(assistantMessageId) ?? new Map();
     quotes.set(sourceRow.source_key, citationQuoteForSource(sourceRow, source, uses, messages));
-    citationQuotesByAssistantMessage.set(sourceRow.assistant_message_id, quotes);
+    citationQuotesByAssistantMessage.set(assistantMessageId, quotes);
   }
   for (const [assistantMessageId, sources] of sourcesByAssistantMessage) {
     sources.sort((left, right) => {
@@ -998,7 +960,8 @@ export const chatMessagesResponseFromRows = (
         useRows
           .filter(
             (use) =>
-              use.assistant_message_id === assistantMessageId && use.source_key === sourceKey,
+              use.run_id === runsByAssistantMessage.get(assistantMessageId)?.id &&
+              use.source_key === sourceKey,
           )
           .map((use) => ({
             topic: use.topic_id === null ? 0 : topicOrder[use.topic_id],

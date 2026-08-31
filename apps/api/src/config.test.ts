@@ -24,28 +24,12 @@ describe("API configuration", () => {
     );
   });
 
-  it("keeps optional advanced development integrations strictly validated", async () => {
-    await expect(loadFrom({ AUTH_MODE: "clerk" })).rejects.toThrow(
-      "CLERK_SECRET_KEY and CLERK_PUBLISHABLE_KEY are required",
-    );
-    await expect(
-      loadFrom({
-        AUTH_MODE: "clerk",
-        CLERK_SECRET_KEY: "secret",
-        CLERK_PUBLISHABLE_KEY: "publishable",
-        CORS_ALLOWED_ORIGINS: "https://hartlib.example/path",
-      }),
-    ).rejects.toThrow("exact web origins");
-  });
-
   it("uses one sanitized blocker while production decisions are unresolved", async () => {
     const secret = "must-not-appear-in-an-error";
     const result = await loadFrom({
       NODE_ENV: "production",
       ZAI_API_KEY: secret,
       TINYFISH_API_KEY: secret,
-      CLERK_SECRET_KEY: secret,
-      STRIPE_SECRET_KEY: secret,
       DATABASE_URL: `postgres://hartlib:${secret}@db.example/hartlib`,
     }).then(
       () => null,

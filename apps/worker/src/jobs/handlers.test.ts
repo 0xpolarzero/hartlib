@@ -66,7 +66,7 @@ const runInIsolatedDatabase = <A, E>(effect: Effect.Effect<A, E, never>): Promis
   );
 
 describe("AI provider service identity", () => {
-  it("distinguishes the exact official endpoint, custom OpenAI-compatible endpoints, and tests", async () => {
+  it("distinguishes the official endpoint and deterministic test service", async () => {
     const { providerServiceIdForConfig } = await import("./handlers");
     expect(
       providerServiceIdForConfig({
@@ -76,12 +76,6 @@ describe("AI provider service identity", () => {
     ).toBe("zai_coding_plan_official");
     expect(
       providerServiceIdForConfig({
-        aiE2eFakeProvider: false,
-        aiBaseUrl: "https://compatible.example/v1",
-      } as WorkerConfig),
-    ).toBe("openai_compatible_custom");
-    expect(
-      providerServiceIdForConfig({
         nodeEnv: "test",
         aiE2eFakeProvider: true,
         aiBaseUrl: "https://api.z.ai/api/coding/paas/v4",
@@ -89,7 +83,7 @@ describe("AI provider service identity", () => {
     ).toBe("deterministic_test");
   });
 
-  it("binds custom provider identity to its exact configured endpoint", async () => {
+  it("binds the official provider identity to its exact configured endpoint", async () => {
     const { providerEndpointIdentityForConfig } = await import("./handlers");
     const endpointA = providerEndpointIdentityForConfig({
       nodeEnv: "development",
@@ -101,8 +95,8 @@ describe("AI provider service identity", () => {
       aiE2eFakeProvider: false,
       aiBaseUrl: "https://compatible-b.example/v1",
     } as WorkerConfig);
-    expect(endpointA).toBe("openai_compatible_custom:https://compatible-a.example/v1");
-    expect(endpointB).toBe("openai_compatible_custom:https://compatible-b.example/v1");
+    expect(endpointA).toBe("zai_coding_plan_official:https://compatible-a.example/v1");
+    expect(endpointB).toBe("zai_coding_plan_official:https://compatible-b.example/v1");
     expect(endpointA).not.toBe(endpointB);
   });
 
@@ -145,9 +139,10 @@ const createAiRun = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const userId = `handler-user-${crypto.randomUUID()}`;
   const companyId = crypto.randomUUID();
+  const citationNamespace = `cn_${crypto.randomUUID().replaceAll("-", "").slice(0, 22)}`;
   yield* sql`
-    insert into platform_users (id, primary_email, display_name, clerk_user_id)
-    values (${userId}, ${`${userId}@hartlib.test`}, 'Handler test user', ${`clerk-${userId}`})
+    insert into platform_users (id, primary_email, display_name)
+    values (${userId}, ${`${userId}@hartlib.test`}, 'Handler test user')
   `;
   yield* sql`
     insert into client_companies (id, name)
@@ -174,9 +169,10 @@ const createAiRun = Effect.gen(function* () {
   `;
   const runRows = yield* sql<{ readonly id: string }>`
     insert into ai_runs (
-      chat_id, initiating_user_id, user_message_id, locale, market, acceptance_scope
+      chat_id, initiating_user_id, user_message_id, locale, market, citation_namespace, acceptance_scope
     ) values (
       ${chatId}, ${userId}, ${messageRows[0]!.id}, 'en-US', 'US',
+      ${citationNamespace},
       ${sql.json(
         makeRunAcceptanceScope({
           userId,

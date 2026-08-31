@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { isDocsPath } from "./docs-path";
 
 describe("docs path", () => {
-  it("recognizes both standalone docs paths", () => {
+  it("recognizes only the exact standalone docs path", () => {
     expect(isDocsPath("/docs")).toBe(true);
-    expect(isDocsPath("/docs/")).toBe(true);
+    expect(isDocsPath("/docs/")).toBe(false);
   });
 
   it("does not reserve localized or nested docs paths", () => {

@@ -91,7 +91,6 @@ const NormalizedDocumentRangesSchema = z
   });
 const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const PublicDocumentSourceIdSchema = z.string().regex(/^public:[^:\s]+$/u);
-const PublisherDocumentSourceIdSchema = z.string().regex(/^publisher:[^:\s]+$/u);
 const ConversationEntrySchema = z.union([
   z.strictObject({
     turnId: z.string(),
@@ -210,8 +209,7 @@ const ProviderMessageSchema = z.union([
 ]);
 const ProviderRequestSchema = z.strictObject({
   requestClass: z.enum(["fast", "main"]),
-  // Smithers output is durable live chat state. Historical GLM-5.2 captures
-  // are evaluation-only and must fail closed before a resumed Pi call.
+  // Smithers output is durable live chat state and only the current model is accepted.
   model: z.literal("glm-5-turbo"),
   messages: z.array(ProviderMessageSchema),
   tools: z
@@ -239,9 +237,6 @@ const DocumentCandidateSchema = z
     sourceId: z.string(),
     documentId: z.string(),
     snapshotId: z.string(),
-    publisherExtractionId: z.string().trim().min(1).optional(),
-    publisherIssueId: z.string().optional(),
-    publisherDocumentId: z.string().optional(),
     contentHash: Sha256HexSchema,
     text: z.string(),
     ranges: NormalizedDocumentRangesSchema,
@@ -250,39 +245,7 @@ const DocumentCandidateSchema = z
     renderedTokenCount: z.number().int().nonnegative(),
   })
   .superRefine((candidate, context) => {
-    const hasPublisherIssue = candidate.publisherIssueId !== undefined;
-    const hasPublisherDocument = candidate.publisherDocumentId !== undefined;
-    if (hasPublisherIssue !== hasPublisherDocument) {
-      context.addIssue({
-        code: "custom",
-        path: ["publisherIssueId"],
-        message: "publisher document identity must include both publisher fields",
-      });
-      return;
-    }
-    if (hasPublisherIssue) {
-      if (candidate.publisherExtractionId === undefined) {
-        context.addIssue({
-          code: "custom",
-          path: ["publisherExtractionId"],
-          message: "publisher document candidates require an extraction binding",
-        });
-      }
-      if (!PublisherDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
-        context.addIssue({
-          code: "custom",
-          path: ["sourceId"],
-          message: "publisher document candidates require a canonical publisher sourceId",
-        });
-      }
-      if (candidate.publisherDocumentId !== candidate.documentId) {
-        context.addIssue({
-          code: "custom",
-          path: ["publisherDocumentId"],
-          message: "publisherDocumentId must equal documentId",
-        });
-      }
-    } else if (!PublicDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
+    if (!PublicDocumentSourceIdSchema.safeParse(candidate.sourceId).success) {
       context.addIssue({
         code: "custom",
         path: ["sourceId"],
@@ -357,30 +320,8 @@ const PublicDocumentLocatorSchema = z.strictObject({
   contentHash: Sha256HexSchema,
   ranges: NormalizedDocumentRangesSchema,
 });
-const PublisherDocumentLocatorSchema = z
-  .strictObject({
-    kind: z.literal("document"),
-    sourceId: PublisherDocumentSourceIdSchema,
-    documentId: z.string(),
-    snapshotId: z.string(),
-    contentHash: Sha256HexSchema,
-    ranges: NormalizedDocumentRangesSchema,
-    publisherExtractionId: z.string().trim().min(1),
-    publisherIssueId: z.string().trim().min(1),
-    publisherDocumentId: z.string().trim().min(1),
-  })
-  .superRefine((locator, context) => {
-    if (locator.publisherDocumentId !== locator.documentId) {
-      context.addIssue({
-        code: "custom",
-        path: ["publisherDocumentId"],
-        message: "publisherDocumentId must equal documentId",
-      });
-    }
-  });
 const SourceLocatorSchema = z.union([
   PublicDocumentLocatorSchema,
-  PublisherDocumentLocatorSchema,
   z.strictObject({ kind: z.literal("chat_message"), messageId: z.string() }),
   z.strictObject({ kind: z.literal("memory"), memoryId: z.string(), memoryRevisionId: z.string() }),
   z.strictObject({
@@ -458,12 +399,7 @@ const sourceMatchesCandidate = (
         source.locator.documentId === candidate.documentId &&
         source.locator.snapshotId === candidate.snapshotId &&
         source.locator.contentHash === candidate.contentHash &&
-        characterRangesEqual(source.locator.ranges, candidate.ranges) &&
-        (candidate.publisherIssueId === undefined ||
-          ("publisherIssueId" in source.locator &&
-            source.locator.publisherIssueId === candidate.publisherIssueId &&
-            source.locator.publisherDocumentId === candidate.publisherDocumentId &&
-            source.locator.publisherExtractionId === candidate.publisherExtractionId))
+        characterRangesEqual(source.locator.ranges, candidate.ranges)
       );
     case "chat_message":
       return (
@@ -527,13 +463,8 @@ const candidateMatchesLedgerEntry = (
   switch (candidate.kind) {
     case "document":
       return (
-        (identity.kind === "public_document" || identity.kind === "publisher_document") &&
-        (identity.kind === "public_document"
-          ? candidate.sourceId === identity.sourceId
-          : candidate.sourceId === `publisher:${identity.subscriptionId}` &&
-            candidate.publisherIssueId === identity.issueId &&
-            candidate.publisherDocumentId === identity.documentId &&
-            candidate.publisherExtractionId === identity.publisherExtractionId) &&
+        identity.kind === "public_document" &&
+        candidate.sourceId === identity.sourceId &&
         identity.documentId === candidate.documentId &&
         identity.snapshotId === candidate.snapshotId &&
         identity.contentHash === candidate.contentHash
@@ -578,19 +509,6 @@ const ledgerEntryMatchesSource = (
       locator.documentId === identity.documentId &&
       locator.snapshotId === identity.snapshotId &&
       locator.contentHash === identity.contentHash
-    );
-  }
-  if (identity.kind === "publisher_document") {
-    return (
-      locator.kind === "document" &&
-      locator.sourceId === `publisher:${identity.subscriptionId}` &&
-      locator.documentId === identity.documentId &&
-      locator.snapshotId === identity.snapshotId &&
-      locator.contentHash === identity.contentHash &&
-      "publisherIssueId" in locator &&
-      locator.publisherIssueId === identity.issueId &&
-      locator.publisherDocumentId === identity.documentId &&
-      locator.publisherExtractionId === identity.publisherExtractionId
     );
   }
   if (identity.kind === "chat_message") {
@@ -1035,15 +953,6 @@ const StructuredRetrievalIdentitySchema = z.discriminatedUnion("kind", [
     contentHash: Sha256HexSchema,
   }),
   z.strictObject({
-    kind: z.literal("publisher_document"),
-    subscriptionId: z.string().min(1),
-    issueId: z.string().min(1),
-    documentId: z.string().min(1),
-    snapshotId: z.string().min(1),
-    publisherExtractionId: z.string().min(1),
-    contentHash: Sha256HexSchema,
-  }),
-  z.strictObject({
     kind: z.literal("chat_message"),
     messageId: z.string().min(1),
     sanitizedContentHash: Sha256HexSchema,
@@ -1062,7 +971,6 @@ const StructuredPhysicalValueSchema = z.strictObject({
   text: z.string(),
   snapshotId: z.string().min(1),
   contentHash: Sha256HexSchema,
-  publisherExtractionId: z.string().min(1).optional(),
   fastTokenCount: z.number().int().nonnegative(),
   mainTokenCount: z.number().int().nonnegative(),
   previewBytes: z.union([z.instanceof(Uint8Array), z.array(z.number().int().nonnegative())]),
@@ -1106,7 +1014,6 @@ const StructuredPreviewExposureSchema = z.strictObject({
   identity: StructuredRetrievalIdentitySchema,
   snapshotId: z.string().min(1),
   contentHash: Sha256HexSchema,
-  publisherExtractionId: z.string().min(1).optional(),
   previewRanges: z.array(CharacterRangeSchema),
   previewBytes: z.union([z.instanceof(Uint8Array), z.array(z.number().int().nonnegative())]),
   fastTokenCount: z.number().int().nonnegative(),
@@ -1165,7 +1072,7 @@ export const aiChatSchemas = {
     retryable: z.boolean(),
   }),
   aiChatFinalize: z.strictObject({
-    status: z.enum(["succeeded", "failed"]),
+    status: z.enum(["succeeded", "failed", "stopped"]),
     assistantMessageId: z.string().optional(),
     code: z.string().optional(),
     alreadyTerminal: z.boolean(),
@@ -2348,17 +2255,25 @@ export function buildAiChatWorkflow(
                     ) as MemoryExtractionArtifact,
                     `ai-chat:${load().aiRunId}`,
                   );
-                  return terminal.status === "succeeded"
-                    ? {
-                        status: "succeeded" as const,
-                        assistantMessageId: terminal.assistantMessageId,
-                        alreadyTerminal: terminal.alreadyTerminal,
-                      }
-                    : {
-                        status: "failed" as const,
-                        code: terminal.code,
-                        alreadyTerminal: terminal.alreadyTerminal,
-                      };
+                  if (terminal.status === "succeeded") {
+                    return {
+                      status: "succeeded" as const,
+                      assistantMessageId: terminal.assistantMessageId,
+                      alreadyTerminal: terminal.alreadyTerminal,
+                    };
+                  }
+                  if (terminal.status === "failed") {
+                    return {
+                      status: "failed" as const,
+                      code: terminal.code,
+                      alreadyTerminal: terminal.alreadyTerminal,
+                    };
+                  }
+                  return {
+                    status: "stopped" as const,
+                    assistantMessageId: terminal.assistantMessageId ?? undefined,
+                    alreadyTerminal: terminal.alreadyTerminal,
+                  };
                 }}
               </Task>
             </Sequence>

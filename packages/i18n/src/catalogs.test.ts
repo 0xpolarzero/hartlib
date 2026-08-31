@@ -20,12 +20,32 @@ describe("localization catalogs", () => {
     expect(messageForLocale("fr-FR", "web.error.reload")).toBe("Recharger");
   });
 
-  it("keeps reset copy focused on archiving in both locales", () => {
-    expect(enUS["action.reset"]).toBe("Start a new chat");
-    expect(frFR["action.reset"]).toBe("Démarrer un nouveau chat");
-    expect(enUS["chat.resetArchiveNotice"]).toContain("does not delete");
-    expect(frFR["chat.resetArchiveNotice"]).toContain("ne la supprime pas");
-    expect(enUS["web.chat.archivedReadOnly"]).toContain("read-only");
-    expect(frFR["web.chat.archivedReadOnly"]).toContain("lecture seule");
+  it("keeps reset copy focused on the destructive demo reset", () => {
+    expect(enUS["action.reset"]).toBe("Reset demo");
+    expect(frFR["action.reset"]).toBe("Réinitialiser la démo");
+    expect(enUS["action.reset.tooltip"]).toContain("Revoke");
+    expect(frFR["action.reset.tooltip"]).toContain("Révoquez");
+    expect(enUS["chat.resetFailed"]).toContain("reset");
+    expect(frFR["chat.resetFailed"]).toContain("réinitialiser");
+  });
+
+  it("contains labels for the language picker", () => {
+    expect(enUS["ui.languageEnglish"]).toBe("English");
+    expect(enUS["ui.languageFrench"]).toBe("French");
+    expect(frFR["ui.languageEnglish"]).toBe("Anglais");
+    expect(frFR["ui.languageFrench"]).toBe("Français");
+  });
+
+  it("contains the dormant publisher fixture labels", () => {
+    expect(enUS["fixture.publisherTitle"]).toBe("Publisher fixture");
+    expect(frFR["fixture.publisherTitle"]).toBe("Aperçu éditeur");
+    expect(enUS["fixture.publicationDeliveryDescription"]).toContain("subscribers");
+    expect(frFR["fixture.validationErrorsDescription"]).toContain("adresse");
+  });
+
+  it("contains localized breadcrumb and retry labels", () => {
+    expect(enUS["ui.breadcrumb"]).toBe("Breadcrumb");
+    expect(frFR["ui.breadcrumb"]).toBe("Fil d’Ariane");
+    expect(frFR["ui.retry"]).toBe("Réessayer");
   });
 });

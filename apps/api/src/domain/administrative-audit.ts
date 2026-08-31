@@ -34,30 +34,6 @@ interface AdministrativeAuditScope {
   readonly scopeId: string;
 }
 
-const record = (value: unknown): Readonly<Record<string, unknown>> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Readonly<Record<string, unknown>>)
-    : null;
-
-const nestedString = (value: unknown, parent: string, field: string): string | null => {
-  const outer = record(value);
-  const inner = record(outer?.[parent]);
-  return typeof inner?.[field] === "string" ? inner[field] : null;
-};
-
-const responseBody = (response: Response) =>
-  Effect.tryPromise(() => response.clone().json() as Promise<unknown>).pipe(
-    Effect.catch(() => Effect.succeed(null)),
-  );
-
-const requiredScope = (
-  scopeKind: string,
-  scopeId: string | null,
-): Effect.Effect<AdministrativeAuditScope, Error> =>
-  scopeId === null || scopeId.trim() === ""
-    ? Effect.fail(new Error("administrative_audit_scope_unresolvable"))
-    : Effect.succeed({ scopeKind, scopeId });
-
 const fallbackScope = (
   policy: AdministrativeMutationAuditPolicy,
   pathParameters: DecodedPathParameters,
@@ -67,82 +43,14 @@ const fallbackScope = (
 });
 
 const expectedScope = (
-  route: Route,
+  _route: Route,
   policy: AdministrativeMutationAuditPolicy,
-  response: Response,
+  _response: Response,
   pathParameters: DecodedPathParameters,
-  input: DecodedRouteInput | null,
-  outcome: "succeeded" | "denied",
+  _input: DecodedRouteInput | null,
+  _outcome: "succeeded" | "denied",
 ): Effect.Effect<AdministrativeAuditScope, Error> =>
-  Effect.gen(function* () {
-    const body = record(input?.body);
-    switch (`${route.method} ${route.path}`) {
-      case "POST /v1/exports":
-        if (
-          response.status !== 400 &&
-          typeof body?.scopeKind === "string" &&
-          typeof body.scopeId === "string"
-        ) {
-          return { scopeKind: body.scopeKind, scopeId: body.scopeId };
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/platform/support/grants":
-        if (typeof body?.scopeKind === "string" && typeof body.scopeId === "string") {
-          return { scopeKind: body.scopeKind, scopeId: body.scopeId };
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/client-companies/:companyId/ai-usage-requests":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "ai_usage_request",
-            nestedString(yield* responseBody(response), "request", "id"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/platform/company-deletion-requests/:requestId/decision":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "client_company",
-            nestedString(yield* responseBody(response), "request", "clientCompanyId"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/publisher-companies/:companyId/subscriptions":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "publisher_subscription",
-            nestedString(yield* responseBody(response), "subscription", "id"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/publisher-subscriptions/:subscriptionId/issues":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "publisher_issue",
-            nestedString(yield* responseBody(response), "issue", "id"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/publisher-issues/:issueId/documents":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "hartlib_document",
-            nestedString(yield* responseBody(response), "document", "id"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      case "POST /v1/platform/publisher-companies":
-        if (outcome === "succeeded") {
-          return yield* requiredScope(
-            "publisher_company",
-            nestedString(yield* responseBody(response), "onboarding", "companyId"),
-          );
-        }
-        return fallbackScope(policy, pathParameters);
-      default:
-        return fallbackScope(policy, pathParameters);
-    }
-  });
+  Effect.succeed(fallbackScope(policy, pathParameters));
 
 const responseReason = (response: Response) =>
   Effect.gen(function* () {
@@ -192,7 +100,9 @@ export const ensureAdministrativeMutationAudit = (
 
   return Effect.gen(function* () {
     const config = yield* loadApiConfig;
-    const authentication = yield* resolveRequestIdentity(request, config);
+    const authentication = yield* resolveRequestIdentity(request, config, {
+      databaseLayer: pgLayer,
+    });
     if (!authentication.authenticated) return;
 
     const id = requestId(request);

@@ -9,9 +9,6 @@ import { runMigrations } from "@hartlib/database/migrations";
 import { DatabaseMigrationLayer } from "./db/migrate";
 import { PublicSourceIngestionRepositoryPgLayer } from "./source-ingestion/pg-repository";
 import { runPublicSourcePolling, runPublicSourceStartupBackfill } from "./source-ingestion/watcher";
-import { PlatformFileStoreLive } from "./platform/file-store";
-import { PdfTextExtractorLive } from "./platform/pdf-text";
-import { ExportObjectStoreServiceLive, NotificationEmailServiceLive } from "./platform/adapters";
 import { initializeWorkerTelemetry } from "./telemetry";
 import { createAiChatSmithersStorage } from "./ai/smithers-interop";
 import { aiChatSchemas } from "./ai/workflow/ai-chat";
@@ -85,10 +82,6 @@ BunRuntime.runMain(
   program.pipe(
     Effect.provide(JobRepositoryPgLayer),
     Effect.provide(PublicSourceIngestionRepositoryPgLayer),
-    Effect.provide(PlatformFileStoreLive),
-    Effect.provide(PdfTextExtractorLive),
-    Effect.provide(NotificationEmailServiceLive),
-    Effect.provide(ExportObjectStoreServiceLive),
     Effect.provide(DatabaseMigrationLayer),
     Effect.provide(JsonLoggerLayer),
     Effect.annotateLogs(serviceLogFields),

@@ -2,7 +2,7 @@ import { Config, Effect, Redacted, Schema } from "effect";
 
 export const LOCAL_DATABASE_URL = "postgres://hartlib:hartlib@localhost:5432/hartlib";
 export const LOCAL_E2E_DATABASE_URL = "postgres://hartlib:hartlib@localhost:5432/hartlib_e2e";
-export const LOCAL_APP_BASE_URL = "http://localhost:5173";
+const LOCAL_APP_BASE_URL = "http://localhost:5173";
 export const LOCAL_CORS_ALLOWED_ORIGINS = [
   LOCAL_APP_BASE_URL,
   LOCAL_APP_BASE_URL.replace("localhost", "127.0.0.1"),
@@ -18,7 +18,6 @@ export const WORKER_JOB_LOCK_TIMEOUT_MS_DEFAULT = 15 * 60 * 1_000;
 export const SERVER_NUMERIC_SETTING_HARD_MAXIMA = {
   PORT: 65_535,
   WORKER_JOB_LOCK_TIMEOUT_MS: 3_600_000,
-  EXPORT_DOWNLOAD_TTL_MS: 31 * 86_400_000,
   PUBLIC_SOURCE_AUDIT_FETCH_TIMEOUT_MS: 600_000,
 } as const;
 export const WORKER_NUMERIC_SETTING_HARD_MAXIMA = {
@@ -86,12 +85,6 @@ const publisherObjectStorageFields = {
   RAILWAY_BUCKET_ACCESS_KEY_ID: StringWithDefault(""),
   RAILWAY_BUCKET_SECRET_ACCESS_KEY: StringWithDefault(""),
 } as const;
-const exportObjectStorageFields = {
-  EXPORT_BUCKET_ENDPOINT: StringWithDefault(""),
-  EXPORT_BUCKET_NAME: StringWithDefault(""),
-  EXPORT_BUCKET_ACCESS_KEY_ID: StringWithDefault(""),
-  EXPORT_BUCKET_SECRET_ACCESS_KEY: StringWithDefault(""),
-} as const;
 
 const commaSeparatedUniqueValues = (value: string): readonly string[] => [
   ...new Set(
@@ -101,24 +94,6 @@ const commaSeparatedUniqueValues = (value: string): readonly string[] => [
       .filter((item) => item.length > 0),
   ),
 ];
-
-const parseExactHttpsUrl = (name: string, value: string): Effect.Effect<URL, Error> =>
-  Effect.gen(function* () {
-    const url = yield* Effect.try({
-      try: () => new URL(value),
-      catch: () => new Error(`${name} must be an exact HTTPS URL`),
-    });
-    if (
-      url.protocol !== "https:" ||
-      url.username !== "" ||
-      url.password !== "" ||
-      url.hash !== "" ||
-      url.toString() !== value
-    ) {
-      return yield* Effect.fail(new Error(`${name} must be an exact HTTPS URL`));
-    }
-    return url;
-  });
 
 const parseCredentialFreeHttpsBaseUrl = (
   name: string,
@@ -178,36 +153,6 @@ const parseObjectStorageEndpoint = (
     return url.origin;
   });
 
-const exactStorageCompleteness = (
-  name: string,
-  values: readonly string[],
-): Effect.Effect<boolean, Error> => {
-  const populated = values.map((value) => value.trim() !== "");
-  if (populated.some(Boolean) && !populated.every(Boolean)) {
-    return Effect.fail(
-      new Error(`${name} must be either completely configured or completely empty`),
-    );
-  }
-  return Effect.succeed(populated.every(Boolean));
-};
-
-const assertDedicatedExportBucket = (input: {
-  readonly publisherConfigured: boolean;
-  readonly publisherEndpoint: string;
-  readonly publisherBucket: string;
-  readonly exportConfigured: boolean;
-  readonly exportEndpoint: string;
-  readonly exportBucket: string;
-}): Effect.Effect<void, Error> =>
-  input.publisherConfigured &&
-  input.exportConfigured &&
-  input.publisherEndpoint === input.exportEndpoint &&
-  input.publisherBucket === input.exportBucket
-    ? Effect.fail(
-        new Error("EXPORT_BUCKET_ENDPOINT and EXPORT_BUCKET_NAME must identify a dedicated bucket"),
-      )
-    : Effect.void;
-
 const ApiEnvironment = Schema.Struct({
   HOST: StringWithDefault("0.0.0.0"),
   PORT: NumberWithDefault(3000),
@@ -218,24 +163,8 @@ const ApiEnvironment = Schema.Struct({
   AI_E2E_FAKE_PROVIDER: BooleanWithDefault(false),
   AI_BASE_URL: StringWithDefault(ZAI_CODING_PLAN_BASE_URL),
   AI_WEB_MAX_DOMAIN_FILTERS: NumberWithDefault(AI_WEB_MAX_DOMAIN_FILTERS_DEFAULT),
-  AUTH_MODE: Schema.optional(Schema.String),
-  CLERK_SECRET_KEY: StringWithDefault(""),
-  CLERK_PUBLISHABLE_KEY: StringWithDefault(""),
-  CLERK_AUTHORIZED_PARTIES: StringWithDefault(""),
-  CLERK_WEBHOOK_SIGNING_SECRET: StringWithDefault(""),
-  CLERK_INVITATION_REDIRECT_URL: StringWithDefault(""),
-  STRIPE_SECRET_KEY: StringWithDefault(""),
-  STRIPE_WEBHOOK_SECRET: StringWithDefault(""),
-  STRIPE_PRICE_LIGHT: StringWithDefault(""),
-  STRIPE_PRICE_TEAM: StringWithDefault(""),
-  STRIPE_PRICE_INTENSIVE: StringWithDefault(""),
-  STRIPE_PRICE_ADDITIONAL_CREDIT: StringWithDefault(""),
-  STRIPE_CHECKOUT_SUCCESS_URL: StringWithDefault(""),
-  STRIPE_CHECKOUT_CANCEL_URL: StringWithDefault(""),
-  STRIPE_PORTAL_RETURN_URL: StringWithDefault(""),
   CORS_ALLOWED_ORIGINS: Schema.optional(Schema.String),
   ...publisherObjectStorageFields,
-  ...exportObjectStorageFields,
   ...databaseFields,
   SENTRY_DSN: StringWithDefault(""),
 });
@@ -248,29 +177,10 @@ export interface ApiConfig {
   readonly aiStreamKeepAliveMs: number;
   readonly webResearchProvider: "tinyfish" | null;
   readonly aiWebMaxDomainFilters: number;
-  readonly aiProviderServiceId:
-    | "zai_coding_plan_official"
-    | "deterministic_test"
-    | "openai_compatible_custom";
+  readonly aiProviderServiceId: "zai_coding_plan_official" | "deterministic_test";
   readonly aiProviderEndpointIdentity: string;
-  readonly authMode: "demo" | "clerk";
-  readonly clerkSecretKey: string;
-  readonly clerkPublishableKey: string;
-  readonly clerkAuthorizedParties: readonly string[];
-  readonly clerkWebhookSigningSecret: string;
-  readonly clerkInvitationRedirectUrl: string;
-  readonly stripeSecretKey: string;
-  readonly stripeWebhookSecret: string;
-  readonly stripePriceLight: string;
-  readonly stripePriceTeam: string;
-  readonly stripePriceIntensive: string;
-  readonly stripePriceAdditionalCredit: string;
-  readonly stripeCheckoutSuccessUrl: string;
-  readonly stripeCheckoutCancelUrl: string;
-  readonly stripePortalReturnUrl: string;
   readonly corsAllowedOrigins: readonly string[];
   readonly objectStorageConfigured: boolean;
-  readonly exportObjectStorageConfigured: boolean;
   readonly sentryDsn: string;
 }
 
@@ -300,11 +210,6 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       raw.RAILWAY_BUCKET_ENDPOINT,
       raw.NODE_ENV,
     );
-    const exportObjectStorageEndpoint = yield* parseObjectStorageEndpoint(
-      "EXPORT_BUCKET_ENDPOINT",
-      raw.EXPORT_BUCKET_ENDPOINT,
-      raw.NODE_ENV,
-    );
     if (
       !Number.isSafeInteger(raw.AI_WEB_MAX_DOMAIN_FILTERS) ||
       raw.AI_WEB_MAX_DOMAIN_FILTERS < 1 ||
@@ -315,29 +220,6 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
           `AI_WEB_MAX_DOMAIN_FILTERS must be an integer between 1 and ${AI_WEB_MAX_DOMAIN_FILTERS_HARD_MAX}`,
         ),
       );
-    }
-
-    const authMode = raw.AUTH_MODE ?? "demo";
-    if (authMode !== "demo" && authMode !== "clerk") {
-      return yield* Effect.fail(new Error("invalid AUTH_MODE"));
-    }
-    if (
-      authMode === "clerk" &&
-      (raw.CLERK_SECRET_KEY.trim() === "" || raw.CLERK_PUBLISHABLE_KEY.trim() === "")
-    ) {
-      return yield* Effect.fail(
-        new Error("CLERK_SECRET_KEY and CLERK_PUBLISHABLE_KEY are required for Clerk auth"),
-      );
-    }
-    const clerkAuthorizedParties = commaSeparatedUniqueValues(raw.CLERK_AUTHORIZED_PARTIES);
-    for (const [name, value] of [
-      ["STRIPE_CHECKOUT_SUCCESS_URL", raw.STRIPE_CHECKOUT_SUCCESS_URL],
-      ["STRIPE_CHECKOUT_CANCEL_URL", raw.STRIPE_CHECKOUT_CANCEL_URL],
-      ["STRIPE_PORTAL_RETURN_URL", raw.STRIPE_PORTAL_RETURN_URL],
-    ] as const) {
-      if (value !== "") {
-        yield* parseExactHttpsUrl(name, value);
-      }
     }
 
     const corsAllowedOrigins = commaSeparatedUniqueValues(
@@ -360,30 +242,12 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
         return yield* Effect.fail(new Error("CORS_ALLOWED_ORIGINS must contain exact web origins"));
       }
     }
-    if (raw.CLERK_INVITATION_REDIRECT_URL !== "") {
-      yield* parseExactHttpsUrl("CLERK_INVITATION_REDIRECT_URL", raw.CLERK_INVITATION_REDIRECT_URL);
-    }
-
     const objectStorageConfigured = [
       publisherObjectStorageEndpoint,
       raw.RAILWAY_BUCKET_NAME,
       raw.RAILWAY_BUCKET_ACCESS_KEY_ID,
       raw.RAILWAY_BUCKET_SECRET_ACCESS_KEY,
     ].every((value) => value.trim() !== "");
-    const exportObjectStorageConfigured = yield* exactStorageCompleteness("EXPORT_BUCKET", [
-      exportObjectStorageEndpoint,
-      raw.EXPORT_BUCKET_NAME,
-      raw.EXPORT_BUCKET_ACCESS_KEY_ID,
-      raw.EXPORT_BUCKET_SECRET_ACCESS_KEY,
-    ]);
-    yield* assertDedicatedExportBucket({
-      publisherConfigured: objectStorageConfigured,
-      publisherEndpoint: publisherObjectStorageEndpoint,
-      publisherBucket: raw.RAILWAY_BUCKET_NAME,
-      exportConfigured: exportObjectStorageConfigured,
-      exportEndpoint: exportObjectStorageEndpoint,
-      exportBucket: raw.EXPORT_BUCKET_NAME,
-    });
     if (raw.SENTRY_DSN !== "") {
       yield* Effect.try({
         try: () => new URL(raw.SENTRY_DSN),
@@ -393,9 +257,7 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
 
     const aiProviderServiceId = raw.AI_E2E_FAKE_PROVIDER
       ? "deterministic_test"
-      : aiBaseUrl === ZAI_CODING_PLAN_BASE_URL
-        ? "zai_coding_plan_official"
-        : "openai_compatible_custom";
+      : "zai_coding_plan_official";
     return {
       host: raw.HOST,
       port: raw.PORT,
@@ -406,24 +268,8 @@ export const loadApiConfig: Effect.Effect<ApiConfig, Config.ConfigError | Error>
       aiWebMaxDomainFilters: raw.AI_WEB_MAX_DOMAIN_FILTERS,
       aiProviderServiceId,
       aiProviderEndpointIdentity: `${aiProviderServiceId}:${aiBaseUrl}`,
-      authMode,
-      clerkSecretKey: raw.CLERK_SECRET_KEY,
-      clerkPublishableKey: raw.CLERK_PUBLISHABLE_KEY,
-      clerkAuthorizedParties,
-      clerkWebhookSigningSecret: raw.CLERK_WEBHOOK_SIGNING_SECRET,
-      clerkInvitationRedirectUrl: raw.CLERK_INVITATION_REDIRECT_URL,
-      stripeSecretKey: raw.STRIPE_SECRET_KEY,
-      stripeWebhookSecret: raw.STRIPE_WEBHOOK_SECRET,
-      stripePriceLight: raw.STRIPE_PRICE_LIGHT,
-      stripePriceTeam: raw.STRIPE_PRICE_TEAM,
-      stripePriceIntensive: raw.STRIPE_PRICE_INTENSIVE,
-      stripePriceAdditionalCredit: raw.STRIPE_PRICE_ADDITIONAL_CREDIT,
-      stripeCheckoutSuccessUrl: raw.STRIPE_CHECKOUT_SUCCESS_URL,
-      stripeCheckoutCancelUrl: raw.STRIPE_CHECKOUT_CANCEL_URL,
-      stripePortalReturnUrl: raw.STRIPE_PORTAL_RETURN_URL,
       corsAllowedOrigins,
       objectStorageConfigured,
-      exportObjectStorageConfigured,
       sentryDsn: raw.SENTRY_DSN,
     } satisfies ApiConfig;
   },
@@ -443,12 +289,7 @@ const WorkerEnvironment = Schema.Struct({
   AI_MAIN_MODEL: LiveAiModelWithDefault,
   AI_FAST_MODEL: LiveAiModelWithDefault,
   TINYFISH_API_KEY: StringWithDefault(""),
-  ...publisherObjectStorageFields,
-  ...exportObjectStorageFields,
   ...databaseFields,
-  RESEND_API_KEY: StringWithDefault(""),
-  RESEND_FROM_EMAIL: StringWithDefault(""),
-  APP_BASE_URL: StringWithDefault(""),
   SENTRY_DSN: StringWithDefault(""),
   AI_MAIN_INPUT_MAX_TOKENS: NumberWithDefault(100_000),
   AI_MAIN_OUTPUT_MAX_TOKENS: NumberWithDefault(16_384),
@@ -490,19 +331,7 @@ export interface WorkerConfig {
   readonly aiFastModel: typeof LIVE_AI_MODEL_ID;
   readonly webResearchProvider: "tinyfish" | "";
   readonly tinyfishApiKey: string;
-  readonly objectStorageEndpoint: string;
-  readonly objectStorageBucket: string;
-  readonly objectStorageAccessKeyId: string;
-  readonly objectStorageSecretAccessKey: string;
-  readonly exportObjectStorageEndpoint: string;
-  readonly exportObjectStorageBucket: string;
-  readonly exportObjectStorageAccessKeyId: string;
-  readonly exportObjectStorageSecretAccessKey: string;
-  readonly exportObjectStorageConfigured: boolean;
   readonly databaseUrl: string;
-  readonly resendApiKey: string;
-  readonly resendFromEmail: string;
-  readonly appBaseUrl: string;
   readonly sentryDsn: string;
   readonly aiMainInputMaxTokens: number;
   readonly aiMainOutputMaxTokens: number;
@@ -572,36 +401,6 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
         return yield* Effect.fail(new Error(`${name} must be an integer between 1 and ${maximum}`));
       }
     }
-    const objectStorageEndpoint = yield* parseObjectStorageEndpoint(
-      "RAILWAY_BUCKET_ENDPOINT",
-      raw.RAILWAY_BUCKET_ENDPOINT,
-      raw.NODE_ENV,
-    );
-    const exportObjectStorageEndpoint = yield* parseObjectStorageEndpoint(
-      "EXPORT_BUCKET_ENDPOINT",
-      raw.EXPORT_BUCKET_ENDPOINT,
-      raw.NODE_ENV,
-    );
-    const objectStorageConfigured = [
-      objectStorageEndpoint,
-      raw.RAILWAY_BUCKET_NAME,
-      raw.RAILWAY_BUCKET_ACCESS_KEY_ID,
-      raw.RAILWAY_BUCKET_SECRET_ACCESS_KEY,
-    ].every((value) => value.trim() !== "");
-    const exportObjectStorageConfigured = yield* exactStorageCompleteness("EXPORT_BUCKET", [
-      exportObjectStorageEndpoint,
-      raw.EXPORT_BUCKET_NAME,
-      raw.EXPORT_BUCKET_ACCESS_KEY_ID,
-      raw.EXPORT_BUCKET_SECRET_ACCESS_KEY,
-    ]);
-    yield* assertDedicatedExportBucket({
-      publisherConfigured: objectStorageConfigured,
-      publisherEndpoint: objectStorageEndpoint,
-      publisherBucket: raw.RAILWAY_BUCKET_NAME,
-      exportConfigured: exportObjectStorageConfigured,
-      exportEndpoint: exportObjectStorageEndpoint,
-      exportBucket: raw.EXPORT_BUCKET_NAME,
-    });
     if (
       !Number.isSafeInteger(raw.AI_WEB_MAX_DOMAIN_FILTERS) ||
       raw.AI_WEB_MAX_DOMAIN_FILTERS < 1 ||
@@ -637,19 +436,7 @@ export const loadWorkerConfig: Effect.Effect<WorkerConfig, Config.ConfigError | 
       webResearchProvider:
         raw.NODE_ENV !== "production" && raw.TINYFISH_API_KEY.trim() !== "" ? "tinyfish" : "",
       tinyfishApiKey: raw.TINYFISH_API_KEY,
-      objectStorageEndpoint,
-      objectStorageBucket: raw.RAILWAY_BUCKET_NAME,
-      objectStorageAccessKeyId: raw.RAILWAY_BUCKET_ACCESS_KEY_ID,
-      objectStorageSecretAccessKey: raw.RAILWAY_BUCKET_SECRET_ACCESS_KEY,
-      exportObjectStorageEndpoint,
-      exportObjectStorageBucket: raw.EXPORT_BUCKET_NAME,
-      exportObjectStorageAccessKeyId: raw.EXPORT_BUCKET_ACCESS_KEY_ID,
-      exportObjectStorageSecretAccessKey: raw.EXPORT_BUCKET_SECRET_ACCESS_KEY,
-      exportObjectStorageConfigured,
       databaseUrl: raw.DATABASE_URL.trim() === "" ? LOCAL_DATABASE_URL : raw.DATABASE_URL,
-      resendApiKey: raw.RESEND_API_KEY,
-      resendFromEmail: raw.RESEND_FROM_EMAIL,
-      appBaseUrl: raw.APP_BASE_URL,
       sentryDsn: raw.SENTRY_DSN,
       aiMainInputMaxTokens: raw.AI_MAIN_INPUT_MAX_TOKENS,
       aiMainOutputMaxTokens: raw.AI_MAIN_OUTPUT_MAX_TOKENS,
@@ -737,92 +524,6 @@ export const loadObjectStorageConfig: Effect.Effect<
         configured,
       };
     }),
-  ),
-);
-
-const ExportObjectStorageEnvironment = Schema.Struct({
-  ...publisherObjectStorageFields,
-  ...exportObjectStorageFields,
-  NODE_ENV: nodeEnvField,
-});
-export interface ExportObjectStorageConfig {
-  readonly endpoint: string;
-  readonly bucket: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-  readonly configured: boolean;
-}
-export const loadExportObjectStorageConfig: Effect.Effect<
-  ExportObjectStorageConfig,
-  Config.ConfigError | Error
-> = Config.schema(ExportObjectStorageEnvironment).pipe(
-  Effect.flatMap((raw) =>
-    Effect.gen(function* () {
-      const publisherEndpoint = yield* parseObjectStorageEndpoint(
-        "RAILWAY_BUCKET_ENDPOINT",
-        raw.RAILWAY_BUCKET_ENDPOINT,
-        raw.NODE_ENV,
-      );
-      const endpoint = yield* parseObjectStorageEndpoint(
-        "EXPORT_BUCKET_ENDPOINT",
-        raw.EXPORT_BUCKET_ENDPOINT,
-        raw.NODE_ENV,
-      );
-      const publisherConfigured = [
-        publisherEndpoint,
-        raw.RAILWAY_BUCKET_NAME,
-        raw.RAILWAY_BUCKET_ACCESS_KEY_ID,
-        raw.RAILWAY_BUCKET_SECRET_ACCESS_KEY,
-      ].every((value) => value.trim() !== "");
-      const configured = yield* exactStorageCompleteness("EXPORT_BUCKET", [
-        endpoint,
-        raw.EXPORT_BUCKET_NAME,
-        raw.EXPORT_BUCKET_ACCESS_KEY_ID,
-        raw.EXPORT_BUCKET_SECRET_ACCESS_KEY,
-      ]);
-      yield* assertDedicatedExportBucket({
-        publisherConfigured,
-        publisherEndpoint,
-        publisherBucket: raw.RAILWAY_BUCKET_NAME,
-        exportConfigured: configured,
-        exportEndpoint: endpoint,
-        exportBucket: raw.EXPORT_BUCKET_NAME,
-      });
-      return {
-        endpoint,
-        bucket: raw.EXPORT_BUCKET_NAME,
-        accessKeyId: raw.EXPORT_BUCKET_ACCESS_KEY_ID,
-        secretAccessKey: raw.EXPORT_BUCKET_SECRET_ACCESS_KEY,
-        configured,
-      };
-    }),
-  ),
-);
-
-const NotificationEnvironment = Schema.Struct({
-  RESEND_API_KEY: StringWithDefault(""),
-  RESEND_FROM_EMAIL: StringWithDefault(""),
-});
-export const loadNotificationConfig = Config.schema(NotificationEnvironment).pipe(
-  Effect.map((raw) => ({ apiKey: raw.RESEND_API_KEY, from: raw.RESEND_FROM_EMAIL })),
-);
-
-const PlatformJobEnvironment = Schema.Struct({
-  APP_BASE_URL: StringWithDefault(LOCAL_APP_BASE_URL),
-  EXPORT_DOWNLOAD_TTL_MS: NumberWithDefault(24 * 60 * 60 * 1_000),
-});
-export const loadPlatformJobConfig = Config.schema(PlatformJobEnvironment).pipe(
-  Effect.flatMap((raw) =>
-    boundedPositiveInteger(
-      "EXPORT_DOWNLOAD_TTL_MS",
-      raw.EXPORT_DOWNLOAD_TTL_MS,
-      SERVER_NUMERIC_SETTING_HARD_MAXIMA.EXPORT_DOWNLOAD_TTL_MS,
-    ).pipe(
-      Effect.map((exportDownloadTtlMs) => ({
-        appBaseUrl: raw.APP_BASE_URL,
-        exportDownloadTtlMs,
-      })),
-    ),
   ),
 );
 

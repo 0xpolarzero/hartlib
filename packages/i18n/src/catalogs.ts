@@ -1,5 +1,5 @@
-import enUS from "./locales/en-US.json";
-import frFR from "./locales/fr-FR.json";
+import enUS from "./locales/en-US.json" with { type: "json" };
+import frFR from "./locales/fr-FR.json" with { type: "json" };
 import type { Locale, Messages } from "./types.js";
 
 /** Canonical UI and transactional-email catalogs keyed by supported locale. */

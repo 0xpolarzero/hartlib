@@ -1490,11 +1490,11 @@ describe("canonical ai-chat workflow source contract", () => {
     ).toBe(false);
   });
 
-  it("rejects a historical model in durable context state before resume", () => {
+  it("rejects a non-current model in durable context state before resume", () => {
     const parsed = aiChatSchemas.aiChatContext.safeParse({
       value: {
         ...context(),
-        request: { ...request, model: "glm-5.2" },
+        request: { ...request, model: "invalid-model" },
       },
     });
     expect(parsed.success).toBe(false);
@@ -1538,32 +1538,13 @@ describe("canonical ai-chat workflow source contract", () => {
       " public:source-1",
       "public:public:source-1",
       "public:source-1\u2003",
-      "publisher:subscription-1",
     ]) {
       expect(parse({ ...document, sourceId }).success, sourceId).toBe(false);
     }
     expect(
       parse({
         ...document,
-        sourceId: "publisher:subscription-1",
-        publisherIssueId: "issue-1",
-        publisherDocumentId: "other-document",
-      }).success,
-    ).toBe(false);
-    expect(
-      parse({
-        ...document,
-        sourceId: "publisher:subscription-1",
-        publisherIssueId: "issue-1",
-        publisherDocumentId: "document-1",
-        publisherExtractionId: "extraction-1",
-      }).success,
-    ).toBe(true);
-    expect(
-      parse({
-        ...document,
-        publisherIssueId: "issue-1",
-        publisherDocumentId: "document-1",
+        unexpectedLegacyField: "issue-1",
       }).success,
     ).toBe(false);
   });
@@ -1616,10 +1597,7 @@ describe("canonical ai-chat workflow source contract", () => {
     for (const acceptanceScope of [
       { ...load.acceptanceScope, chatId: "not-a-uuid" },
       { ...load.acceptanceScope, companyId: "not-a-uuid" },
-      {
-        ...load.acceptanceScope,
-        accessIds: ["00000000-0000-4000-8000-000000000009", "00000000-0000-4000-8000-000000000001"],
-      },
+      { ...load.acceptanceScope, unexpectedField: ["source-a"] } as unknown,
       { ...load.acceptanceScope, forged: true },
     ]) {
       expect(
@@ -1805,110 +1783,6 @@ describe("canonical ai-chat workflow source contract", () => {
           packetOutputTokens: 32,
           synthesisUsableInput: 100,
           fixedSynthesisInput: 10,
-        },
-      }).success,
-    ).toBe(false);
-  });
-
-  it("retains publisher issue/document coordinates in strict durable candidate output", () => {
-    const value = {
-      question: "Compare the evidence.",
-      candidates: [
-        {
-          id: "c1",
-          kind: "document" as const,
-          rank: 0,
-          purpose: "publisher evidence",
-          sourceId: "publisher:source-1",
-          documentId: "document-1",
-          snapshotId: "version-1",
-          publisherIssueId: "issue-1",
-          publisherDocumentId: "document-1",
-          publisherExtractionId: "extraction-1",
-          contentHash: "a".repeat(64),
-          text: "publisher text",
-          ranges: [{ charStart: 0, charEnd: 14 }],
-          label: "Publisher document",
-          publicProvenance: {
-            sourceName: "Publisher",
-            issueTitle: "Issue",
-            documentTitle: "Publisher document",
-            citationUrl: "/v1/issues/issue-1/documents/document-1/content",
-            publishedAt: "2026-07-01T00:00:00.000Z",
-          },
-          renderedTokenCount: 3,
-        },
-      ],
-      candidateLedger: {
-        candidates: [
-          {
-            candidateId: "c1",
-            kind: "document",
-            identity: {
-              kind: "publisher_document",
-              subscriptionId: "source-1",
-              issueId: "issue-1",
-              documentId: "document-1",
-              snapshotId: "version-1",
-              publisherExtractionId: "extraction-1",
-              contentHash: "a".repeat(64),
-            },
-            provenance: {
-              label: "Publisher document",
-              purpose: "publisher evidence",
-              date: "2026-07-01T00:00:00.000Z",
-            },
-            text: "publisher text",
-            baseRanges: [{ charStart: 0, charEnd: 14 }],
-            previewRanges: [{ charStart: 0, charEnd: 14 }],
-            preview: "publisher text",
-            renderedTokenCount: 3,
-          },
-        ],
-      },
-      sourceMap: [
-        {
-          sourceKey: "k_cn_AAAAAAAAAAAAAAAAAAAAAA_1",
-          locator: {
-            kind: "document" as const,
-            sourceId: "publisher:source-1",
-            documentId: "document-1",
-            snapshotId: "version-1",
-            contentHash: "a".repeat(64),
-            ranges: [{ charStart: 0, charEnd: 14 }],
-            publisherIssueId: "issue-1",
-            publisherDocumentId: "document-1",
-            publisherExtractionId: "extraction-1",
-          },
-          label: "Publisher document",
-          publicProvenance: {
-            sourceName: "Publisher",
-            issueTitle: "Issue",
-            documentTitle: "Publisher document",
-            citationUrl: "/v1/issues/issue-1/documents/document-1/content",
-            publishedAt: "2026-07-01T00:00:00.000Z",
-          },
-          uses: [
-            {
-              consumerTaskId: "single-answer",
-              contextOrder: 0,
-              renderedTokenCount: 3,
-              ranges: [{ charStart: 0, charEnd: 14 }],
-            },
-          ],
-        },
-      ],
-      selectedConversation: [],
-      gaps: [],
-      consumerTaskId: "single-answer",
-      requestedOutputTokens: 32,
-    };
-    expect(aiChatSchemas.aiChatAssembly.safeParse({ value }).success).toBe(true);
-    expect(
-      aiChatSchemas.aiChatAssembly.safeParse({
-        value: {
-          ...value,
-          candidates: [{ ...value.candidates[0], publisherIssueId: undefined, forged: true }],
         },
       }).success,
     ).toBe(false);

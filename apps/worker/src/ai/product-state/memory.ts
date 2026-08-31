@@ -157,6 +157,8 @@ const rejectActiveAiRun = (
       where initiating_user_id = ${userId}
         and finished_at is null
         and failed_at is null
+        and stopped_at is null
+        and superseded_at is null
       order by created_at, id
       limit 1
     `;

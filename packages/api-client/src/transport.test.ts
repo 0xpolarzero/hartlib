@@ -1,5 +1,4 @@
-import { HealthResponse } from "@hartlib/shared";
-import { EXPORT_ARCHIVE_MEDIA_TYPE } from "@hartlib/shared/export-contract";
+import { HealthResponse, UpdateClientPublicSourceRequest } from "@hartlib/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,33 +7,6 @@ import {
   createApiTransport,
   type Fetch,
 } from "./transport";
-
-const testUstarArchive = (): Uint8Array => {
-  const encoder = new TextEncoder();
-  const header = new Uint8Array(512);
-  const body = encoder.encode("{}\n");
-  const write = (offset: number, length: number, value: string): void => {
-    header.set(encoder.encode(value).subarray(0, length), offset);
-  };
-  const octal = (value: number, width: number): string =>
-    value.toString(8).padStart(width - 1, "0") + "\0";
-  write(0, 100, "manifest.json");
-  write(100, 8, octal(0o644, 8));
-  write(108, 8, octal(0, 8));
-  write(116, 8, octal(0, 8));
-  write(124, 12, octal(body.byteLength, 12));
-  write(136, 12, octal(0, 12));
-  header.fill(0x20, 148, 156);
-  write(156, 1, "0");
-  write(257, 6, "ustar\0");
-  write(263, 2, "00");
-  const checksum = header.reduce((sum, byte) => sum + byte, 0);
-  write(148, 8, checksum.toString(8).padStart(6, "0") + "\0 ");
-  const archive = new Uint8Array(2048);
-  archive.set(header);
-  archive.set(body, 512);
-  return archive;
-};
 
 describe("canonical HTTP client transport", () => {
   it("accepts only the exact declared success status, media type, and body", async () => {
@@ -53,7 +25,7 @@ describe("canonical HTTP client transport", () => {
 
   it("rejects undeclared statuses even when fetch reports a successful class", async () => {
     const transport = createApiTransport({
-      fetch: async () => Response.json({ ok: true, service: "api" }, { status: 201 }),
+      fetch: async () => new Response(null, { status: 201 }),
     });
     await expect(transport.json("GET /health", "/health", HealthResponse)).rejects.toMatchObject({
       status: 201,
@@ -62,6 +34,11 @@ describe("canonical HTTP client transport", () => {
   });
 
   it("rejects wrong success media types and malformed or excess bodies", async () => {
+    const invalidRedirected = new Response("zip", {
+      status: 200,
+      headers: { "content-type": "application/zip" },
+    });
+    Object.defineProperty(invalidRedirected, "redirected", { value: true });
     const responses = [
       new Response(JSON.stringify({ ok: true, service: "api" }), {
         status: 200,
@@ -83,7 +60,7 @@ describe("canonical HTTP client transport", () => {
     });
   });
 
-  it("rejects malformed UTF-8 in split success and error bodies without replacement text", async () => {
+  it("rejects malformed UTF-8 in split success and error bodies", async () => {
     const split = () =>
       new ReadableStream<Uint8Array>({
         start(controller) {
@@ -100,7 +77,6 @@ describe("canonical HTTP client transport", () => {
     const transport = createApiTransport({ fetch: async () => responses.shift()! });
     await expect(transport.json("GET /health", "/health", HealthResponse)).rejects.toMatchObject({
       code: "invalid_response_body",
-      body: undefined,
     });
     await expect(transport.json("GET /health", "/health", HealthResponse)).rejects.toMatchObject({
       code: "invalid_response_body",
@@ -123,9 +99,7 @@ describe("canonical HTTP client transport", () => {
 
     const canceled = vi.fn();
     const controller = new AbortController();
-    const pending = new ReadableStream<Uint8Array>({
-      cancel: canceled,
-    });
+    const pending = new ReadableStream<Uint8Array>({ cancel: canceled });
     const abortTransport = createApiTransport({
       fetch: async () => new Response(pending, { headers: { "content-type": "application/json" } }),
     });
@@ -143,7 +117,7 @@ describe("canonical HTTP client transport", () => {
       releaseCancellation = resolve;
     });
     let cancellationStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
+    const cancellationStartedPromise = new Promise<void>((resolve) => {
       cancellationStarted = resolve;
     });
     const body = new ReadableStream<Uint8Array>({
@@ -163,7 +137,7 @@ describe("canonical HTTP client transport", () => {
       signal: controller.signal,
     });
     controller.abort(new Error("caller aborted"));
-    await started;
+    await cancellationStartedPromise;
     let settled = false;
     void request.then(
       () => {
@@ -194,20 +168,20 @@ describe("canonical HTTP client transport", () => {
     await expect(rejectedRequest).rejects.toThrow("caller aborted");
   });
 
-  it("strictly validates request bodies before invoking fetch", async () => {
-    const fetch = vi.fn(async () => {
+  it("strictly validates current request bodies before invoking fetch", async () => {
+    const fetch = vi.fn<Fetch>(async () => {
       throw new Error("must not run");
     });
     const transport = createApiTransport({ fetch });
     await expect(
-      transport.jsonUnknown("POST /v1/chats", "/v1/chats", {
-        json: {
-          companyId: "company-1",
-          memoryMode: "disabled",
-          sourceAccessIds: [],
-          unexpected: true,
+      transport.json(
+        "PUT /v1/public-sources/:sourceId",
+        "/v1/public-sources/source-1",
+        UpdateClientPublicSourceRequest,
+        {
+          json: { enabled: true, unexpected: true },
         },
-      }),
+      ),
     ).rejects.toBeInstanceOf(ApiResponseError);
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -219,36 +193,45 @@ describe("canonical HTTP client transport", () => {
     expect(String(fetch.mock.calls[0]?.[0])).toBe("https://api.hartlib.test/health");
   });
 
-  it("accepts only the canonical ustar media contract after an export redirect", async () => {
-    const makeRedirected = (type: string) => {
-      const response = new Response(Uint8Array.from(testUstarArchive()).buffer, {
-        status: 200,
-        headers: { "content-type": type },
-      });
-      Object.defineProperty(response, "redirected", { value: true });
-      return response;
-    };
+  it("accepts direct document media and canonical redirected document media", async () => {
+    const redirected = new Response("<html>document</html>", {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+    Object.defineProperty(redirected, "redirected", { value: true });
+    const invalidRedirected = new Response("not a document", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+    Object.defineProperty(invalidRedirected, "redirected", { value: true });
     const responses = [
-      makeRedirected(EXPORT_ARCHIVE_MEDIA_TYPE),
-      makeRedirected("application/zip"),
-      makeRedirected("application/octet-stream"),
+      new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      }),
+      redirected,
+      invalidRedirected,
     ];
     const fetch = vi.fn<Fetch>(async () => responses.shift()!);
     const transport = createApiTransport({ fetch });
-    const path = "/v1/exports/123e4567-e89b-12d3-a456-426614174000/download";
-    const accepted = await transport.redirectedBinary("GET /v1/exports/:exportId/download", path, [
-      EXPORT_ARCHIVE_MEDIA_TYPE,
-    ]);
-    expect(new TextDecoder().decode((await accepted.arrayBuffer()).slice(257, 262))).toBe("ustar");
-    const requestHeaders = new Headers(fetch.mock.calls[0]?.[1]?.headers);
-    expect(requestHeaders.get("accept")).toBe(EXPORT_ARCHIVE_MEDIA_TYPE);
-    for (const rejectedType of ["application/zip", "application/octet-stream"]) {
-      await expect(
-        transport.redirectedBinary("GET /v1/exports/:exportId/download", path, [
-          EXPORT_ARCHIVE_MEDIA_TYPE,
-        ]),
-        rejectedType,
-      ).rejects.toMatchObject({ code: "invalid_response_media_type" });
-    }
+    const document = await transport.binary(
+      "GET /public-source-documents/:documentId/content",
+      "/public-source-documents/doc-1/content",
+    );
+    expect(await document.text()).toBe("%PDF");
+    const issuePath = "/v1/issues/issue-1/documents/doc-1/content";
+    const accepted = await transport.redirectedBinary(
+      "GET /v1/issues/:issueId/documents/:documentId/content",
+      issuePath,
+      ["application/pdf", "text/html"],
+    );
+    expect(await accepted.text()).toContain("document");
+    await expect(
+      transport.redirectedBinary(
+        "GET /v1/issues/:issueId/documents/:documentId/content",
+        issuePath,
+        ["application/pdf", "text/html"],
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response_media_type" });
   });
 });

@@ -6,15 +6,11 @@
     ".": "./src/index.ts",
     "./memories": "./src/memories.ts",
     "./public-sources": "./src/public-sources.ts",
-    "./product-chats": "./src/product-chats.ts",
-    "./stripe-webhook": "./src/stripe-webhook.ts",
-    "./clerk-webhook": "./src/clerk-webhook.ts",
-    "./exports": "./src/exports.ts",
     "./publisher-documents": "./src/publisher-documents.ts",
-    "./billing": "./src/billing.ts",
-    "./platform-support": "./src/platform-support.ts",
     "./chat-runtime": "./src/chat-runtime.ts",
     "./chat-response": "./src/chat-response.ts",
+    "./chat-mutations": "./src/chat-mutations.ts",
+    "./demo-sessions": "./src/demo-sessions.ts",
     "./administrative-audit": "./src/administrative-audit.ts"
   },
   "scripts": {
@@ -22,11 +18,8 @@
     "test": "bun ../../scripts/test-with-postgres.ts packages/backend-domain/src"
   },
   "dependencies": {
-    "@clerk/backend": "3.8.4",
     "@effect/sql-pg": "4.0.0-beta.92",
-    "@hartlib/database": "workspace:*",
     "@hartlib/shared": "workspace:*",
-    "@hartlib/workspace": "workspace:*",
     "effect": "4.0.0-beta.92"
   },
   "devDependencies": {

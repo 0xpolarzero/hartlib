@@ -1,19 +1,18 @@
 {
   "files": [],
   "references": [
+    { "path": "./scripts" },
     { "path": "./packages/docs" },
     { "path": "./packages/api-client" },
     { "path": "./packages/backend-domain" },
     { "path": "./packages/database" },
     { "path": "./packages/i18n" },
     { "path": "./packages/config" },
-    { "path": "./packages/demo-data" },
     { "path": "./packages/source-ingestion" },
     { "path": "./packages/shared" },
     { "path": "./packages/ui" },
     { "path": "./apps/api" },
     { "path": "./apps/demo" },
-    { "path": "./apps/worker" },
-    { "path": "./apps/web" }
+    { "path": "./apps/worker" }
   ]
 }

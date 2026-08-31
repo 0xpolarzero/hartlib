@@ -4,7 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./platform": "./src/platform-client.ts",
+    "./product-client": "./src/product-client.ts",
     "./stream": "./src/stream.ts"
   },
   "scripts": {

@@ -10,7 +10,6 @@ import {
 const source = (id: string, country: "FR" | "US", subscribed = true) => ({
   id,
   kind: "public" as const,
-  publisherCompanyId: null,
   clientCompanyId: "public",
   name: id,
   publisherName: id,
@@ -53,16 +52,19 @@ describe("demo public-content market scope", () => {
     expect(scoped.publications.map((entry) => entry.sourceId)).toEqual([expectedId]);
   });
 
-  it("keeps only server-authorized public sources", () => {
+  it("keeps authorized disabled rows visible", () => {
     const content: PublicSourcesResponse = {
       sources: [source("enabled", "FR"), source("disabled", "FR", false)],
       publications: [publication("enabled"), publication("disabled")],
     };
 
-    expect(scopePublicContentToMarket(content, "FR")).toMatchObject({
-      sources: [expect.objectContaining({ id: "enabled" })],
-      publications: [expect.objectContaining({ sourceId: "enabled" })],
-    });
+    expect(scopePublicContentToMarket(content, "FR").sources.map((entry) => entry.id)).toEqual([
+      "enabled",
+      "disabled",
+    ]);
+    expect(
+      scopePublicContentToMarket(content, "FR").publications.map((entry) => entry.sourceId),
+    ).toEqual(["enabled", "disabled"]);
   });
 
   it("returns a loading empty projection instead of stale cross-market state", () => {

@@ -60,8 +60,6 @@ export interface RawPublicSourceDocument {
 /** The authenticated identity used to resolve a current client-company scope. */
 export interface PublicSourceReadIdentity {
   readonly userId: string;
-  readonly organizationId: string | null;
-  readonly mode: "demo" | "clerk";
 }
 
 /** Public-source analytics are not persisted by this ingestion/read path. */
@@ -139,7 +137,6 @@ export const publicSourcesResponseFromRows = (
       return {
         id: source.source_id,
         kind: "public",
-        publisherCompanyId: null,
         clientCompanyId,
         name: source.display_name,
         publisherName: source.publisher_name,
@@ -185,9 +182,6 @@ export const publicSourcesResponseFromRows = (
             textPreview: textPreview(document.text),
             canonicalUrl,
             hostedContentUrl: hostedContentUrl(document),
-            fileName: null,
-            pageCount: null,
-            storagePath: null,
             metrics: publicMetrics,
           },
         ],
@@ -277,18 +271,15 @@ export const listPublicSources = (market?: string, clientCompanyId?: string) =>
  * current publication tuple, enabled company setting, live company/user, and
  * unrevoked membership are all checked in the same SQL snapshot.
  *
- * Demo requests receive their company from the canonical demo chat. Clerk
- * requests receive theirs from the authenticated current organization; a
- * missing organization is intentionally denied because it cannot identify an
- * exact company scope.
+ * The demo request receives its company from the canonical demo chat. A
+ * missing company is denied because it cannot identify an exact company scope.
  */
 export const readAuthorizedPublicSourceDocument = (
   identity: PublicSourceReadIdentity,
   documentId: string,
-  demoCompanyId: string | null,
+  demoCompanyId: string,
 ) =>
   Effect.gen(function* () {
-    if (identity.mode === "demo" && demoCompanyId === null) return null;
     const sql = yield* PgClient.PgClient;
     const rows = yield* sql<RawPublicSourceDocument>`
       select r.body, r.body_bytes, r.media_type
@@ -310,25 +301,11 @@ export const readAuthorizedPublicSourceDocument = (
        and membership.revoked_at is null
       join platform_users users
         on users.id = membership.user_id
-       and users.recovery_deleted_at is null
-       and users.purged_at is null
       where d.document_id = ${documentId}
-        and company.recovery_deleted_at is null
-        and company.purged_at is null
         and d.text_char_count >= ${minimumReadablePublicSourceTextChars}
         and btrim(lower(split_part(r.media_type, ';', 1))) in ('text/html', 'application/pdf')
         and hartlib_public_source_https_url_allowed(i.canonical_url)
-        and (
-          (
-            ${identity.mode} = 'demo'
-            and company.id = ${demoCompanyId}::uuid
-          )
-          or (
-            ${identity.mode} = 'clerk'
-            and ${identity.organizationId}::text is not null
-            and company.clerk_organization_id = ${identity.organizationId}
-          )
-        )
+        and company.id = ${demoCompanyId}::uuid
       limit 1
     `;
     return rows[0] ?? null;

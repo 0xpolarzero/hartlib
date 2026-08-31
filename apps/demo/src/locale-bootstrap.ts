@@ -6,14 +6,12 @@ import {
   isLocale,
   resolveRedirectTarget,
 } from "@hartlib/i18n";
-
-const LOCALE_STORAGE_KEY = "hartlib:demo:locale";
-const MANUAL_SOURCES_STORAGE_KEY = "hartlib:demo:manual-sources";
+import { DEMO_STORAGE_KEYS, readDemoStorage, writeDemoStorage } from "./storage-registry";
 
 export function getStoredLocale(): Locale | null {
   if (typeof window === "undefined") return null;
   try {
-    const value = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    const value = readDemoStorage("local", DEMO_STORAGE_KEYS.locale);
     return value && isLocale(value) ? value : null;
   } catch {
     return null;
@@ -23,34 +21,7 @@ export function getStoredLocale(): Locale | null {
 export function setStoredLocale(locale: Locale): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
-  } catch {
-    // Ignore storage failures; demo state stays in memory.
-  }
-}
-
-export function setManualSourceSelection(value: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(MANUAL_SOURCES_STORAGE_KEY, value ? "1" : "0");
-  } catch {
-    // Ignore storage failures; demo state stays in memory.
-  }
-}
-
-export function getManualSourceSelection(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(MANUAL_SOURCES_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function clearManualSourceSelection(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(MANUAL_SOURCES_STORAGE_KEY);
+    writeDemoStorage("local", DEMO_STORAGE_KEYS.locale, locale);
   } catch {
     // Ignore storage failures; demo state stays in memory.
   }

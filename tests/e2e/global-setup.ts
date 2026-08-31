@@ -1,5 +1,5 @@
 import { chromium, type FullConfig } from "@playwright/test";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 
@@ -12,16 +12,15 @@ const databaseUrl =
 const {
   api: apiPort,
   demo: demoPort,
-  web: webPort,
   objectStore: objectStorePort,
 } = e2ePortsFromBase(parseE2ePortBase());
 const apiBaseUrl = `http://127.0.0.1:${apiPort}`;
 const demoBaseUrl = `http://127.0.0.1:${demoPort}`;
-const webBaseUrl = `http://127.0.0.1:${webPort}`;
 const objectStoreBaseUrl = `http://127.0.0.1:${objectStorePort}`;
 const objectStoreBucket = "hartlib-e2e";
 const readinessTimeoutMs = 30_000;
 const e2eSetupScript = "apps/worker/src/e2e/setup-cli.ts";
+const workerPidFile = `/tmp/hartlib-e2e-worker-${apiPort}.pid`;
 
 type ManagedProcess = {
   readonly label: string;
@@ -119,7 +118,6 @@ const assertStackPortsFree = async (): Promise<void> => {
   const ports = [
     [apiPort, "api"],
     [demoPort, "demo"],
-    [webPort, "web"],
     [objectStorePort, "object store"],
   ] as const;
   const occupied = (
@@ -244,6 +242,13 @@ export default async function globalSetup(_config: FullConfig) {
 
   await assertStackPortsFree();
   runSetupScript("setup");
+  try {
+    unlinkSync(workerPidFile);
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null ? (error as { code?: string }).code : null;
+    if (code !== "ENOENT") throw error;
+  }
 
   const liveAiKey = (process.env.ZAI_API_KEY ?? "").trim();
   const liveWebKey = (process.env.TINYFISH_API_KEY ?? "").trim();
@@ -264,7 +269,7 @@ export default async function globalSetup(_config: FullConfig) {
   const commonEnv = {
     DATABASE_URL: databaseUrl,
     NODE_ENV: "test",
-    CORS_ALLOWED_ORIGINS: `${demoBaseUrl},${webBaseUrl}`,
+    CORS_ALLOWED_ORIGINS: demoBaseUrl,
     AI_STREAM_POLL_MS: "50",
     AI_STREAM_KEEPALIVE_MS: "1000",
     // A live tool-loop task can make several sequential network requests. The
@@ -283,10 +288,6 @@ export default async function globalSetup(_config: FullConfig) {
     RAILWAY_BUCKET_NAME: objectStoreBucket,
     RAILWAY_BUCKET_ACCESS_KEY_ID: "hartlib-e2e-access-key",
     RAILWAY_BUCKET_SECRET_ACCESS_KEY: "hartlib-e2e-secret-key",
-    EXPORT_BUCKET_ENDPOINT: objectStoreBaseUrl,
-    EXPORT_BUCKET_NAME: `${objectStoreBucket}-exports`,
-    EXPORT_BUCKET_ACCESS_KEY_ID: "hartlib-e2e-access-key",
-    EXPORT_BUCKET_SECRET_ACCESS_KEY: "hartlib-e2e-secret-key",
   };
   const api = startProcess(
     "api",
@@ -304,6 +305,7 @@ export default async function globalSetup(_config: FullConfig) {
     WORKER_POLL_INTERVAL_MS: "250",
     WORKER_RUN_MIGRATIONS_ON_STARTUP: "false",
   });
+  if (worker.process.pid !== undefined) writeFileSync(workerPidFile, String(worker.process.pid));
   const demo = startProcess(
     "demo",
     "bun",
@@ -313,26 +315,13 @@ export default async function globalSetup(_config: FullConfig) {
     },
     { cwd: demoRoot, detached: true, port: demoPort },
   );
-  const web = startProcess(
-    "web",
-    "bun",
-    ["vite", "--host", "127.0.0.1", "--port", String(webPort), "--strictPort"],
-    {
-      VITE_API_BASE_URL: apiBaseUrl,
-      VITE_AUTH_MODE: "demo",
-    },
-    { cwd: new URL("../../apps/web/", import.meta.url).pathname, detached: true, port: webPort },
-  );
-
   try {
     await waitForHttp(`${objectStoreBaseUrl}/health`, objectStore);
     await waitForHttp(`${apiBaseUrl}/health`, api);
     await waitForLog("starting worker", worker);
     await waitForHttp(`${demoBaseUrl}/fr-FR/client`, demo);
-    await waitForHttp(`${webBaseUrl}/en-US/client/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee`, web);
   } catch (error) {
     await Promise.allSettled([
-      stopProcess(web),
       stopProcess(demo),
       stopProcess(worker),
       stopProcess(api),
@@ -344,12 +333,16 @@ export default async function globalSetup(_config: FullConfig) {
       // Preserve the startup failure; cleanup errors must not mask the
       // process that failed readiness.
     }
+    try {
+      unlinkSync(workerPidFile);
+    } catch {
+      // The pid file is only a test-process handoff and may already be gone.
+    }
     throw error;
   }
 
   return async () => {
     const stopped = await Promise.allSettled([
-      stopProcess(web),
       stopProcess(demo),
       stopProcess(worker),
       stopProcess(api),
@@ -360,6 +353,11 @@ export default async function globalSetup(_config: FullConfig) {
       runSetupScript("teardown");
     } catch (error) {
       teardownError = error;
+    }
+    try {
+      unlinkSync(workerPidFile);
+    } catch {
+      // The pid file is only a test-process handoff and may already be gone.
     }
     const stopError = stopped.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",

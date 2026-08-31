@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 
 import {
   isCanonicalPublicDocumentSourceId,
-  isCanonicalPublisherDocumentSourceId,
   type AiProviderEndpointIdentity,
   type AiProviderServiceId,
   type PublicContextConsumer,
@@ -251,27 +250,15 @@ const proofFromReviewResult = (
   const logicalSourceIdentity =
     identity.kind === "chat_message"
       ? chatMessageEvidenceIdentity(identity.messageId)
-      : identity.kind === "public_document"
-        ? namespacedDocumentEvidenceIdentity(
-            {
-              kind: "public",
-              sourceId: identity.sourceId.startsWith("public:")
-                ? identity.sourceId
-                : `public:${identity.sourceId}`,
-            },
-            identity.documentId,
-          )
-        : namespacedDocumentEvidenceIdentity(
-            {
-              kind: "publisher",
-              sourceId: identity.subscriptionId.startsWith("publisher:")
-                ? identity.subscriptionId
-                : `publisher:${identity.subscriptionId}`,
-              issueId: identity.issueId,
-              documentId: identity.documentId,
-            },
-            identity.documentId,
-          );
+      : namespacedDocumentEvidenceIdentity(
+          {
+            kind: "public",
+            sourceId: identity.sourceId.startsWith("public:")
+              ? identity.sourceId
+              : `public:${identity.sourceId}`,
+          },
+          identity.documentId,
+        );
   const contentItemIdentity =
     identity.kind === "chat_message"
       ? identity.messageId
@@ -334,9 +321,6 @@ const structuredRetrievalReviewPreviewPayload = (
       identity: proof.identity,
       snapshotId: proof.snapshotId,
       contentHash: proof.contentHash,
-      ...(proof.publisherExtractionId === undefined
-        ? {}
-        : { publisherExtractionId: proof.publisherExtractionId }),
       previewRanges: proof.previewRanges,
       previewByteLength: proof.previewBytes.byteLength,
       previewSha256Hex: createHash("sha256").update(proof.previewBytes).digest("hex"),
@@ -685,34 +669,16 @@ export interface FanoutSourceKeySet {
 const documentCandidateIdentity = (candidate: {
   readonly sourceId: string;
   readonly documentId: string;
-  readonly publisherIssueId?: string | undefined;
-  readonly publisherDocumentId?: string | undefined;
 }): string =>
-  candidate.publisherIssueId === undefined && candidate.publisherDocumentId === undefined
-    ? namespacedDocumentEvidenceIdentity(
-        {
-          kind: "public",
-          sourceId: candidate.sourceId.startsWith("public:")
-            ? candidate.sourceId
-            : `public:${candidate.sourceId}`,
-        },
-        candidate.documentId,
-      )
-    : candidate.publisherIssueId !== undefined && candidate.publisherDocumentId !== undefined
-      ? namespacedDocumentEvidenceIdentity(
-          {
-            kind: "publisher",
-            sourceId: candidate.sourceId.startsWith("publisher:")
-              ? candidate.sourceId
-              : `publisher:${candidate.sourceId}`,
-            issueId: candidate.publisherIssueId,
-            documentId: candidate.publisherDocumentId,
-          },
-          candidate.documentId,
-        )
-      : (() => {
-          throw new Error("document candidate has incomplete publisher provenance");
-        })();
+  namespacedDocumentEvidenceIdentity(
+    {
+      kind: "public",
+      sourceId: candidate.sourceId.startsWith("public:")
+        ? candidate.sourceId
+        : `public:${candidate.sourceId}`,
+    },
+    candidate.documentId,
+  );
 
 const documentContentItemIdentity = (
   namespace: string,
@@ -973,9 +939,6 @@ const immutableSourceIdentity = (source: FinalSourceRecord): string => {
           documentId: locator.documentId,
           snapshotId: locator.snapshotId,
           contentHash: locator.contentHash,
-          publisherExtractionId: locator.publisherExtractionId,
-          publisherIssueId: locator.publisherIssueId,
-          publisherDocumentId: locator.publisherDocumentId,
         }
       : locator.kind === "web"
         ? { kind: locator.kind, url: locator.url, quoteHash: locator.quoteHash }
@@ -1010,18 +973,6 @@ const compactionLogicalSourceIdentity = (identity: CandidateLedgerEntry["identit
           sourceId: identity.sourceId.startsWith("public:")
             ? identity.sourceId
             : `public:${identity.sourceId}`,
-        },
-        identity.documentId,
-      );
-    case "publisher_document":
-      return namespacedDocumentEvidenceIdentity(
-        {
-          kind: "publisher",
-          sourceId: identity.subscriptionId.startsWith("publisher:")
-            ? identity.subscriptionId
-            : `publisher:${identity.subscriptionId}`,
-          issueId: identity.issueId,
-          documentId: identity.documentId,
         },
         identity.documentId,
       );
@@ -1060,7 +1011,6 @@ const compactionContentItemIdentity = (
         : undefined;
   switch (identity.kind) {
     case "public_document":
-    case "publisher_document":
       return `${logicalSourceIdentity}:${identity.snapshotId}:${sha256Base64Url(
         documentRanges === undefined ? stableJson(rangeDescriptor) : JSON.stringify(documentRanges),
       )}`;
@@ -1250,12 +1200,6 @@ export class CanonicalWorkflowOperations {
             ? documentCandidateIdentity({
                 sourceId: source.locator.sourceId,
                 documentId: source.locator.documentId,
-                ...(source.locator.publisherIssueId === undefined
-                  ? {}
-                  : {
-                      publisherIssueId: source.locator.publisherIssueId,
-                      publisherDocumentId: source.locator.publisherDocumentId,
-                    }),
               })
             : source.locator.kind === "chat_message"
               ? chatMessageEvidenceIdentity(source.locator.messageId)
@@ -1326,12 +1270,7 @@ export class CanonicalWorkflowOperations {
   }
 
   private async savedScopeSourceIds(load: LoadedTurn): Promise<readonly string[]> {
-    return [
-      ...load.acceptanceScope.publicSourceIds.map((sourceId) => `public:${sourceId}`),
-      ...load.acceptanceScope.subscriptionIds.map(
-        (subscriptionId) => `publisher:${subscriptionId}`,
-      ),
-    ].sort();
+    return load.acceptanceScope.publicSourceIds.map((sourceId) => `public:${sourceId}`).sort();
   }
 
   /** Resolve A's source-name filters inside the accepted scope only. */
@@ -1345,8 +1284,6 @@ export class CanonicalWorkflowOperations {
       chatId: load.chatId,
       companyId: load.acceptanceScope.companyId,
       publicSourceIds: load.acceptanceScope.publicSourceIds,
-      subscriptionIds: load.acceptanceScope.subscriptionIds,
-      accessIds: load.acceptanceScope.accessIds,
       excludedMessageIds,
       currentMessageId: load.userMessageId,
     };
@@ -1357,7 +1294,7 @@ export class CanonicalWorkflowOperations {
       };
     }
     const resolved = await Promise.all(
-      sourceNames.map((name) => this.resolveAuthorizedSourceIds(load, name, "subscription")),
+      sourceNames.map((name) => this.resolveAuthorizedSourceIds(load, name)),
     );
     return {
       ...scope,
@@ -1386,8 +1323,6 @@ export class CanonicalWorkflowOperations {
       chatId: load.chatId,
       companyId: load.acceptanceScope.companyId,
       publicSourceIds: load.acceptanceScope.publicSourceIds,
-      subscriptionIds: load.acceptanceScope.subscriptionIds,
-      accessIds: load.acceptanceScope.accessIds,
       excludedMessageIds,
       currentMessageId: load.userMessageId,
     };
@@ -1707,27 +1642,16 @@ export class CanonicalWorkflowOperations {
         if (identity.kind === "chat_message") {
           return { kind: "chat_message" as const, messageId: identity.messageId, purpose };
         }
-        const source =
-          identity.kind === "public_document"
-            ? {
-                kind: "public" as const,
-                sourceId: identity.sourceId.startsWith("public:")
-                  ? identity.sourceId
-                  : `public:${identity.sourceId}`,
-              }
-            : {
-                kind: "publisher" as const,
-                sourceId: identity.subscriptionId,
-                issueId: identity.issueId,
-                documentId: identity.documentId,
-              };
+        const source = {
+          kind: "public" as const,
+          sourceId: identity.sourceId.startsWith("public:")
+            ? identity.sourceId
+            : `public:${identity.sourceId}`,
+        };
         return {
           kind: "document" as const,
           documentId: identity.documentId,
           snapshotId: exposure.snapshotId,
-          ...(exposure.publisherExtractionId === undefined
-            ? {}
-            : { publisherExtractionId: exposure.publisherExtractionId }),
           source,
           purpose,
         };
@@ -1745,7 +1669,6 @@ export class CanonicalWorkflowOperations {
   private async resolveAuthorizedSourceIds(
     load: LoadedTurn,
     namedSource: string | undefined,
-    publisherName: "company" | "subscription" = "company",
   ): Promise<readonly string[]> {
     if (namedSource === undefined) return this.savedScopeSourceIds(load);
     const normalizedName = namedSource.trim().normalize("NFC").toLowerCase();
@@ -1753,21 +1676,11 @@ export class CanonicalWorkflowOperations {
     const rows = await this.db(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const publisherNamePredicate =
-          publisherName === "subscription"
-            ? sql`lower(btrim(subscriptions.name)) = ${normalizedName}`
-            : sql`lower(btrim(companies.name)) = ${normalizedName}`;
         return yield* sql<{ readonly sourceId: string }>`
           select 'public:' || sources.source_id as "sourceId"
           from public_sources sources
           where sources.source_id = any(${load.acceptanceScope.publicSourceIds}::text[])
             and lower(btrim(sources.display_name)) = ${normalizedName}
-          union
-          select 'publisher:' || subscriptions.id::text as "sourceId"
-          from publisher_subscriptions subscriptions
-          join publisher_companies companies on companies.id = subscriptions.publisher_company_id
-          where subscriptions.id::text = any(${load.acceptanceScope.subscriptionIds}::text[])
-            and ${publisherNamePredicate}
         `;
       }),
     );
@@ -1864,9 +1777,7 @@ export class CanonicalWorkflowOperations {
         const sourceId = source.locator.sourceId;
         return sourceId.startsWith("public:")
           ? scope.publicSourceIds.includes(sourceId.slice("public:".length))
-          : sourceId.startsWith("publisher:")
-            ? scope.subscriptionIds.includes(sourceId.slice("publisher:".length))
-            : false;
+          : false;
       }
       if (source.locator.kind === "memory")
         return (
@@ -1894,12 +1805,8 @@ export class CanonicalWorkflowOperations {
             join platform_users users on users.id = runs.initiating_user_id
             where runs.id = ${load.aiRunId}
               and runs.initiating_user_id = ${load.initiatingUserId}
-              and chat.deleted_at is null
               and company.id = ${scope.companyId}::uuid
-              and company.recovery_deleted_at is null
-              and company.purged_at is null
-              and users.recovery_deleted_at is null
-              and users.purged_at is null
+              and chat.user_id = users.id
           ) as available
         `;
         return rows[0]?.available === true;
@@ -1938,18 +1845,18 @@ export class CanonicalWorkflowOperations {
             runs.citation_namespace as "citationNamespace",
                 runs.acceptance_scope as "acceptanceScope"
           from ai_runs runs
-          join chats on chats.id = runs.chat_id and chats.deleted_at is null
+          join chats on chats.id = runs.chat_id
           join chat_messages messages
             on messages.id = runs.user_message_id
            and messages.chat_id = chats.id
            and messages.author = 'user'
           join client_companies companies
             on companies.id = chats.company_id
-           and companies.recovery_deleted_at is null
-           and companies.purged_at is null
           where runs.id = ${aiRunId}
             and runs.finished_at is null
             and runs.failed_at is null
+            and runs.stopped_at is null
+            and runs.superseded_at is null
               for update of runs
         `;
             const run = rows[0];
@@ -2627,28 +2534,14 @@ export class CanonicalWorkflowOperations {
             ? identity.sourceId.startsWith("public:")
               ? identity.sourceId
               : `public:${identity.sourceId}`
-            : identity.kind === "publisher_document"
-              ? identity.subscriptionId.startsWith("publisher:")
-                ? identity.subscriptionId
-                : `publisher:${identity.subscriptionId}`
-              : "";
+            : "";
         const logicalSourceIdentity =
           identity.kind === "chat_message"
             ? chatMessageEvidenceIdentity(identity.messageId)
-            : identity.kind === "public_document"
-              ? namespacedDocumentEvidenceIdentity(
-                  { kind: "public", sourceId: sourceId! },
-                  identity.documentId,
-                )
-              : namespacedDocumentEvidenceIdentity(
-                  {
-                    kind: "publisher",
-                    sourceId: sourceId!,
-                    issueId: identity.issueId,
-                    documentId: identity.documentId,
-                  },
-                  identity.documentId,
-                );
+            : namespacedDocumentEvidenceIdentity(
+                { kind: "public", sourceId: sourceId! },
+                identity.documentId,
+              );
         const contentItemIdentity =
           identity.kind === "chat_message"
             ? identity.messageId
@@ -2698,9 +2591,6 @@ export class CanonicalWorkflowOperations {
           snapshotId: exposure.snapshotId,
           contentHash: exposure.contentHash,
           ranges: exposure.previewRanges,
-          ...(exposure.publisherExtractionId === undefined
-            ? {}
-            : { publisherExtractionId: exposure.publisherExtractionId }),
         } satisfies AiDocumentExposureReconstruction;
         return this.db(
           insertAiSourceExposure({
@@ -2712,12 +2602,6 @@ export class CanonicalWorkflowOperations {
             providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
             sourceKind: "document",
             logicalSourceIdentity,
-            ...(identity.kind === "publisher_document"
-              ? {
-                  publisherIssueId: identity.issueId,
-                  publisherDocumentId: identity.documentId,
-                }
-              : {}),
             contentItemIdentity: `${logicalSourceIdentity}:${exposure.snapshotId}:${sha256Base64Url(JSON.stringify(exposure.previewRanges))}`,
             exposureStage,
             visibleTokenCount,
@@ -2929,12 +2813,6 @@ export class CanonicalWorkflowOperations {
               providerRequestIndex: execution.providerRequestIndex,
               providerRequestSha256Hex: coordinates.providerRequestSha256Hex,
               logicalSourceIdentity,
-              ...(candidate.kind === "document" && candidate.publisherIssueId !== undefined
-                ? {
-                    publisherIssueId: candidate.publisherIssueId,
-                    publisherDocumentId: candidate.publisherDocumentId,
-                  }
-                : {}),
               contentItemIdentity,
               exposureStage: "answer_serialized",
               visibleTokenCount: this.visibleTokenCount(content, load.acceptanceScope.mainModelId),
@@ -2959,9 +2837,6 @@ export class CanonicalWorkflowOperations {
                       documentId: candidate.documentId,
                       snapshotId: candidate.snapshotId,
                       contentHash: candidate.contentHash,
-                      ...(candidate.publisherExtractionId === undefined
-                        ? {}
-                        : { publisherExtractionId: candidate.publisherExtractionId }),
                       ranges: candidate.ranges,
                     },
                   }
@@ -3803,24 +3678,6 @@ export class CanonicalWorkflowOperations {
 
   private candidateIdentity(candidate: AnswerCandidate): CanonicalIdentity {
     if (candidate.kind === "document") {
-      if (candidate.publisherIssueId !== undefined || candidate.publisherDocumentId !== undefined) {
-        if (
-          candidate.publisherIssueId === undefined ||
-          candidate.publisherDocumentId === undefined ||
-          candidate.publisherExtractionId === undefined
-        ) {
-          throw new Error("publisher candidate identity is incomplete");
-        }
-        return {
-          kind: "publisher_document",
-          subscriptionId: candidate.sourceId.slice("publisher:".length),
-          issueId: candidate.publisherIssueId,
-          documentId: candidate.documentId,
-          snapshotId: candidate.snapshotId,
-          publisherExtractionId: candidate.publisherExtractionId,
-          contentHash: candidate.contentHash,
-        };
-      }
       return {
         kind: "public_document",
         sourceId: candidate.sourceId,
@@ -3871,17 +3728,6 @@ export class CanonicalWorkflowOperations {
         sourceId: `public:${identity.sourceId}`,
         documentId: identity.documentId,
         snapshotId: identity.snapshotId,
-        contentHash: identity.contentHash,
-      };
-    }
-    if (identity.kind === "publisher_document") {
-      return {
-        kind: "publisher_document",
-        subscriptionId: identity.subscriptionId,
-        issueId: identity.issueId,
-        documentId: identity.documentId,
-        snapshotId: identity.snapshotId,
-        publisherExtractionId: identity.publisherExtractionId,
         contentHash: identity.contentHash,
       };
     }
@@ -4209,14 +4055,6 @@ export class CanonicalWorkflowOperations {
       }
       if (previous.kind === "document" && candidate.kind === "document") {
         if (
-          previous.publisherIssueId !== candidate.publisherIssueId ||
-          previous.publisherDocumentId !== candidate.publisherDocumentId
-        ) {
-          throw new Error(
-            `document ${candidate.documentId} resolved to ambiguous public/publisher provenance`,
-          );
-        }
-        if (
           previous.snapshotId !== candidate.snapshotId ||
           previous.contentHash !== candidate.contentHash
         ) {
@@ -4428,73 +4266,6 @@ export class CanonicalWorkflowOperations {
           });
           continue;
         }
-        if (identity.kind !== "publisher_document") {
-          rejections.push({
-            candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
-            reason: "missing",
-          });
-          continue;
-        }
-        const row = await this.db(
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{
-              readonly sourceName: string;
-              readonly documentTitle: string;
-              readonly citationUrl: string;
-              readonly issueId: string;
-              readonly issueTitle: string;
-              readonly publishedAt: Date | null;
-              readonly sourceId: string;
-            }>`
-              select companies.name as "sourceName", documents.title as "documentTitle",
-                     '/v1/issues/' || issues.id::text || '/documents/' || documents.id::text || '/content' as "citationUrl",
-                     issues.id::text as "issueId", issues.title as "issueTitle", issues.published_at as "publishedAt",
-                     subscriptions.id::text as "sourceId"
-              from hartlib_documents documents
-              join publisher_issues issues on issues.id = documents.issue_id
-              join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-              join publisher_companies companies on companies.id = subscriptions.publisher_company_id
-                where subscriptions.id::text = ${identity.subscriptionId}
-                and issues.id::text = ${identity.issueId}
-                and documents.id::text = ${identity.documentId}
-            `;
-            return rows[0] ?? null;
-          }),
-        );
-        if (row === null) {
-          rejections.push({
-            candidateId: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
-            reason: "inaccessible",
-          });
-          continue;
-        }
-        candidates.push({
-          id: JSON.stringify(this.canonicalRetrievalIdentity(identity)),
-          kind: "document",
-          rank: rank++,
-          purpose,
-          sourceId: `publisher:${identity.subscriptionId}`,
-          documentId: identity.documentId,
-          snapshotId: value.snapshotId,
-          publisherExtractionId: identity.publisherExtractionId,
-          publisherIssueId: identity.issueId,
-          publisherDocumentId: identity.documentId,
-          contentHash: value.contentHash,
-          text: value.text,
-          ranges,
-          label: value.label ?? row.documentTitle,
-          publicProvenance: {
-            sourceName: value.sourceName ?? row.sourceName,
-            issueTitle: row.issueTitle,
-            documentTitle: row.documentTitle,
-            citationUrl: row.citationUrl,
-            ...((value.date ?? row.publishedAt?.toISOString()) === undefined
-              ? {}
-              : { publishedAt: value.date ?? row.publishedAt!.toISOString() }),
-          },
-          renderedTokenCount: value.mainTokenCount,
-        });
       }
     }
     for (const reference of selectors.memories) {
@@ -4595,36 +4366,8 @@ export class CanonicalWorkflowOperations {
     const locator =
       candidate.kind === "document"
         ? (() => {
-            const hasPublisherIssue = candidate.publisherIssueId !== undefined;
-            const hasPublisherDocument = candidate.publisherDocumentId !== undefined;
-            if (hasPublisherIssue !== hasPublisherDocument) {
-              throw new Error("document candidate has incomplete publisher provenance");
-            }
-            if (hasPublisherIssue) {
-              if (
-                !isCanonicalPublisherDocumentSourceId(candidate.sourceId) ||
-                candidate.publisherDocumentId !== candidate.documentId
-              ) {
-                throw new Error("document candidate has invalid publisher source identity");
-              }
-            } else if (!isCanonicalPublicDocumentSourceId(candidate.sourceId)) {
+            if (!isCanonicalPublicDocumentSourceId(candidate.sourceId)) {
               throw new Error("document candidate has invalid public source identity");
-            }
-            if (hasPublisherIssue) {
-              if (candidate.publisherExtractionId === undefined) {
-                throw new Error("publisher document candidate lacks extraction identity");
-              }
-              return {
-                kind: "document" as const,
-                sourceId: candidate.sourceId as `publisher:${string}`,
-                documentId: candidate.documentId,
-                snapshotId: candidate.snapshotId,
-                contentHash: candidate.contentHash,
-                ranges: candidate.ranges,
-                publisherExtractionId: candidate.publisherExtractionId,
-                publisherIssueId: candidate.publisherIssueId!,
-                publisherDocumentId: candidate.publisherDocumentId!,
-              };
             }
             return {
               kind: "document" as const,
@@ -5063,18 +4806,6 @@ export class CanonicalWorkflowOperations {
         ranges,
       };
     }
-    if (entry.identity.kind === "publisher_document") {
-      return {
-        sourceId: entry.identity.subscriptionId.startsWith("publisher:")
-          ? entry.identity.subscriptionId
-          : `publisher:${entry.identity.subscriptionId}`,
-        documentId: entry.identity.documentId,
-        snapshotId: entry.identity.snapshotId,
-        contentHash: entry.identity.contentHash,
-        publisherExtractionId: entry.identity.publisherExtractionId,
-        ranges,
-      };
-    }
     return undefined;
   }
 
@@ -5109,8 +4840,7 @@ export class CanonicalWorkflowOperations {
         const immutableContentHash =
           entry.identity.kind === "chat_message"
             ? entry.identity.sanitizedContentHash
-            : entry.identity.kind === "public_document" ||
-                entry.identity.kind === "publisher_document"
+            : entry.identity.kind === "public_document"
               ? entry.identity.contentHash
               : createHash("sha256").update(entry.text, "utf8").digest("hex");
         const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
@@ -5161,12 +4891,6 @@ export class CanonicalWorkflowOperations {
                   contentHash: immutableContentHash,
                   ranges: [passage.range],
                 },
-              }
-            : {}),
-          ...(entry.identity.kind === "publisher_document"
-            ? {
-                publisherIssueId: entry.identity.issueId,
-                publisherDocumentId: entry.identity.documentId,
               }
             : {}),
           immutableSourceIdentityCommitment,
@@ -5385,8 +5109,7 @@ export class CanonicalWorkflowOperations {
       const immutableContentHash =
         entry.identity.kind === "chat_message"
           ? entry.identity.sanitizedContentHash
-          : entry.identity.kind === "public_document" ||
-              entry.identity.kind === "publisher_document"
+          : entry.identity.kind === "public_document"
             ? entry.identity.contentHash
             : createHash("sha256").update(entry.text, "utf8").digest("hex");
       const immutableSourceIdentityCommitment = sha256Base64Url(logicalSourceIdentity);
@@ -5409,12 +5132,6 @@ export class CanonicalWorkflowOperations {
           ...(entry.kind === "document"
             ? {
                 documentReconstruction: this.compactionDocumentReconstruction(entry, ranges),
-              }
-            : {}),
-          ...(entry.identity.kind === "publisher_document"
-            ? {
-                publisherIssueId: entry.identity.issueId,
-                publisherDocumentId: entry.identity.documentId,
               }
             : {}),
           immutableContentHash,
@@ -5529,13 +5246,6 @@ export class CanonicalWorkflowOperations {
               ? {}
               : {
                   requireCanonicalDocumentIdentity: true,
-                  ...(codeProof.publisherIssueId === undefined ||
-                  codeProof.publisherDocumentId === undefined
-                    ? {}
-                    : {
-                        publisherIssueId: codeProof.publisherIssueId,
-                        publisherDocumentId: codeProof.publisherDocumentId,
-                      }),
                   documentReconstruction: codeProof.documentReconstruction,
                 }),
           }),
@@ -6091,22 +5801,6 @@ export class CanonicalWorkflowOperations {
             contentHash: identity.contentHash,
             source: { kind: "public" as const, sourceId: identity.sourceId },
             ranges: [sourcePassage.range],
-          };
-        }
-        if (identity.kind === "publisher_document") {
-          return {
-            snapshotId: identity.snapshotId,
-            contentHash: identity.contentHash,
-            source: {
-              kind: "publisher" as const,
-              sourceId: identity.subscriptionId.startsWith("publisher:")
-                ? identity.subscriptionId
-                : `publisher:${identity.subscriptionId}`,
-              issueId: identity.issueId,
-              documentId: identity.documentId,
-            },
-            ranges: [sourcePassage.range],
-            publisherExtractionId: identity.publisherExtractionId,
           };
         }
         throw new Error("document source-tool candidate lacks its canonical identity");
@@ -7110,6 +6804,7 @@ export class CanonicalWorkflowOperations {
           sourcesRead: context.sourceMap.map(publicSourceRecordFromFinalSource),
           consumers: context.consumers.map((consumer) => ({ ...consumer })),
         },
+        emittedByTask: taskId,
       }),
     );
     await this.db(
@@ -7137,6 +6832,7 @@ export class CanonicalWorkflowOperations {
           sourcesRead: [],
           consumers: [],
         },
+        emittedByTask: taskId,
       }),
     );
     await this.db(

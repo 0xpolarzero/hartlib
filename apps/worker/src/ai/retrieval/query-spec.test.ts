@@ -201,11 +201,7 @@ describe("Phase A query contracts", () => {
         },
       ],
     };
-    expect(PHYSICAL_QUERY_BRANCHES).toEqual([
-      "public_documents",
-      "publisher_documents",
-      "chat_messages",
-    ]);
+    expect(PHYSICAL_QUERY_BRANCHES).toEqual(["public_documents", "chat_messages"]);
     expect(() => InternalQueryPlanProviderSchema.parse(plan)).toThrow();
     expect(
       InternalQueryPlanProviderSchema.parse({

@@ -7,7 +7,6 @@ import {
   WORKER_JOB_LOCK_TIMEOUT_MS_DEFAULT,
 } from "@hartlib/config";
 import { persistedJobFailureCode } from "./failure";
-import { jobSql } from "./sql";
 import type { EnqueueJobInput, JobRecord } from "./types";
 
 export interface JobRepositoryShape {
@@ -59,6 +58,8 @@ export const makePgJobRepository = (
       enqueue: (input) =>
         Effect.gen(function* () {
           const reviveTerminal = input.reviveTerminal ?? true;
+          const maxAttempts =
+            input.kind === "demo_identity_purge" ? 2_147_483_647 : (input.maxAttempts ?? 5);
           const rows = yield* sql<JobRecord>`
               insert into jobs (kind, payload, unique_key, available_at, priority, max_attempts)
               values (
@@ -67,7 +68,7 @@ export const makePgJobRepository = (
                 ${input.uniqueKey ?? null},
                 coalesce(${input.availableAt ?? null}::timestamptz, now()),
                 ${input.priority ?? 0},
-                ${input.maxAttempts ?? 5}
+                ${maxAttempts}
               )
               on conflict (unique_key) where unique_key is not null do update set
                 payload = case
@@ -121,7 +122,6 @@ export const makePgJobRepository = (
         }).pipe(
           Effect.annotateLogs({
             sqlName: "enqueue",
-            sqlPrepared: jobSql.enqueue.length > 0,
           }),
         ),
 
@@ -136,11 +136,11 @@ export const makePgJobRepository = (
                       -- crashed worker must keep the same durable Smithers/product
                       -- run recoverable until the AI handler commits its terminal
                       -- product transition.
-                      when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
+                      when kind in ('ai_chat_run', 'demo_identity_purge') or attempts < max_attempts then 'retrying'
                       else 'failed'
                     end,
                     available_at = case
-                      when kind = 'ai_chat_run' or attempts < max_attempts then now()
+                      when kind in ('ai_chat_run', 'demo_identity_purge') or attempts < max_attempts then now()
                       else available_at
                     end,
                     locked_at = null,
@@ -153,7 +153,11 @@ export const makePgJobRepository = (
             return yield* sql<JobRecord>`
                 update jobs
                 set status = 'running',
-                    attempts = attempts + 1,
+                    attempts = case
+                      when kind = 'ai_chat_run' and attempts < 2147483647 then attempts + 1
+                      when kind <> 'ai_chat_run' and attempts < max_attempts then attempts + 1
+                      else attempts
+                    end,
                     locked_at = now(),
                     locked_by = ${workerId},
                     updated_at = now()
@@ -182,7 +186,6 @@ export const makePgJobRepository = (
       }).pipe(
         Effect.annotateLogs({
           sqlName: "claimNext",
-          sqlPrepared: jobSql.claimNext.length > 0,
         }),
       ),
 
@@ -199,7 +202,6 @@ export const makePgJobRepository = (
           Effect.flatMap((rows) => requireOwnedJobUpdate("heartbeat", job, rows)),
           Effect.annotateLogs({
             sqlName: "heartbeat",
-            sqlPrepared: jobSql.heartbeat.length > 0,
           }),
         ),
 
@@ -236,11 +238,11 @@ export const makePgJobRepository = (
                   -- Infrastructure/transport failure before the AI handler can
                   -- read and commit durable terminal metadata must never strand
                   -- an unterminated ai_runs row behind a terminal queue job.
-                  when kind = 'ai_chat_run' or attempts < max_attempts then 'retrying'
+                  when kind in ('ai_chat_run', 'demo_identity_purge') or attempts < max_attempts then 'retrying'
                   else 'failed'
                 end,
                 available_at = case
-                  when kind = 'ai_chat_run' or attempts < max_attempts
+                  when kind in ('ai_chat_run', 'demo_identity_purge') or attempts < max_attempts
                     then now() + (${retryDelayMs(job.attempts)} * interval '1 millisecond')
                   else available_at
                 end,

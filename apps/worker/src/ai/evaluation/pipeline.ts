@@ -114,12 +114,6 @@ import {
   type SpecializedEvaluationResult,
 } from "./schema";
 import {
-  EvaluationHumanAnnotationsSchema as EvaluationHumanAnnotationsV3Schema,
-  EvaluationResultV3Schema,
-  EvaluationSeedManifestV3Schema,
-  type EvaluationResultV3,
-} from "./schema.v3";
-import {
   canonicalEvaluationUsableInputTokens,
   attestExactPlanTurnRequest,
   type ExactProductionConversationBinding,
@@ -225,10 +219,7 @@ export const CanonicalEvaluationExecutionConfig = Object.freeze({
 
 const canonicalEvaluationConfigDescriptor = (config: WorkerConfig) => ({
   providerEndpointIdentity: TINYFISH_SEARCH_PROVIDER_ENDPOINT_IDENTITY,
-  aiProviderEndpointIdentity:
-    config.aiBaseUrl === ZAI_CODING_PLAN_BASE_URL
-      ? ZAI_CODING_PLAN_PROVIDER_ENDPOINT_IDENTITY
-      : `openai_compatible_custom:${config.aiBaseUrl}`,
+  aiProviderEndpointIdentity: `${ZAI_CODING_PLAN_PROVIDER_SERVICE_ID}:${config.aiBaseUrl}`,
   aiBaseUrl: config.aiBaseUrl,
   aiMainModel: config.aiMainModel,
   aiFastModel: config.aiFastModel,
@@ -451,48 +442,27 @@ const DurablePlanTurnResultSchema = z.discriminatedUnion("mode", [
 
 const DocumentSourceNamespaceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public"), sourceId: z.string().regex(/^public:[^:\s]+$/u) }).strict(),
+]);
+
+const DurableInternalManifestReferenceSchema = z.discriminatedUnion("kind", [
   z
     .object({
-      kind: z.literal("publisher"),
-      sourceId: z.string().regex(/^publisher:[^:\s]+$/u),
-      issueId: z.string().trim().min(1),
-      documentId: z.string().trim().min(1),
+      kind: z.literal("document"),
+      documentId: z.string().min(1),
+      snapshotId: z.string().min(1),
+      source: DocumentSourceNamespaceSchema,
+      ranges: z.array(BindingRangeSchema).optional(),
+      purpose: z.string().trim().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("chat_message"),
+      messageId: z.uuid(),
+      purpose: z.string().trim().min(1),
     })
     .strict(),
 ]);
-
-const DurableInternalManifestReferenceSchema = z
-  .discriminatedUnion("kind", [
-    z
-      .object({
-        kind: z.literal("document"),
-        documentId: z.string().min(1),
-        snapshotId: z.string().min(1),
-        source: DocumentSourceNamespaceSchema,
-        ranges: z.array(BindingRangeSchema).optional(),
-        purpose: z.string().trim().min(1),
-      })
-      .strict(),
-    z
-      .object({
-        kind: z.literal("chat_message"),
-        messageId: z.uuid(),
-        purpose: z.string().trim().min(1),
-      })
-      .strict(),
-  ])
-  .superRefine((reference, context) => {
-    if (
-      reference.kind === "document" &&
-      reference.source.kind === "publisher" &&
-      reference.source.documentId !== reference.documentId
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "publisher source document differs from reference",
-      });
-    }
-  });
 
 const DurableMemoryManifestReferenceSchema = z
   .object({ memoryId: z.uuid(), memoryRevisionId: z.uuid() })
@@ -609,7 +579,6 @@ const StructuredRetrievalReviewPreviewPayloadSchema = z
           identity: CanonicalIdentitySchema,
           snapshotId: z.string().min(1),
           contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
-          publisherExtractionId: z.string().min(1).optional(),
           previewRanges: z.array(BindingRangeSchema),
           previewByteLength: z.number().int().nonnegative(),
           previewSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
@@ -629,13 +598,12 @@ const EvaluationSourceBindingSchema = z
         // `sourceId` is the durable source identity used by runtime locators.
         // The fixture's human-readable id is intentionally kept separately so
         // it cannot be confused with an identity that production can authorize.
-        sourceId: z.string().regex(/^(?:public|publisher):[^:\s]+$/u),
+        sourceId: z.string().regex(/^public:[^:\s]+$/u),
         goldenSourceId: z.string().min(1),
         kind: z.literal("document"),
         documentId: z.string(),
         snapshotId: z.string(),
         contentHash: z.string(),
-        publisherExtractionId: z.uuid().nullable(),
         source: DocumentSourceNamespaceSchema,
       })
       .strict(),
@@ -672,31 +640,14 @@ const EvaluationSourceBindingSchema = z
         message: "document binding source id differs from its namespace",
       });
     }
-    if (
-      binding.kind === "document" &&
-      ((binding.source.kind === "publisher" && binding.publisherExtractionId === null) ||
-        (binding.source.kind === "public" && binding.publisherExtractionId !== null))
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "publisher extraction identity must match the document namespace",
-      });
-    }
-    if (
-      binding.kind === "document" &&
-      binding.source.kind === "publisher" &&
-      binding.source.documentId !== binding.documentId
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "publisher source document differs from binding",
-      });
-    }
   });
 
 const CanonicalEvaluationRunCurrentTimestamp = "2026-07-10T10:00:00.123456Z";
 const CanonicalEvaluationRunCreatedAt = "2026-07-10T10:00:00.123Z";
 export const CanonicalEvaluationDocumentTimestamp = "2026-07-10T09:00:00.000000Z";
+const CanonicalEvaluationDocumentPublishedAt = new Date(
+  CanonicalEvaluationDocumentTimestamp,
+).toISOString();
 
 export const EvaluationSeedManifestSchema = z
   .object({
@@ -754,10 +705,7 @@ const documentBindingMatchesLocator = (
     value.sourceId !== documentBindingSourceId(binding) ||
     value.documentId !== binding.documentId ||
     value.snapshotId !== binding.snapshotId ||
-    value.contentHash !== binding.contentHash ||
-    (binding.publisherExtractionId === null
-      ? value.publisherExtractionId !== undefined
-      : value.publisherExtractionId !== binding.publisherExtractionId)
+    value.contentHash !== binding.contentHash
   ) {
     return false;
   }
@@ -767,20 +715,9 @@ const documentBindingMatchesLocator = (
     "documentId",
     "snapshotId",
     "contentHash",
-    "publisherExtractionId",
     "ranges",
-    ...(binding.source.kind === "publisher" ? ["publisherIssueId", "publisherDocumentId"] : []),
   ]);
   if (Object.keys(value).some((key) => !allowedLocatorKeys.has(key))) return false;
-  const issueId = value.publisherIssueId;
-  const publisherDocumentId = value.publisherDocumentId;
-  if (typeof issueId === "string" || typeof publisherDocumentId === "string") {
-    return (
-      binding.source.kind === "publisher" &&
-      issueId === binding.source.issueId &&
-      publisherDocumentId === binding.source.documentId
-    );
-  }
   return binding.source.kind === "public";
 };
 
@@ -961,11 +898,6 @@ const DurableRunEvidenceSchema = z
         userId: z.string().min(1),
         companyId: z.uuid(),
         memoryMode: z.enum(["private_owner", "disabled"]),
-        sharedAt: z.iso.datetime().nullable(),
-        deletedAt: z.iso.datetime().nullable(),
-        deletedByUserId: z.string().nullable(),
-        purgeAfter: z.iso.datetime().nullable(),
-        legalHold: z.boolean(),
         createdAt: z.iso.datetime(),
         updatedAt: z.iso.datetime(),
       })
@@ -1069,14 +1001,12 @@ const DurableRunEvidenceSchema = z
           providerRequestIndex: z.number().int().nonnegative(),
           sourceKind: z.enum(["document", "chat_message", "memory", "web"]),
           logicalSourceIdentity: z.string().min(1),
-          publisherIssueId: z.string().nullable(),
-          publisherDocumentId: z.string().nullable(),
           contentItemIdentity: z.string().min(1),
           exposureStage: z.string().min(1),
           visibleTokenCount: z.number().int().nonnegative(),
           documentSourceId: z
             .string()
-            .regex(/^(?:public|publisher):[^:\s]+$/u)
+            .regex(/^public:[^:\s]+$/u)
             .nullable(),
           documentId: z.string().min(1).nullable(),
           snapshotId: z.string().min(1).nullable(),
@@ -1090,7 +1020,6 @@ const DurableRunEvidenceSchema = z
             .regex(/^[0-9a-f]{64}$/u)
             .nullable(),
           chatRanges: z.array(BindingRangeSchema).nullable(),
-          publisherExtractionId: z.uuid().nullable(),
           createdAt: z.iso.datetime(),
         })
         .strict(),
@@ -1114,7 +1043,6 @@ const DurableRunEvidenceSchema = z
           kind: z.enum(["document", "chat_message", "memory", "web"]),
           locator: JsonObjectSchema,
           snapshotId: z.string().nullable(),
-          publisherExtractionId: z.uuid().nullable(),
           messageId: z.uuid().nullable(),
           memoryRevisionId: z.uuid().nullable(),
           displayLabel: z.string().nullable(),
@@ -1240,15 +1168,7 @@ const buildSeedManifest = (
   const sourceBindings = fixture.evidence.map((source, index) => {
     if (source.kind === "document") {
       const documentId = `eval-v4-${sha256Hex(`${identity}:document:${index}`).slice(0, 40)}`;
-      const publisher = source.sourceId.startsWith("publisher:");
-      const sourceNamespace = publisher
-        ? {
-            kind: "publisher" as const,
-            sourceId: `publisher:${evaluationSourceId}`,
-            issueId: deterministicUuid(`${identity}:issue:${index}`),
-            documentId,
-          }
-        : { kind: "public" as const, sourceId: `public:${evaluationSourceId}` };
+      const sourceNamespace = { kind: "public" as const, sourceId: `public:${evaluationSourceId}` };
       return {
         sourceId: sourceNamespace.sourceId,
         goldenSourceId: source.sourceId,
@@ -1256,9 +1176,6 @@ const buildSeedManifest = (
         documentId,
         snapshotId: documentId,
         contentHash: sha256Hex(storedDocumentText(source.content)),
-        publisherExtractionId: publisher
-          ? deterministicUuid(identity + ":document:" + index + ":extraction")
-          : null,
         source: sourceNamespace,
       };
     }
@@ -1289,9 +1206,11 @@ const buildSeedManifest = (
       url: source.url,
       title: source.title,
       domain: source.domain,
-      // This seed timestamp is replaced by the live fetch timestamp and checked
-      // against the captured evidence.
-      capturedAt: "1970-01-01T00:00:00.000Z",
+      // The seed timestamp is replaced by the live fetch timestamp and checked
+      // against the captured evidence. Keep it on or after the fixture's
+      // publication date so the strict web locator invariant holds while the
+      // deterministic seed is assembled.
+      capturedAt: "2026-03-14T00:00:00.000Z",
     };
   });
   return EvaluationSeedManifestSchema.parse({
@@ -1344,27 +1263,27 @@ const seedOneCase = (
               userId: manifest.userId,
               chatId: manifest.chatId,
               companyId: manifest.companyId,
-              subscriptionIds: manifest.sourceBindings
-                .filter(
-                  (source): source is Extract<typeof source, { kind: "document" }> =>
-                    source.kind === "document" && source.source.kind === "publisher",
-                )
-                .map((source) => source.source.sourceId.slice("publisher:".length))
-                .sort(),
-              accessIds: [],
-              publicSourceIds: manifest.sourceBindings.some(
-                (source) => source.kind === "document" && source.source.kind === "public",
-              )
-                ? [sourceId]
-                : [],
+              publicSourceIds: Array.from(
+                new Set(
+                  manifest.sourceBindings
+                    .filter(
+                      (source): source is Extract<typeof source, { kind: "document" }> =>
+                        source.kind === "document" && source.source.kind === "public",
+                    )
+                    .map((source) => source.source.sourceId.slice("public:".length)),
+                ),
+              ).sort(),
               memoryMode: "private_owner",
-              memoryRevisionIds: manifest.sourceBindings
-                .filter(
-                  (source): source is Extract<typeof source, { kind: "memory" }> =>
-                    source.kind === "memory",
-                )
-                .map((source) => source.memoryRevisionId)
-                .sort(),
+              memoryRevisionIds: Array.from(
+                new Set(
+                  manifest.sourceBindings
+                    .filter(
+                      (source): source is Extract<typeof source, { kind: "memory" }> =>
+                        source.kind === "memory",
+                    )
+                    .map((source) => source.memoryRevisionId),
+                ),
+              ).sort(),
               webRequested,
               webEnabled: webRequested && fixture.webPolicyEnabled,
               provider: providerServiceId,
@@ -1379,12 +1298,11 @@ const seedOneCase = (
             });
 
           yield* sql`
-            insert into platform_users (id, primary_email, display_name, clerk_user_id)
+            insert into platform_users (id, primary_email, display_name)
             values (
               ${manifest.userId},
               ${`${manifest.userId}@evaluation.invalid`},
-              ${`Evaluation ${fixture.id} ${topology}`},
-              ${`clerk_${manifest.userId}`}
+              ${`Evaluation ${fixture.id} ${topology}`}
             ) on conflict (id) do nothing
           `;
           yield* sql`
@@ -1496,7 +1414,11 @@ const seedOneCase = (
               update ai_runs
               set assistant_message_id = ${binding.assistantMessageId},
                   started_at = ${createdAt}, finished_at = ${new Date(createdAt.getTime() + 1_000)}
-              where id = ${binding.aiRunId} and finished_at is null
+              where id = ${binding.aiRunId}
+                and finished_at is null
+                and failed_at is null
+                and stopped_at is null
+                and superseded_at is null
             `;
           }
 
@@ -1574,7 +1496,7 @@ const seedOneCase = (
             insert into chat_messages (id, chat_id, author, content, created_at)
             values (
               ${manifest.userMessageId}, ${manifest.chatId}, 'user', ${fixture.currentMessage},
-              ${CanonicalEvaluationRunCurrentTimestamp}
+              ${CanonicalEvaluationRunCurrentTimestamp}::timestamptz
             ) on conflict (id) do nothing
           `;
           yield* sql`
@@ -1583,7 +1505,7 @@ const seedOneCase = (
               acceptance_scope
             ) values (
               ${manifest.aiRunId}, ${manifest.chatId}, ${manifest.userId}, ${manifest.userMessageId},
-              ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, ${CanonicalEvaluationRunCurrentTimestamp},
+              ${fixture.locale}, ${fixture.market}, ${citationNamespaceForRun(manifest.aiRunId)}, ${CanonicalEvaluationRunCurrentTimestamp}::timestamptz,
               ${JSON.stringify(acceptanceScopeForRun(fixture.webRequested))}::jsonb
             ) on conflict (id) do nothing
           `;
@@ -1888,31 +1810,14 @@ const baselineSourceMap = async (
       ranges: selection.ranges,
     };
     if (binding.kind === "document") {
-      const locator: FinalSourceRecord["locator"] =
-        binding.source.kind === "publisher"
-          ? {
-              kind: "document" as const,
-              sourceId: documentBindingSourceId(binding) as `publisher:${string}`,
-              documentId: binding.documentId,
-              snapshotId: binding.snapshotId,
-              contentHash: binding.contentHash,
-              ranges: selection.ranges,
-              publisherIssueId: binding.source.issueId,
-              publisherDocumentId: binding.source.documentId,
-              publisherExtractionId:
-                binding.publisherExtractionId ??
-                (() => {
-                  throw new Error("publisher evaluation binding lacks its extraction identity");
-                })(),
-            }
-          : {
-              kind: "document" as const,
-              sourceId: documentBindingSourceId(binding),
-              documentId: binding.documentId,
-              snapshotId: binding.snapshotId,
-              contentHash: binding.contentHash,
-              ranges: selection.ranges,
-            };
+      const locator: FinalSourceRecord["locator"] = {
+        kind: "document" as const,
+        sourceId: documentBindingSourceId(binding),
+        documentId: binding.documentId,
+        snapshotId: binding.snapshotId,
+        contentHash: binding.contentHash,
+        ranges: selection.ranges,
+      };
       return {
         sourceKey,
         locator,
@@ -2376,9 +2281,6 @@ const executeBaseline = async (
                     return {
                       snapshotId: binding.snapshotId,
                       contentHash: binding.contentHash,
-                      ...(binding.publisherExtractionId === null
-                        ? {}
-                        : { publisherExtractionId: binding.publisherExtractionId }),
                       source: binding.source,
                       ranges: [{ charStart, charEnd }],
                     };
@@ -2584,31 +2486,6 @@ export const executeGeneralPlannerEvaluationCase = async (
     }
   });
 
-/**
- * Repairs a legacy failed evaluation whose case/session terminal transition
- * committed before its already-started baseline ai_run was terminalized.
- */
-export const recoverFailedGeneralPlannerEvaluationRun = async (
-  connectionString: string,
-  sessionId: string,
-  caseId: string,
-): Promise<void> =>
-  withEvaluationSessionExecutionLease(connectionString, sessionId, async () => {
-    const session = await loadEvaluationSession(connectionString, sessionId);
-    const row = (await loadCaseRuns(connectionString, sessionId)).find(
-      (candidate) => candidate.caseId === caseId && candidate.topology === "general_planner",
-    );
-    if (session.status !== "failed" || row?.status !== "failed") {
-      throw new Error("general-planner recovery requires immutable failed session and case rows");
-    }
-    await terminalizeFailedBaselineRun(
-      connectionString,
-      row.aiRunId,
-      `ai-evaluation-general-planner:${row.sessionId}:${row.caseId}`,
-    );
-    await failCaseRun(connectionString, row, new Error("legacy baseline child was nonterminal"));
-  });
-
 const loadDurableRunEvidence = (
   connectionString: string,
   aiRunId: string,
@@ -2641,11 +2518,6 @@ const loadDurableRunEvidence = (
         readonly chatUserId: string;
         readonly chatCompanyId: string;
         readonly chatMemoryMode: string;
-        readonly chatSharedAt: Date | null;
-        readonly chatDeletedAt: Date | null;
-        readonly chatDeletedByUserId: string | null;
-        readonly chatPurgeAfter: Date | null;
-        readonly chatLegalHold: boolean;
         readonly chatCreatedAt: Date;
         readonly chatUpdatedAt: Date;
         readonly currentMessageId: string | null;
@@ -2691,10 +2563,7 @@ const loadDurableRunEvidence = (
                runs.next_event_seq as "nextEventSeq", runs.error_code as "errorCode",
                runs.retryable,
                chats.user_id as "chatUserId", chats.company_id::text as "chatCompanyId",
-               chats.memory_mode as "chatMemoryMode", chats.shared_at as "chatSharedAt",
-               chats.deleted_at as "chatDeletedAt",
-               chats.deleted_by_user_id as "chatDeletedByUserId",
-               chats.purge_after as "chatPurgeAfter", chats.legal_hold as "chatLegalHold",
+               chats.memory_mode as "chatMemoryMode",
                chats.created_at as "chatCreatedAt", chats.updated_at as "chatUpdatedAt",
                current_messages.id::text as "currentMessageId",
                current_messages.chat_id::text as "currentMessageChatId",
@@ -2854,8 +2723,6 @@ const loadDurableRunEvidence = (
         readonly providerRequestIndex: number;
         readonly sourceKind: string;
         readonly logicalSourceIdentity: string;
-        readonly publisherIssueId: string | null;
-        readonly publisherDocumentId: string | null;
         readonly contentItemIdentity: string;
         readonly exposureStage: string;
         readonly visibleTokenCount: number;
@@ -2866,14 +2733,11 @@ const loadDurableRunEvidence = (
         readonly documentRanges: EvaluationRange[] | null;
         readonly chatContentHash: string | null;
         readonly chatRanges: EvaluationRange[] | null;
-        readonly publisherExtractionId: string | null;
         readonly createdAt: Date;
       }>`
         select id::text, task_id as "taskId", loop_iteration as "loopIteration", attempt,
                provider_request_index as "providerRequestIndex", source_kind as "sourceKind",
                logical_source_identity as "logicalSourceIdentity",
-               publisher_issue_id as "publisherIssueId",
-               publisher_document_id as "publisherDocumentId",
                content_item_identity as "contentItemIdentity",
                exposure_stage as "exposureStage", visible_token_count as "visibleTokenCount",
                document_source_id as "documentSourceId",
@@ -2883,7 +2747,6 @@ const loadDurableRunEvidence = (
                document_ranges as "documentRanges",
                chat_content_hash as "chatContentHash",
                chat_ranges as "chatRanges",
-               publisher_extraction_id::text as "publisherExtractionId",
                created_at as "createdAt"
         from ai_source_exposures where run_id = ${aiRunId}
         order by task_id, loop_iteration, attempt, provider_request_index,
@@ -2906,12 +2769,11 @@ const loadDurableRunEvidence = (
       >`
         select source_key as "sourceKey", kind, locator,
                snapshot_id as "snapshotId",
-               publisher_extraction_id::text as "publisherExtractionId",
                message_id::text as "messageId",
                memory_revision_id::text as "memoryRevisionId",
                display_label as "displayLabel", public_provenance as "publicProvenance",
                created_at as "createdAt"
-        from assistant_message_sources where assistant_message_id = ${run.assistantMessageId}
+        from assistant_message_sources where run_id = ${aiRunId}
       `;
       const sourceUses = yield* sql<
         Omit<DurableRunEvidence["sourceUses"][number], "createdAt"> & {
@@ -2921,7 +2783,7 @@ const loadDurableRunEvidence = (
         select source_key as "sourceKey", consumer_task_id as "consumerTaskId",
                topic_id as "topicId", rendered_token_count as "renderedTokenCount",
                context_order as "contextOrder", ranges, created_at as "createdAt"
-        from assistant_message_source_uses where assistant_message_id = ${run.assistantMessageId}
+        from assistant_message_source_uses where run_id = ${aiRunId}
       `;
       const memoryWrites = yield* sql<
         Omit<DurableRunEvidence["memoryWrites"][number], "createdAt"> & {
@@ -3001,11 +2863,6 @@ const loadDurableRunEvidence = (
           userId: run.chatUserId,
           companyId: run.chatCompanyId,
           memoryMode: run.chatMemoryMode,
-          sharedAt: run.chatSharedAt === null ? null : run.chatSharedAt.toISOString(),
-          deletedAt: run.chatDeletedAt === null ? null : run.chatDeletedAt.toISOString(),
-          deletedByUserId: run.chatDeletedByUserId,
-          purgeAfter: run.chatPurgeAfter === null ? null : run.chatPurgeAfter.toISOString(),
-          legalHold: run.chatLegalHold,
           createdAt: run.chatCreatedAt.toISOString(),
           updatedAt: run.chatUpdatedAt.toISOString(),
         },
@@ -3083,319 +2940,6 @@ const loadDurableRunEvidence = (
       });
     }),
   );
-export interface RevalidatedEvaluationV3Evidence {
-  readonly artifactVersion: 3;
-  readonly goldenSetVersion: 3;
-  readonly sessionId: string;
-  readonly caseId: string;
-  readonly topology: EvaluationTopology;
-  readonly aiRunId: string;
-  readonly caseDigest: string;
-  readonly storedCaseDigest: string;
-  readonly caseDigestMatches: boolean;
-  readonly annotationDigest: string;
-  readonly storedAnnotationDigest: string;
-  readonly annotationDigestMatches: boolean;
-  readonly annotationRunEvidenceDigest: string;
-  readonly annotationRunEvidenceMatches: boolean;
-  readonly sourceUseDigest: string;
-  readonly sourceUseRanges: readonly {
-    readonly sourceKey: string;
-    readonly consumerTaskId: string;
-    readonly ranges: readonly EvaluationRange[];
-  }[];
-}
-
-/**
- * Revalidates retained v3 evidence under the post-cutover database shape.
- *
- * This is intentionally read-only. The digest envelope mirrors migration 0072's
- * historical v3 seal exactly: v3 evidence did not include the v4 chat proof
- * sidecars, so those nullable columns are excluded before hashing.
- */
-export const revalidateEvaluationV3Evidence = async (
-  connectionString: string,
-  sessionId: string,
-  caseId: string,
-  topology: EvaluationTopology,
-): Promise<RevalidatedEvaluationV3Evidence> => {
-  const row = await db(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{
-        readonly artifactVersion: number;
-        readonly goldenSetVersion: number;
-        readonly sessionStatus: string;
-        readonly fixtureSha256Hex: string;
-        readonly aiRunId: string;
-        readonly seedManifest: unknown;
-        readonly executionOutput: unknown | null;
-        readonly executionOutputSha256Hex: string | null;
-        readonly runEvidenceSha256Hex: string | null;
-      }>`
-        select sessions.artifact_version as "artifactVersion",
-               sessions.golden_set_version as "goldenSetVersion",
-               sessions.status as "sessionStatus",
-               sessions.fixture_sha256_hex as "fixtureSha256Hex",
-               cases.ai_run_id::text as "aiRunId",
-               cases.seed_manifest as "seedManifest",
-               cases.execution_output as "executionOutput",
-               cases.execution_output_sha256_hex as "executionOutputSha256Hex",
-               cases.run_evidence_sha256_hex as "runEvidenceSha256Hex"
-        from ai_evaluation_sessions sessions
-        join ai_evaluation_case_runs cases on cases.session_id = sessions.id
-        where sessions.id = ${sessionId}
-          and cases.case_id = ${caseId}
-          and cases.topology = ${topology}
-      `;
-      const value = rows[0];
-      if (value === undefined) {
-        return yield* Effect.fail(new Error(`${topology}/${caseId} v3 evaluation case is missing`));
-      }
-      return value;
-    }),
-  );
-  if (row.artifactVersion !== 3 || row.goldenSetVersion !== 3) {
-    throw new Error(`${topology}/${caseId} is not a retained v3 evaluation case`);
-  }
-  if (row.sessionStatus !== "awaiting_annotations" && row.sessionStatus !== "complete") {
-    throw new Error(`${topology}/${caseId} v3 evaluation session is not terminal`);
-  }
-  if (row.runEvidenceSha256Hex === null) {
-    throw new Error(`${topology}/${caseId} v3 case has no terminal evidence digest`);
-  }
-  const manifest = EvaluationSeedManifestV3Schema.parse(row.seedManifest);
-  if (
-    manifest.sessionId !== sessionId ||
-    manifest.caseId !== caseId ||
-    manifest.topology !== topology ||
-    manifest.aiRunId !== row.aiRunId
-  ) {
-    throw new Error(`${topology}/${caseId} v3 seed identity does not match its case row`);
-  }
-
-  const evidence = await loadDurableRunEvidence(connectionString, row.aiRunId);
-  const { currentTimestamp: _currentTimestamp, ...historicalRun } = evidence.run;
-  const historicalEvidence = {
-    ...evidence,
-    run: historicalRun,
-    sourceExposures: evidence.sourceExposures.map((exposure) => {
-      const {
-        chatContentHash: _chatContentHash,
-        chatRanges: _chatRanges,
-        ...v3Exposure
-      } = exposure;
-      return v3Exposure;
-    }),
-  };
-  const caseDigest = canonicalSha256Hex({
-    topology,
-    evaluationConfigSha256Hex:
-      (
-        await db(
-          connectionString,
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{
-              readonly evaluationConfigSha256Hex: string | null;
-              readonly providerEndpointIdentity: string | null;
-            }>`
-            select execution_config_sha256_hex as "evaluationConfigSha256Hex",
-                   provider_endpoint_identity as "providerEndpointIdentity"
-            from ai_evaluation_sessions where id = ${sessionId}
-          `;
-            return rows[0];
-          }),
-        )
-      )?.evaluationConfigSha256Hex ?? null,
-    providerEndpointIdentity:
-      (
-        await db(
-          connectionString,
-          Effect.gen(function* () {
-            const sql = yield* PgClient.PgClient;
-            const rows = yield* sql<{ readonly providerEndpointIdentity: string | null }>`
-            select provider_endpoint_identity as "providerEndpointIdentity"
-            from ai_evaluation_sessions where id = ${sessionId}
-          `;
-            return rows[0];
-          }),
-        )
-      )?.providerEndpointIdentity ?? null,
-    durableRun: historicalEvidence,
-    executionOutputSha256Hex: row.executionOutputSha256Hex,
-  });
-  if (row.executionOutput !== null || row.executionOutputSha256Hex !== null) {
-    if (
-      row.executionOutput === null ||
-      row.executionOutputSha256Hex === null ||
-      canonicalSha256Hex(row.executionOutput) !== row.executionOutputSha256Hex
-    ) {
-      throw new Error(`${topology}/${caseId} v3 execution output digest mismatch`);
-    }
-  }
-
-  const annotation = await db(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{
-        readonly aiRunId: string;
-        readonly annotations: unknown;
-        readonly annotationsSha256Hex: string;
-        readonly runEvidenceSha256Hex: string;
-      }>`
-        select ai_run_id::text as "aiRunId",
-               annotations, annotations_sha256_hex as "annotationsSha256Hex",
-               run_evidence_sha256_hex as "runEvidenceSha256Hex"
-        from ai_evaluation_annotations
-        where session_id = ${sessionId} and case_id = ${caseId} and topology = ${topology}
-      `;
-      const value = rows[0];
-      if (value === undefined) {
-        return yield* Effect.fail(new Error(`${topology}/${caseId} v3 annotations are missing`));
-      }
-      return value;
-    }),
-  );
-  if (annotation.aiRunId !== row.aiRunId) {
-    throw new Error(`${topology}/${caseId} v3 annotation run binding mismatch`);
-  }
-  const annotations = EvaluationHumanAnnotationsV3Schema.parse(annotation.annotations);
-  const annotationDigest = canonicalSha256Hex(annotations);
-  if (annotationDigest !== annotation.annotationsSha256Hex) {
-    throw new Error(`${topology}/${caseId} v3 annotation digest mismatch`);
-  }
-  if (annotation.runEvidenceSha256Hex !== row.runEvidenceSha256Hex) {
-    throw new Error(`${topology}/${caseId} v3 annotation evidence binding mismatch`);
-  }
-
-  const sourceUseRanges = await db(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      return yield* sql<{
-        readonly sourceKey: string;
-        readonly consumerTaskId: string;
-        readonly ranges: EvaluationRange[];
-      }>`
-        select uses.source_key as "sourceKey",
-               uses.consumer_task_id as "consumerTaskId",
-               uses.ranges
-        from assistant_message_source_uses uses
-        join ai_runs runs on runs.assistant_message_id = uses.assistant_message_id
-        where runs.id = ${row.aiRunId}
-        order by uses.source_key, uses.consumer_task_id
-      `;
-    }),
-  );
-  const normalizedSourceUseRanges = sourceUseRanges.map((entry) => ({
-    sourceKey: entry.sourceKey,
-    consumerTaskId: entry.consumerTaskId,
-    ranges: entry.ranges,
-  }));
-  return {
-    artifactVersion: 3,
-    goldenSetVersion: 3,
-    sessionId,
-    caseId,
-    topology,
-    aiRunId: row.aiRunId,
-    caseDigest,
-    storedCaseDigest: row.runEvidenceSha256Hex,
-    caseDigestMatches: caseDigest === row.runEvidenceSha256Hex,
-    annotationDigest,
-    storedAnnotationDigest: annotation.annotationsSha256Hex,
-    annotationDigestMatches: annotationDigest === annotation.annotationsSha256Hex,
-    annotationRunEvidenceDigest: annotation.runEvidenceSha256Hex,
-    annotationRunEvidenceMatches: annotation.runEvidenceSha256Hex === caseDigest,
-    sourceUseDigest: canonicalSha256Hex(normalizedSourceUseRanges),
-    sourceUseRanges: normalizedSourceUseRanges,
-  };
-};
-
-/**
- * Reads one retained v3 artifact after revalidating its durable evidence.
- * New sessions, captures, and seed paths never call this function.
- */
-export const readAndRevalidateEvaluationV3Artifact = async (
-  connectionString: string,
-  sessionId: string,
-  caseId: string,
-  topology: EvaluationTopology,
-): Promise<EvaluationResultV3> => {
-  const revalidated = await revalidateEvaluationV3Evidence(
-    connectionString,
-    sessionId,
-    caseId,
-    topology,
-  );
-  if (
-    !revalidated.caseDigestMatches ||
-    !revalidated.annotationDigestMatches ||
-    !revalidated.annotationRunEvidenceMatches
-  ) {
-    throw new Error(`${topology}/${caseId} retained v3 digest attestation mismatch`);
-  }
-  const stored = await db(
-    connectionString,
-    Effect.gen(function* () {
-      const sql = yield* PgClient.PgClient;
-      const rows = yield* sql<{
-        readonly executionOutput: unknown | null;
-        readonly evaluationConfigSha256Hex: string | null;
-        readonly providerEndpointIdentity: string | null;
-      }>`
-        select cases.execution_output as "executionOutput",
-               sessions.execution_config_sha256_hex as "evaluationConfigSha256Hex",
-               sessions.provider_endpoint_identity as "providerEndpointIdentity"
-        from ai_evaluation_case_runs cases
-        join ai_evaluation_sessions sessions on sessions.id = cases.session_id
-        where cases.session_id = ${sessionId}
-          and cases.case_id = ${caseId}
-          and cases.topology = ${topology}
-      `;
-      return rows[0];
-    }),
-  );
-  if (stored === undefined) {
-    throw new Error(`${topology}/${caseId} retained v3 case disappeared during read`);
-  }
-  const parsed = EvaluationResultV3Schema.safeParse(stored.executionOutput);
-  if (!parsed.success) {
-    throw new Error(
-      `${topology}/${caseId} retained v3 artifact is not a captured evaluation result`,
-    );
-  }
-  const artifact = parsed.data;
-  if (
-    artifact.artifactVersion !== 3 ||
-    artifact.goldenSetVersion !== 3 ||
-    artifact.caseId !== caseId ||
-    artifact.topology !== topology ||
-    artifact.capture.origin !== "real_provider_turn"
-  ) {
-    throw new Error(`${topology}/${caseId} retained v3 artifact identity mismatch`);
-  }
-  const attestation = artifact.capture.attestation;
-  if (
-    attestation.sessionId !== sessionId ||
-    attestation.topology !== topology ||
-    artifact.capture.runId !== revalidated.aiRunId ||
-    attestation.annotationsSha256Hex !== revalidated.storedAnnotationDigest ||
-    attestation.evaluationConfigSha256Hex !== stored.evaluationConfigSha256Hex ||
-    attestation.providerEndpointIdentity !== stored.providerEndpointIdentity
-  ) {
-    throw new Error(`${topology}/${caseId} retained v3 artifact binding mismatch`);
-  }
-  // The stored case digest includes execution_output_sha256_hex, while this
-  // attestation is embedded in execution_output. Comparing them would require
-  // an impossible SHA fixed point; row and annotation run-evidence bindings
-  // above are the historical v3 seal.
-  return artifact;
-};
-
 const usageCoordinateOrder = (
   left: DurableRunEvidence["usage"][number],
   right: DurableRunEvidence["usage"][number],
@@ -4202,11 +3746,6 @@ const attestRelationalEvidence = (
     evidence.chat.userId !== manifest.userId ||
     evidence.chat.companyId !== manifest.companyId ||
     evidence.chat.memoryMode !== "private_owner" ||
-    evidence.chat.sharedAt !== null ||
-    evidence.chat.deletedAt !== null ||
-    evidence.chat.deletedByUserId !== null ||
-    evidence.chat.purgeAfter !== null ||
-    evidence.chat.legalHold ||
     Date.parse(evidence.chat.updatedAt) < Date.parse(evidence.chat.createdAt) ||
     current.id !== manifest.userMessageId ||
     current.chatId !== manifest.chatId ||
@@ -4282,26 +3821,14 @@ const attestRelationalEvidence = (
         : undefined;
     const expectedLocator =
       binding?.kind === "document" && golden?.kind === "document"
-        ? binding.source.kind === "publisher"
-          ? {
-              kind: "document" as const,
-              sourceId: documentBindingSourceId(binding),
-              documentId: binding.documentId,
-              snapshotId: binding.snapshotId,
-              contentHash: binding.contentHash,
-              ranges: expectedDocumentRanges!,
-              publisherIssueId: binding.source.issueId,
-              publisherDocumentId: binding.source.documentId,
-              publisherExtractionId: binding.publisherExtractionId ?? undefined,
-            }
-          : {
-              kind: "document" as const,
-              sourceId: documentBindingSourceId(binding),
-              documentId: binding.documentId,
-              snapshotId: binding.snapshotId,
-              contentHash: binding.contentHash,
-              ranges: expectedDocumentRanges!,
-            }
+        ? {
+            kind: "document" as const,
+            sourceId: documentBindingSourceId(binding),
+            documentId: binding.documentId,
+            snapshotId: binding.snapshotId,
+            contentHash: binding.contentHash,
+            ranges: expectedDocumentRanges!,
+          }
         : binding?.kind === "chat_message"
           ? { kind: "chat_message", messageId: binding.messageId }
           : binding?.kind === "memory"
@@ -4334,7 +3861,7 @@ const attestRelationalEvidence = (
             documentTitle: `Canonical evidence ${evaluationBindingGoldenSourceId(binding)}`,
             citationUrl: `https://evaluation.invalid/documents/${binding.documentId}`,
             ...(row.topology === "specialized"
-              ? { publishedAt: CanonicalEvaluationDocumentTimestamp }
+              ? { publishedAt: CanonicalEvaluationDocumentPublishedAt }
               : {}),
           }
         : binding?.kind === "web"
@@ -4345,10 +3872,6 @@ const attestRelationalEvidence = (
       binding === undefined ||
       golden === undefined ||
       source.displayLabel !== expectedLabel ||
-      source.publisherExtractionId !==
-        (binding.kind === "document" && binding.source.kind === "publisher"
-          ? binding.publisherExtractionId
-          : null) ||
       expectedLocator === undefined ||
       canonicalJson(source.locator) !== canonicalJson(expectedLocator) ||
       canonicalJson(source.publicProvenance) !== canonicalJson(expectedProvenance) ||
@@ -4613,7 +4136,7 @@ const attestRetrievalManifestEvidence = (
           binding.kind === "document"
             ? [...previewIdentities].some(
                 (identity) =>
-                  (identity.kind === "public_document" || identity.kind === "publisher_document") &&
+                  identity.kind === "public_document" &&
                   identity.documentId === binding.documentId &&
                   identity.snapshotId === binding.snapshotId &&
                   identity.contentHash === binding.contentHash,
@@ -4736,17 +4259,11 @@ const assertEvaluationTenantAvailable = async (
           from chats
           join platform_users users
             on users.id = ${manifest.userId}
-           and users.recovery_deleted_at is null
-           and users.purged_at is null
           join client_companies companies
             on companies.id = ${manifest.companyId}
-           and companies.recovery_deleted_at is null
-           and companies.purged_at is null
           where chats.id = ${manifest.chatId}
             and chats.company_id = companies.id
             and chats.user_id = users.id
-            and chats.deleted_at is null
-            and chats.purge_after is null
         ) as authorized
       `;
       return rows[0]?.authorized === true;
@@ -4911,7 +4428,12 @@ const terminalizeEvaluationCaseProductRun = async (
         readonly terminal: boolean;
       }>`
         select started_at is not null as started,
-               finished_at is not null or failed_at is not null as terminal
+               (
+                 finished_at is not null
+                 or failed_at is not null
+                 or stopped_at is not null
+                 or superseded_at is not null
+               ) as terminal
         from ai_runs where id = ${row.aiRunId}
       `;
       const state = rows[0];
@@ -5670,7 +5192,7 @@ const fixtureWithStoredDocumentText = (
 
 /**
  * Reads the exact current text for every namespaced evaluation document. The
- * fixture is not a substitute for the persisted public/publisher document:
+ * fixture is not a substitute for the persisted public document:
  * trusted capture must independently hash the row that the runtime exposed.
  */
 const loadStoredEvaluationDocuments = (
@@ -5697,24 +5219,8 @@ const loadStoredEvaluationDocuments = (
                  document_id::text as "snapshotId",
                  text, content_hash as "contentHash", text_char_count as "textCharCount"
           from public_source_documents
-          where ${binding.source.kind === "public"} = true
-            and source_id = ${binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
+          where source_id = ${binding.source.sourceId.slice("public:".length)}
             and document_id = ${binding.documentId}
-          union all
-          select subscriptions.id::text as "sourceId",
-                 documents.id::text as "documentId",
-                 versions.id::text as "snapshotId",
-                 versions.canonical_text as text, versions.content_hash as "contentHash",
-                 versions.text_char_count as "textCharCount"
-          from hartlib_document_versions versions
-          join hartlib_documents documents on documents.id = versions.hartlib_document_id
-          join publisher_issues issues on issues.id = documents.issue_id
-          join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-          where ${binding.source.kind === "publisher"} = true
-            and subscriptions.id::text = ${binding.source.kind === "publisher" ? binding.source.sourceId.slice("publisher:".length) : null}
-            and issues.id::text = ${binding.source.kind === "publisher" ? binding.source.issueId : null}
-            and documents.id::text = ${binding.documentId}
-            and versions.id::text = ${binding.snapshotId}
         `;
         if (rows.length !== 1) {
           throw new Error(
@@ -5723,7 +5229,7 @@ const loadStoredEvaluationDocuments = (
         }
         const stored = rows[0]!;
         if (
-          stored.sourceId !== binding.source.sourceId.slice(`${binding.source.kind}:`.length) ||
+          stored.sourceId !== binding.source.sourceId.slice("public:".length) ||
           stored.documentId !== binding.documentId ||
           stored.snapshotId !== binding.snapshotId ||
           stored.contentHash !== binding.contentHash ||
@@ -5769,7 +5275,7 @@ const SourceExposureAttestationSchema = z
       .optional(),
     documentSourceId: z
       .string()
-      .regex(/^(?:public|publisher):[^:\s]+$/u)
+      .regex(/^public:[^:\s]+$/u)
       .optional(),
     documentId: z.string().min(1).optional(),
     snapshotId: z.string().min(1).optional(),
@@ -5853,6 +5359,7 @@ const ProviderRequestMeasurementSchema = z
   .object({
     providerRequestIndex: z.number().int().nonnegative(),
     agentRole: z.string().min(1),
+    repairConsumed: z.boolean(),
     modelId: z.string().min(1),
     requestSha256Hex: z.string().regex(/^[0-9a-f]{64}$/u),
     sourceExposureProofSha256Hexes: z.array(z.string().regex(/^[0-9a-f]{64}$/u)),
@@ -6336,6 +5843,12 @@ const attestExactSourceExposureRows = (
       exposure.providerRequestIndex,
     );
     const requestAttestation = requestAttestations.get(requestKey);
+    if (payload.providerSerializationProofBinding === undefined) {
+      throw new Error(
+        `${manifest.caseId} source exposure attestation lacks its exact field binding`,
+      );
+    }
+    const exactBinding = payload.providerSerializationProofBinding;
     const exactProof = providerVisibleSourceExposureProofSha256Hex(
       {
         sourceKind: payload.sourceKind,
@@ -6344,7 +5857,7 @@ const attestExactSourceExposureRows = (
         exposureStage: payload.exposureStage,
         visibleTokenCount: payload.visibleTokenCount,
       },
-      payload.providerSerializationProofBinding,
+      exactBinding,
     );
     const expectedVisibleTokenCount = expectedExposureVisibleTokenCount(
       manifest,
@@ -6894,31 +6407,14 @@ const sourceAudit = async (
               readonly resolvable: boolean;
             }>`
               select case ${binding.kind}::text
-                when 'document' then case ${binding.kind === "document" && binding.source.kind === "publisher"}::boolean
-                  when true then exists (
-                    select 1
-                    from hartlib_document_versions versions
-                    join hartlib_documents documents on documents.id = versions.hartlib_document_id
-                    join publisher_issues issues on issues.id = documents.issue_id
-                    join publisher_subscriptions subscriptions on subscriptions.id = issues.subscription_id
-                    join publisher_companies companies
-                      on companies.id = subscriptions.publisher_company_id
-                    where versions.id::text = ${binding.kind === "document" ? binding.snapshotId : null}
-                      and documents.id::text = ${binding.kind === "document" ? binding.documentId : null}
-                      and issues.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.issueId : null}
-                      and documents.id::text = ${binding.kind === "document" && binding.source.kind === "publisher" ? binding.source.documentId : null}
-                      and ('publisher:' || subscriptions.id::text) = ${binding.kind === "document" ? binding.source.sourceId : null}
-                      and versions.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
-                  )
-                  else exists (
-                    select 1 from public_source_documents documents
-                    where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
-                      and documents.document_id = ${binding.kind === "document" ? binding.snapshotId : null}
-                      and documents.source_id = ${binding.kind === "document" && binding.source.kind === "public" ? binding.source.sourceId.slice("public:".length) : null}
-                      and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
-                      and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
-                  )
-                end
+                when 'document' then exists (
+                  select 1 from public_source_documents documents
+                  where documents.document_id = ${binding.kind === "document" ? binding.documentId : null}
+                    and documents.document_id = ${binding.kind === "document" ? binding.snapshotId : null}
+                    and documents.source_id = ${binding.kind === "document" ? binding.source.sourceId.slice("public:".length) : null}
+                    and ('public:' || documents.source_id) = ${binding.kind === "document" ? binding.source.sourceId : null}
+                    and documents.content_hash = ${binding.kind === "document" ? binding.contentHash : null}
+                )
                 when 'chat_message' then exists (
                   select 1 from chat_messages where id = ${binding.kind === "chat_message" ? binding.messageId : null}
                     and chat_id = ${manifest.chatId}
@@ -6936,9 +6432,7 @@ const sourceAudit = async (
             const scope = evidence.run.acceptanceScope;
             const documentAllowed =
               binding.kind !== "document" ||
-              (binding.source.kind === "publisher"
-                ? scope.subscriptionIds.includes(binding.source.sourceId.slice("publisher:".length))
-                : scope.publicSourceIds.includes(binding.source.sourceId.slice("public:".length)));
+              scope.publicSourceIds.includes(binding.source.sourceId.slice("public:".length));
             const memoryAllowed =
               binding.kind !== "memory" ||
               scope.memoryRevisionIds.includes(binding.memoryRevisionId);
@@ -7721,19 +7215,6 @@ const captureV4Artifacts = async (
           binding.contentHash === identity.contentHash
         );
       }
-      if (identity.kind === "publisher_document") {
-        return (
-          binding.kind === "document" &&
-          binding.source.kind === "publisher" &&
-          binding.source.sourceId === identity.subscriptionId &&
-          binding.source.issueId === identity.issueId &&
-          binding.source.documentId === identity.documentId &&
-          binding.documentId === identity.documentId &&
-          binding.snapshotId === identity.snapshotId &&
-          binding.publisherExtractionId === identity.publisherExtractionId &&
-          binding.contentHash === identity.contentHash
-        );
-      }
       if (identity.kind === "chat_message") {
         return binding.kind === "chat_message" && binding.messageId === identity.messageId;
       }
@@ -7760,12 +7241,7 @@ const captureV4Artifacts = async (
         stored === undefined ||
         stored.snapshotId !== record.snapshotId ||
         stored.contentHash !== record.contentHash ||
-        stored.documentId !==
-          (identity.kind === "public_document" || identity.kind === "publisher_document"
-            ? identity.documentId
-            : "") ||
-        (record.identity.kind === "publisher_document" &&
-          record.publisherExtractionId !== binding.publisherExtractionId)
+        stored.documentId !== (identity.kind === "public_document" ? identity.documentId : "")
       ) {
         throw new Error("preview document identity differs from current stored binding");
       }
@@ -8380,10 +7856,7 @@ const commonCapturedResult = async (
         origin: "real_provider_turn" as const,
         runId: row.aiRunId,
         provider: "zai" as const,
-        modelIds: [...new Set(evidence.usage.map((usage) => usage.modelId))] as (
-          | "glm-5.2"
-          | "glm-5-turbo"
-        )[],
+        modelIds: [...new Set(evidence.usage.map((usage) => usage.modelId))] as "glm-5-turbo"[],
         startedAt: evidence.run.startedAt,
         finishedAt: evidence.run.finishedAt,
         attestation: {

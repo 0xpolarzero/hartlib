@@ -83,15 +83,6 @@ export type CanonicalIdentity =
       readonly contentHash: string;
     }
   | {
-      readonly kind: "publisher_document";
-      readonly subscriptionId: string;
-      readonly issueId: string;
-      readonly documentId: string;
-      readonly snapshotId: string;
-      readonly publisherExtractionId: string;
-      readonly contentHash: string;
-    }
-  | {
       readonly kind: "chat_message";
       readonly messageId: string;
       readonly sanitizedContentHash: string;
@@ -233,15 +224,6 @@ export const canonicalIdentityTuple = (
   switch (value.kind) {
     case "public_document":
       return ["public_document", value.sourceId, value.documentId, value.snapshotId];
-    case "publisher_document":
-      return [
-        "publisher_document",
-        value.subscriptionId,
-        value.issueId,
-        value.documentId,
-        value.snapshotId,
-        value.publisherExtractionId,
-      ];
     case "chat_message":
       return ["chat_message", value.messageId, value.sanitizedContentHash];
     case "memory":
@@ -328,15 +310,6 @@ const candidateIdentitySchema = z.discriminatedUnion("kind", [
     contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
   }),
   z.strictObject({
-    kind: z.literal("publisher_document"),
-    subscriptionId: nonEmptyText,
-    issueId: nonEmptyText,
-    documentId: nonEmptyText,
-    snapshotId: nonEmptyText,
-    publisherExtractionId: nonEmptyText,
-    contentHash: z.string().regex(/^[a-f0-9]{64}$/u),
-  }),
-  z.strictObject({
     kind: z.literal("chat_message"),
     messageId: nonEmptyText,
     sanitizedContentHash: z.string().regex(/^[a-f0-9]{64}$/u),
@@ -392,11 +365,7 @@ const CandidateLedgerEntryValidatedSchema = CandidateLedgerEntryInputSchema.supe
     }
     if (
       candidate.identity.kind !== candidate.kind &&
-      !(
-        candidate.kind === "document" &&
-        (candidate.identity.kind === "public_document" ||
-          candidate.identity.kind === "publisher_document")
-      )
+      !(candidate.kind === "document" && candidate.identity.kind === "public_document")
     ) {
       context.addIssue({
         code: "custom",

@@ -16,7 +16,6 @@ import {
   type GoldenEvaluationCase,
 } from "./schema";
 import { canonicalIdentityKey } from "../retrieval/rank-fusion";
-import { EvaluationResultV3Schema, EvaluationSeedManifestV3Schema } from "./schema.v3";
 
 type RetrievalCapture = z.infer<typeof RetrievalCaptureSchema>;
 
@@ -707,29 +706,5 @@ describe("v4 retrieval, compaction, and terminal rows", () => {
         requests: [{ ...requests[0]!, localInputTokens: 21 }],
       }).success,
     ).toBe(false);
-  });
-});
-
-describe("historical v3 evaluation schemas", () => {
-  it("accepts a retained v3 seed manifest and never accepts a v4 version", () => {
-    const manifest = {
-      artifactVersion: 3 as const,
-      goldenSetVersion: 3 as const,
-      sessionId: "00000000-0000-4000-8000-000000000001",
-      caseId: "retained-v3",
-      topology: "specialized" as const,
-      userId: "user-v3",
-      companyId: "00000000-0000-4000-8000-000000000002",
-      chatId: "00000000-0000-4000-8000-000000000003",
-      userMessageId: "00000000-0000-4000-8000-000000000004",
-      aiRunId: "00000000-0000-4000-8000-000000000005",
-      turnBindings: [],
-      sourceBindings: [],
-    };
-    expect(EvaluationSeedManifestV3Schema.safeParse(manifest).success).toBe(true);
-    expect(
-      EvaluationSeedManifestV3Schema.safeParse({ ...manifest, artifactVersion: 4 }).success,
-    ).toBe(false);
-    expect(EvaluationResultV3Schema.safeParse({ artifactVersion: 4 }).success).toBe(false);
   });
 });

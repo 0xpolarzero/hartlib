@@ -18,7 +18,6 @@ import { providerRequestSha256Hex } from "../ai/runtime/provider-request";
 import type { LiveProviderRequest } from "../ai/runtime/provider-request";
 import {
   RUNTIME_MODEL_ID,
-  ZAI_CODING_PLAN_BASE_URL,
   ZAI_CODING_PLAN_PROVIDER_SERVICE_ID,
 } from "../ai/runtime/model-registry";
 import {
@@ -60,6 +59,7 @@ import {
   AiRunSmithersRunIdMismatch,
   appendAiRunEvent,
   failAiRun,
+  stopAiRun,
   insertAiExternalToolUsage,
   insertAiObservation,
   insertAiRunUsage,
@@ -84,11 +84,12 @@ import { runPublicSourceIngestion } from "../source-ingestion/orchestrator";
 import type { PublicSourceIngestionRepository } from "../source-ingestion/repository";
 import type { PublicSourceIngestionOptions } from "../source-ingestion/types";
 import type { WorkerConfig } from "../config";
-import { PlatformFileStore } from "../platform/file-store";
-import { handlePlatformJob, isPlatformJobKind } from "../platform/jobs";
-import { PdfTextExtractor } from "../platform/pdf-text";
-import { ExportObjectStoreService, NotificationEmailService } from "../platform/adapters";
 import type { JobRecord, JobResult } from "./types";
+import {
+  housekeepCompletedDemoIdentityPurgeJobs,
+  parseDemoIdentityPurgePayload,
+  purgeDemoIdentity,
+} from "./demo-identity-purge";
 
 const publicSourceIds = new Set<string>(publicSourceDefinitions.map((source) => source.id));
 const resumeMetadataMismatchCode = "RESUME_METADATA_MISMATCH";
@@ -440,7 +441,7 @@ const loadRunTerminalState = (connectionString: string, aiRunId: string) =>
       const sql = yield* PgClient.PgClient;
       const rows = yield* sql<TerminalRunRow>`
         select
-          (finished_at is not null or failed_at is not null) as terminal,
+          (finished_at is not null or failed_at is not null or stopped_at is not null or superseded_at is not null) as terminal,
           smithers_run_id as "smithersRunId"
         from ai_runs
         where id = ${aiRunId}
@@ -452,6 +453,18 @@ const loadRunTerminalState = (connectionString: string, aiRunId: string) =>
       }
 
       return row;
+    }),
+  );
+
+const loadRunStopRequested = (connectionString: string, aiRunId: string) =>
+  runAiWorkflowDb(
+    connectionString,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+      const rows = yield* sql<{ readonly requested: boolean }>`
+        select stop_requested_at is not null as requested from ai_runs where id = ${aiRunId}
+      `;
+      return rows[0]?.requested === true;
     }),
   );
 
@@ -823,12 +836,10 @@ export const persistWebBoundaryErrorOperations = async (
  */
 export const providerServiceIdForConfig = (
   config: WorkerConfig,
-): "zai_coding_plan_official" | "deterministic_test" | "openai_compatible_custom" =>
+): "zai_coding_plan_official" | "deterministic_test" =>
   config.nodeEnv === "test" && config.aiE2eFakeProvider
     ? "deterministic_test"
-    : config.aiBaseUrl === ZAI_CODING_PLAN_BASE_URL
-      ? ZAI_CODING_PLAN_PROVIDER_SERVICE_ID
-      : "openai_compatible_custom";
+    : ZAI_CODING_PLAN_PROVIDER_SERVICE_ID;
 
 export const providerEndpointIdentityForConfig = (
   config: WorkerConfig,
@@ -1125,6 +1136,17 @@ export const handleAiChatRunJob = (
       } satisfies JobResult;
     }
 
+    // A queued run can be stopped before a worker claims its Smithers run.
+    // Commit the stopped projection immediately and leave the queue runner to
+    // mark this job complete.
+    if (yield* Effect.tryPromise(() => loadRunStopRequested(connectionString, payload.aiRunId))) {
+      yield* Effect.tryPromise(() => runAiWorkflowDb(connectionString, stopAiRun(payload.aiRunId)));
+      return {
+        status: "completed",
+        message: `ai chat run stopped: ${payload.aiRunId}`,
+      } satisfies JobResult;
+    }
+
     const boundState = yield* Effect.tryPromise(() =>
       setRunSmithersRunId(connectionString, payload.aiRunId, smithersRunId),
     );
@@ -1156,6 +1178,13 @@ export const handleAiChatRunJob = (
       try: (effectSignal) =>
         runWithAiChatSmithersProducerFence(connectionString, async () => {
           const workflowAbortController = new AbortController();
+          const stopPoll = setInterval(() => {
+            void loadRunStopRequested(connectionString, payload.aiRunId)
+              .then((requested) => {
+                if (requested) workflowAbortController.abort("stop_requested");
+              })
+              .catch(() => undefined);
+          }, 250);
           const removeEffectAbortForwarder = forwardAbortSignal(
             effectSignal,
             workflowAbortController,
@@ -1201,7 +1230,12 @@ export const handleAiChatRunJob = (
               resume,
               signal,
             });
-            throwIfAborted(signal);
+            // A database stop request aborts this controller on purpose. Let
+            // the result flow through the durable stop branch below so the
+            // worker commits the stopped projection instead of treating the
+            // expected cancellation as an unexpected failure. Explicit
+            // worker interruption still interrupts the surrounding promise
+            // and retains Smithers state for resume.
             await runJsonLog(
               Effect.logInfo("ai chat Smithers workflow ended").pipe(
                 Effect.annotateLogs({
@@ -1226,6 +1260,7 @@ export const handleAiChatRunJob = (
             }
             return workflowResult;
           } finally {
+            clearInterval(stopPoll);
             try {
               if (ownsStorage && api !== undefined) await api.close();
             } finally {
@@ -1253,6 +1288,22 @@ export const handleAiChatRunJob = (
 
     const terminalFailureStatus =
       result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : null;
+
+    if (
+      result.status === "cancelled" &&
+      (yield* Effect.tryPromise(() => loadRunStopRequested(connectionString, payload.aiRunId)))
+    ) {
+      yield* Effect.tryPromise(() => runAiWorkflowDb(connectionString, stopAiRun(payload.aiRunId)));
+      yield* Effect.tryPromise({
+        try: () =>
+          deleteSmithersRowsForRunIfFenced(connectionString, payload.aiRunId, smithersRunId),
+        catch: (error) => error,
+      });
+      return {
+        status: "completed",
+        message: `ai chat run stopped: ${payload.aiRunId}`,
+      } satisfies JobResult;
+    }
 
     if (result.status === "cancelled" && options?.signal?.aborted === true) {
       yield* Effect.logInfo("ai chat Smithers rows retained for crash-safe resume").pipe(
@@ -1363,10 +1414,13 @@ const handlePurgeAiRuntimeJob = (job: JobRecord): Effect.Effect<JobResult, unkno
     const result = yield* Effect.tryPromise(() =>
       runAiWorkflowDb(connectionString, purgeAiRuntimeRetention()),
     );
+    const removedDemoPurgeJobs = yield* Effect.tryPromise(() =>
+      housekeepCompletedDemoIdentityPurgeJobs(connectionString),
+    );
 
     return {
       status: "completed",
-      message: `purged ${result.sweptRuns} Smithers runs and ${result.prunedEvents} AI run events`,
+      message: `purged ${result.sweptRuns} Smithers runs and ${result.prunedEvents} AI run events; removed ${removedDemoPurgeJobs} completed demo purge jobs`,
     } satisfies JobResult;
   });
 
@@ -1387,18 +1441,35 @@ const handlePurgeUserMemoryTombstonesJob = (job: JobRecord): Effect.Effect<JobRe
     } satisfies JobResult;
   });
 
+const handleDemoIdentityPurgeJob = (
+  job: JobRecord,
+  options?: HandleJobOptions,
+): Effect.Effect<JobResult, unknown> =>
+  Effect.gen(function* () {
+    const payload = yield* Effect.try({
+      try: () => parseDemoIdentityPurgePayload(job.payload),
+      catch: (error) => error,
+    });
+    const connectionString = options?.config?.databaseUrl ?? (yield* loadDatabaseUrl);
+    const result = yield* Effect.tryPromise(() =>
+      purgeDemoIdentity(connectionString, payload.visitorId),
+    );
+    if (result.status === "retry") {
+      return {
+        status: "retry",
+        message: result.reason,
+      } satisfies JobResult;
+    }
+    return {
+      status: "completed",
+      message: `purged demo identity ${payload.visitorId}`,
+    } satisfies JobResult;
+  });
+
 export const handleJob = (
   job: JobRecord,
   options?: HandleJobOptions,
-): Effect.Effect<
-  JobResult,
-  unknown,
-  | PublicSourceIngestionRepository
-  | PlatformFileStore
-  | PdfTextExtractor
-  | NotificationEmailService
-  | ExportObjectStoreService
-> =>
+): Effect.Effect<JobResult, unknown, PublicSourceIngestionRepository> =>
   Effect.gen(function* () {
     if (job.kind === "public_source_ingestion") {
       return yield* handlePublicSourceIngestionJob(job);
@@ -1416,8 +1487,8 @@ export const handleJob = (
       return yield* handlePurgeUserMemoryTombstonesJob(job);
     }
 
-    if (isPlatformJobKind(job.kind)) {
-      return yield* handlePlatformJob(job);
+    if (job.kind === "demo_identity_purge") {
+      return yield* handleDemoIdentityPurgeJob(job, options);
     }
 
     yield* Effect.logError("unsupported worker job kind").pipe(
