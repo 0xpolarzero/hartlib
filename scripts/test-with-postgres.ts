@@ -10,7 +10,7 @@ const run = async (
   command: readonly string[],
   options: { readonly output?: boolean; readonly env?: Record<string, string> } = {},
 ): Promise<number> => {
-  const child = Bun.spawn(command, {
+  const child = Bun.spawn([...command], {
     cwd: repositoryRoot,
     env: { ...process.env, ...options.env },
     stderr: options.output === false ? "ignore" : "inherit",
@@ -20,7 +20,7 @@ const run = async (
 };
 
 const capture = async (command: readonly string[]): Promise<string> => {
-  const child = Bun.spawn(command, {
+  const child = Bun.spawn([...command], {
     cwd: repositoryRoot,
     stderr: "pipe",
     stdout: "pipe",
