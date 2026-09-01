@@ -1229,16 +1229,14 @@ function App({
             suggestions={
               messages.length === 0
                 ? locale === "fr-FR"
-                  ? [
-                      "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
-                      "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
-                      "Sur quoi mes sources actives sont-elles d’accord ou en désaccord ?",
-                    ]
-                  : [
-                      "What happened in the last 24 hours across my active sources?",
-                      "What are the three most important recent developments, and why do they matter?",
-                      "Where do my active sources agree or disagree?",
-                    ]
+                ? [
+                    "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
+                    "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
+                  ]
+                : [
+                    "What happened in the last 24 hours across my active sources?",
+                    "What are the three most important recent developments, and why do they matter?",
+                  ]
                 : []
             }
             onSuggestion={(suggestion) => void startRun(suggestion)}
