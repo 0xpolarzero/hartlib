@@ -1232,12 +1232,12 @@ function App({
                   ? [
                       "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
                       "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
-                      "Quels sujets sont couverts par plusieurs de mes sources actives ? Compare leurs points de vue.",
+                      "Sur quoi mes sources actives sont-elles d’accord ou en désaccord ?",
                     ]
                   : [
                       "What happened in the last 24 hours across my active sources?",
                       "What are the three most important recent developments, and why do they matter?",
-                      "Which topics are being covered by several of my active sources? Compare their views.",
+                      "Where do my active sources agree or disagree?",
                     ]
                 : []
             }
