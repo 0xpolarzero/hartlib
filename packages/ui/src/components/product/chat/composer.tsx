@@ -534,6 +534,7 @@ export function Composer({
               ref={taRef}
               value={text}
               maxRows={10}
+              data-testid="chat-composer-input"
               aria-label={t("composer.label")}
               placeholder={t("composer.placeholder")}
               disabled={disabled}
@@ -718,6 +719,7 @@ export function Composer({
                 type="button"
                 variant="secondary"
                 size="icon"
+                data-testid="chat-stop-button"
                 aria-label={t("composer.stop")}
                 title={t("composer.stop")}
                 onClick={() => void onStop?.()}
@@ -730,6 +732,7 @@ export function Composer({
                 type="button"
                 variant="primary"
                 size="icon"
+                data-testid="chat-send-button"
                 aria-label={t("composer.send")}
                 title={t("composer.send")}
                 disabled={text.trim() === ""}

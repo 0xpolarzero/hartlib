@@ -21,6 +21,26 @@ vi.mock("../../ui", async (importOriginal) => {
 });
 
 describe("chat composer", () => {
+  it("renders the input and send or stop control for each run state", () => {
+    const idleHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <Composer onSend={() => undefined} />
+      </TooltipProvider>,
+    );
+    expect(idleHtml).toMatch(/<textarea[^>]*data-testid="chat-composer-input"/);
+    expect(idleHtml).toMatch(/<button[^>]*data-testid="chat-send-button"/);
+    expect(idleHtml).not.toContain('data-testid="chat-stop-button"');
+
+    const activeHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <Composer onSend={() => undefined} runActive />
+      </TooltipProvider>,
+    );
+    expect(activeHtml).toMatch(/<textarea[^>]*data-testid="chat-composer-input"/);
+    expect(activeHtml).toMatch(/<button[^>]*data-testid="chat-stop-button"/);
+    expect(activeHtml).not.toContain('data-testid="chat-send-button"');
+  });
+
   it("renders the send gate and web policy control", () => {
     const html = renderToStaticMarkup(
       <TooltipProvider>
