@@ -1,5 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { TooltipProvider } from "../ui/overlays";
+import { Transcript } from "./chat/transcript";
+import { VizPane } from "./chat/viz-pane";
 import { ClientChat } from "./client-chat";
 
 describe("client chat layout", () => {
@@ -32,7 +35,21 @@ describe("client chat layout", () => {
         visualization={<p data-testid="mobile-visualization">Visualization</p>}
       />,
     );
-    expect(html.match(/mobile-visualization/g)?.length).toBe(2);
+    expect(html.match(/data-testid="mobile-visualization"/g)).toHaveLength(1);
+  });
+  it("mounts the transcript, composer, and visualization exactly once", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <ClientChat
+          transcript={<Transcript messages={[]} />}
+          visualization={<VizPane versions={[]} activeVersionId={null} />}
+          composerProps={{ onSend: () => undefined }}
+        />
+      </TooltipProvider>,
+    );
+    expect(html.match(/data-testid="chat-transcript"/g)).toHaveLength(1);
+    expect(html.match(/data-testid="viz-empty"/g)).toHaveLength(1);
+    expect(html.match(/id="web-search-toggle"/g)).toHaveLength(1);
   });
   it("hides collapsed side panels from the accessibility tree", () => {
     const html = renderToStaticMarkup(

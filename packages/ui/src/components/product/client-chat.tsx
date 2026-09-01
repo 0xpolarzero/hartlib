@@ -320,72 +320,61 @@ export function ClientChat({
             )}
           </Button>
 
-          <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
             {/* Below lg: conversation / visualization switch stays local to the chat. */}
-            <div className="flex min-h-0 flex-1 flex-col lg:hidden">
-              <div className="flex justify-center border-b border-line px-4 py-1.5">
-                <Segmented
-                  aria-label={uiMessage(locale, "ui.conversation")}
-                  value={layout.mobileTab}
-                  onChange={(value) => setLayout({ ...layout, mobileTab: value })}
-                  options={[
-                    { value: "chat", label: uiMessage(locale, "ui.conversation") },
-                    { value: "visualization", label: uiMessage(locale, "ui.visualization") },
-                  ]}
-                />
-              </div>
-              <div
-                className={cn(
-                  "flex min-h-0 flex-1 flex-col",
-                  layout.mobileTab !== "chat" && "hidden",
-                )}
-              >
-                {chatView}
-                {composerProps && <Composer {...composerProps} />}
-              </div>
-              <div
-                className={cn("min-h-0 flex-1", layout.mobileTab !== "visualization" && "hidden")}
-              >
-                {vizView}
-              </div>
+            <div className="flex shrink-0 justify-center border-b border-line px-4 py-1.5 lg:hidden">
+              <Segmented
+                aria-label={uiMessage(locale, "ui.conversation")}
+                value={layout.mobileTab}
+                onChange={(value) => setLayout({ ...layout, mobileTab: value })}
+                options={[
+                  { value: "chat", label: uiMessage(locale, "ui.conversation") },
+                  { value: "visualization", label: uiMessage(locale, "ui.visualization") },
+                ]}
+              />
             </div>
 
-            {/* lg+: resizable chat | visualization split. */}
-            <div className="hidden min-h-0 flex-1 overflow-hidden lg:block">
-              <div className="flex h-full min-h-0">
-                <div
-                  className="subscriber-chat-panel-content flex h-full min-h-0 flex-col overflow-hidden"
-                  style={{
-                    flexBasis: 0,
-                    flexGrow: chatSplit,
-                    flexShrink: 1,
-                    overflow: "hidden",
-                    pointerEvents: chatSplitDragging ? "none" : undefined,
-                  }}
-                >
-                  {chatView}
-                  {composerProps && <Composer {...composerProps} />}
-                </div>
-                <ChatSplitHandle
-                  percent={chatSplit}
-                  label={`${uiMessage(locale, "ui.conversation")} / ${uiMessage(locale, "ui.visualization")}`}
-                  onResize={setChatSplit}
-                  onResizeStart={() => setChatSplitDragging(true)}
-                  onResizeEnd={() => setChatSplitDragging(false)}
-                />
-                <div
-                  className="min-h-0 min-w-0"
-                  style={{
-                    flexBasis: 0,
-                    flexGrow: 100 - chatSplit,
-                    flexShrink: 1,
-                    overflow: "hidden",
-                    pointerEvents: chatSplitDragging ? "none" : undefined,
-                  }}
-                >
-                  {vizView}
-                </div>
-              </div>
+            {/* One conversation subtree serves both compact and wide layouts. */}
+            <div
+              className={cn(
+                "subscriber-chat-panel-content min-h-0 min-w-0 flex-col overflow-hidden lg:flex",
+                layout.mobileTab === "chat" ? "flex" : "hidden",
+              )}
+              style={{
+                flexBasis: 0,
+                flexGrow: chatSplit,
+                flexShrink: 1,
+                overflow: "hidden",
+                pointerEvents: chatSplitDragging ? "none" : undefined,
+              }}
+            >
+              {chatView}
+              {composerProps && <Composer {...composerProps} />}
+            </div>
+
+            <ChatSplitHandle
+              percent={chatSplit}
+              label={`${uiMessage(locale, "ui.conversation")} / ${uiMessage(locale, "ui.visualization")}`}
+              onResize={setChatSplit}
+              onResizeStart={() => setChatSplitDragging(true)}
+              onResizeEnd={() => setChatSplitDragging(false)}
+            />
+
+            {/* The same visualization subtree is a mobile tab pane and the lg+ split pane. */}
+            <div
+              className={cn(
+                "min-h-0 min-w-0 overflow-hidden lg:block",
+                layout.mobileTab === "visualization" ? "block" : "hidden",
+              )}
+              style={{
+                flexBasis: 0,
+                flexGrow: 100 - chatSplit,
+                flexShrink: 1,
+                overflow: "hidden",
+                pointerEvents: chatSplitDragging ? "none" : undefined,
+              }}
+            >
+              {vizView}
             </div>
           </div>
         </section>
@@ -659,7 +648,7 @@ function ChatSplitHandle({
       aria-valuemin={CHAT_SPLIT_MIN}
       aria-valuemax={CHAT_SPLIT_MAX}
       aria-valuenow={Math.round(percent)}
-      className="subscriber-chat-resize-handle group relative flex w-5 cursor-col-resize items-stretch justify-center outline-none"
+      className="subscriber-chat-resize-handle group relative hidden w-5 cursor-col-resize items-stretch justify-center outline-none lg:flex"
       style={{ touchAction: "none", userSelect: "none" }}
       data-resize-handle-state={isDragging ? "drag" : undefined}
       onKeyDown={(event) => {
