@@ -2,11 +2,13 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Loader2, Search } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
+
 export interface ComboboxOption {
   value: string;
   label: string;
   hint?: string;
 }
+
 export interface ComboboxProps {
   value: string | null;
   onChange: (option: ComboboxOption | null) => void;
@@ -17,6 +19,15 @@ export interface ComboboxProps {
   renderOption?: (option: ComboboxOption) => ReactNode;
   locale?: string;
 }
+
+/**
+ * Searchable combobox following the WAI-ARIA authoring pattern:
+ * input[role=combobox] with aria-expanded / aria-controls / aria-activedescendant,
+ * popup listbox with role=option. Options are filtered asynchronously by
+ * `loader` (the mock service adds latency, so a loading state is visible).
+ * Markup and classes are ported verbatim from the ui-playground reference;
+ * locale strings resolve through the canonical catalogs.
+ */
 export function Combobox({
   value,
   onChange,
@@ -34,15 +45,17 @@ export function Combobox({
   const [active, setActive] = useState(-1);
   const [selectedOption, setSelectedOption] = useState<ComboboxOption | null>(null);
   const seq = useRef(0);
-  const id = useId();
-  const input = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
   const root = useRef<HTMLDivElement>(null);
+
   const close = () => {
     seq.current += 1;
     setOpen(false);
     setQuery("");
     setActive(-1);
   };
+
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) close();
@@ -50,6 +63,7 @@ export function Combobox({
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, []);
+
   useEffect(() => {
     if (!open) return;
     const current = ++seq.current;
@@ -68,6 +82,7 @@ export function Combobox({
         }
       });
   }, [loader, open, query]);
+
   useEffect(() => {
     if (value === null) setSelectedOption(null);
     else if (selectedOption?.value !== value) {
@@ -75,65 +90,77 @@ export function Combobox({
       if (option) setSelectedOption(option);
     }
   }, [options, selectedOption?.value, value]);
+
+  const select = (option: ComboboxOption) => {
+    setSelectedOption(option);
+    onChange(option);
+    close();
+    inputRef.current?.focus();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && open) {
+      e.preventDefault();
+      setActive((n) =>
+        options.length
+          ? (n + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length
+          : -1,
+      );
+    } else if ((e.key === "Home" || e.key === "End") && open && options.length > 0) {
+      e.preventDefault();
+      setActive(e.key === "Home" ? 0 : options.length - 1);
+    } else if (e.key === "Enter" && active >= 0 && options[active]) {
+      e.preventDefault();
+      select(options[active]!);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Tab") {
+      setOpen(false);
+    }
+  };
+
   return (
     <div ref={root} className={cn("relative", className)}>
-      <Search
-        aria-hidden="true"
-        className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-ink-3"
-      />
-      <input
-        ref={input}
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={id}
-        aria-autocomplete="list"
-        aria-activedescendant={open && active >= 0 ? `${id}-${active}` : undefined}
-        aria-label={ariaLabel}
-        value={open ? query : (selectedOption?.label ?? value ?? "")}
-        placeholder={placeholder}
-        onFocus={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setOpen(true);
-        }}
-        onKeyDown={(e) => {
-          if ((e.key === "ArrowDown" || e.key === "ArrowUp") && open) {
-            e.preventDefault();
-            setActive((n) =>
-              options.length
-                ? (n + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length
-                : -1,
-            );
-          } else if ((e.key === "Home" || e.key === "End") && open && options.length > 0) {
-            e.preventDefault();
-            setActive(e.key === "Home" ? 0 : options.length - 1);
-          } else if (e.key === "Enter" && active >= 0 && options[active]) {
-            e.preventDefault();
-            const next = options[active]!;
-            setSelectedOption(next);
-            onChange(next);
-            close();
-            input.current?.focus();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-          } else if (e.key === "Tab") {
-            setOpen(false);
-          }
-        }}
-        className="h-7 w-full rounded-tiny border border-line-2 bg-surface pl-7 pr-2.5 font-sans text-[13px] text-ink placeholder:text-ink-2/80 transition-colors duration-100 hover:border-ink-3 focus-visible:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-      />
-      {loading && (
-        <Loader2
+      <div className="relative">
+        <Search
           aria-hidden="true"
-          className="absolute right-2.5 top-1/2 size-3 -translate-y-1/2 animate-spin-slow text-ink-2"
+          className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-ink-3"
         />
-      )}
+        <input
+          ref={inputRef}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={open && active >= 0 ? `${listId}-opt-${active}` : undefined}
+          aria-label={ariaLabel}
+          value={open ? query : (selectedOption?.label ?? value ?? "")}
+          placeholder={placeholder}
+          onClick={() => setOpen(true)}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={onKeyDown}
+          className={cn(
+            "h-7 w-full rounded-tiny border border-line-2 bg-surface pl-7 pr-2.5 font-sans text-[13px] text-ink",
+            "placeholder:text-ink-2/80 transition-colors duration-100 hover:border-ink-3",
+            "focus-visible:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+          )}
+        />
+        {loading && (
+          <Loader2
+            aria-hidden="true"
+            className="absolute right-2.5 top-1/2 size-3 -translate-y-1/2 animate-spin-slow text-ink-2"
+          />
+        )}
+      </div>
       {open && (
         <ul
-          id={id}
+          id={listId}
           role="listbox"
           aria-label={ariaLabel}
           className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-tiny border border-line-2 bg-surface py-1 animate-enter"
@@ -146,15 +173,13 @@ export function Combobox({
           {options.map((option, index) => (
             <li
               key={option.value}
-              id={`${id}-${index}`}
+              id={`${listId}-opt-${index}`}
               role="option"
               aria-selected={index === active}
               onMouseEnter={() => setActive(index)}
               onMouseDown={(e) => {
                 e.preventDefault();
-                setSelectedOption(option);
-                onChange(option);
-                close();
+                select(option);
               }}
               className={cn(
                 "flex min-h-7 cursor-pointer items-center justify-between gap-3 px-2.5 py-1 text-[13px]",

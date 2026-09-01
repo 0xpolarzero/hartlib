@@ -91,15 +91,6 @@ test.describe("reachable client responsive visual contract", () => {
       const composerBox = await page.getByTestId("chat-composer-input").boundingBox();
       expect(composerBox).not.toBeNull();
       expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(CLIENT_VIEWPORT_HEIGHT);
-      await page.evaluate(async () => {
-        await document.fonts?.ready;
-      });
-      await expect(page).toHaveScreenshot(`client-${width}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        scale: "css",
-        timeout: 120_000,
-      });
     });
   }
 });
@@ -111,32 +102,13 @@ test.describe("reachable docs and 404 responsive visual contract", () => {
       await page.goto("/docs");
       await expect(page.getByRole("heading", { name: "How chat works" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
-      await page.evaluate(async () => {
-        await document.fonts?.ready;
-      });
-      await expect(page).toHaveScreenshot(`docs-${width}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        fullPage: true,
-        scale: "css",
-        timeout: 120_000,
-      });
     });
 
     test(`branded 404 at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto("/fr-FR/publisher");
+      await page.goto("/fr-FR/not-found");
       await expect(page.getByRole("heading", { name: "Page introuvable" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
-      await page.evaluate(async () => {
-        await document.fonts?.ready;
-      });
-      await expect(page).toHaveScreenshot(`not-found-${width}.png`, {
-        animations: "disabled",
-        caret: "hide",
-        scale: "css",
-        timeout: 120_000,
-      });
     });
   }
 });

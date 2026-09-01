@@ -28,6 +28,8 @@ import {
   SubscriberSubscriptions,
   Transcript,
   VizPane,
+  ToastProvider,
+  TooltipProvider,
   type ClientChatLayoutState,
   type ClientChatResizeAdapter,
   type SubscriptionDocument,
@@ -79,6 +81,12 @@ import {
 import { loadDemoBrowserConfig } from "./config";
 import { DocsDocument } from "./docs-document";
 import { isDocsPath } from "./docs-path";
+import {
+  GalleryReferencePage,
+  PublisherIssueReferencePage,
+  PublisherNotificationsReferencePage,
+  PublisherReferencePage,
+} from "./reference-pages";
 import "./styles.css";
 
 const docsPath = isDocsPath(window.location.pathname);
@@ -492,7 +500,7 @@ function App({
     if (routeState.notFound) return;
     const path = buildDemoPath({
       locale,
-      role: "client",
+      role: routeState.role,
       sourceId: routeState.sourceId,
       issueId: routeState.issueId,
     });
@@ -1099,6 +1107,11 @@ function App({
     void resetController.retry();
   }, [resetController]);
   if (routeState.notFound) return <NotFound />;
+  if (routeState.role === "publisher") return <PublisherReferencePage locale={locale} />;
+  if (routeState.role === "publisher-issue") return <PublisherIssueReferencePage locale={locale} />;
+  if (routeState.role === "publisher-notifications")
+    return <PublisherNotificationsReferencePage locale={locale} />;
+  if (routeState.role === "gallery") return <GalleryReferencePage locale={locale} />;
   if (chat === null)
     return (
       <AppShell
@@ -1150,20 +1163,14 @@ function App({
         </span>
       }
     >
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <p className="caps-label text-accent">{market}</p>
-          <h2 className="font-display text-[22px]">{uiMessage(locale, "ui.clientWorkspace")}</h2>
+      {resetError && (
+        <div role="alert" className="mb-2 flex items-center gap-2 text-[12px] text-danger">
+          <span>{uiMessage(locale, "chat.resetFailed")}</span>
+          <Button type="button" variant="ghost" size="sm" onClick={retryResetDemo}>
+            {uiMessage(locale, "chat.resetRetry")}
+          </Button>
         </div>
-        {resetError && (
-          <div role="alert" className="flex items-center gap-2 text-[12px] text-danger">
-            <span>{uiMessage(locale, "chat.resetFailed")}</span>
-            <Button type="button" variant="ghost" size="sm" onClick={retryResetDemo}>
-              {uiMessage(locale, "chat.resetRetry")}
-            </Button>
-          </div>
-        )}
-      </div>
+      )}
       <ClientChat
         resizeAdapter={resizeAdapter}
         layout={layout}
@@ -1379,9 +1386,13 @@ function DemoRoot() {
   const [pair, setPair] = useState<LocaleMarketPair>(initialLocaleMarket);
   return (
     <AnnounceProvider>
-      <I18nProvider locale={pair.locale} market={pair.market} onChangeLocaleMarket={setPair}>
-        <App onLocaleMarketChange={setPair} />
-      </I18nProvider>
+      <ToastProvider locale={pair.locale}>
+        <TooltipProvider>
+          <I18nProvider locale={pair.locale} market={pair.market} onChangeLocaleMarket={setPair}>
+            <App onLocaleMarketChange={setPair} />
+          </I18nProvider>
+        </TooltipProvider>
+      </ToastProvider>
     </AnnounceProvider>
   );
 }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { Check, CirclePause, FileText, Pencil, PlusCircle, RotateCcw } from "lucide-react";
+import { Check, CirclePause, FileText, Pencil, PlusCircle, RotateCcw, Upload } from "lucide-react";
 import { formatDate, formatNumber, uiMessage } from "../../lib/format";
+import { cn } from "../../lib/utils";
 import { Badge, SectionHeader } from "../ui/atoms";
 import { Button } from "../ui/button";
 import { ConfirmingDeleteButton } from "../ui/confirming-delete-button";
@@ -15,11 +16,15 @@ import { DataTable, type DataTableColumn, type DemoDataState } from "./data-tabl
 import { FileUpload, type UploadedFile } from "../ui/file-upload";
 import { InlineEditableField } from "../ui/inline-editable-field";
 import { Input } from "../ui/input";
+import { Switch } from "../ui/controls";
+import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "../ui/sheet";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { HoverCard, HoverCardContent, HoverCardTrigger, Tooltip } from "../ui/overlays";
 
 const sourceKindLabel = (locale: string, kind: PublisherSourceRow["kind"]): string =>
-  kind === "public"
-    ? uiMessage(locale, "ui.sourceKindPublic")
-    : uiMessage(locale, "ui.sourceKindPublisher");
+  kind === "invitation"
+    ? uiMessage(locale, "sources.typeInvitation")
+    : uiMessage(locale, "sources.typePublic");
 const publicationStatusLabel = (
   locale: string,
   status: PublisherPublicationRow["status"],
@@ -60,16 +65,42 @@ const subscriberStatusLabel = (
       return uiMessage(locale, "ui.subscriberStatusInvalid");
   }
 };
+function DemoDataControl({
+  value,
+  onChange,
+  label,
+  locale,
+}: {
+  value: DemoDataState;
+  onChange: (value: DemoDataState) => void;
+  label: string;
+  locale: string;
+}) {
+  return (
+    <Select value={value} onValueChange={(next) => onChange(next as DemoDataState)}>
+      <SelectTrigger className="h-6 w-36" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="data">{uiMessage(locale, "demoState.data")}</SelectItem>
+        <SelectItem value="loading">{uiMessage(locale, "demoState.loading")}</SelectItem>
+        <SelectItem value="empty">{uiMessage(locale, "demoState.empty")}</SelectItem>
+        <SelectItem value="error">{uiMessage(locale, "demoState.error")}</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
 
 export interface PublisherSourceRow {
   id: string;
   name: string;
-  kind: "public" | "publisher";
+  kind: "public" | "publisher" | "invitation";
   country: string;
   enabled: boolean;
   status?: "active" | "paused";
   publicationCount?: number | null;
   subscriberCount?: number | null;
+  latestPublicationAt?: string | null;
   updatedAt?: string | null;
   error?: string | null;
 }
@@ -82,6 +113,7 @@ export interface PublisherPublicationRow {
   subscriberCount?: number | null;
   openRate?: number | null;
   immutable?: boolean;
+  autoDeleteAt?: string | null;
   deleted?: boolean;
   error?: string | null;
 }
@@ -110,6 +142,8 @@ export interface PublisherTableState {
   error?: string | null;
   onRetry?: () => void;
   locale?: string;
+  showHeader?: boolean;
+  showDemoStateControl?: boolean;
 }
 
 export interface SourcesTableProps extends PublisherTableState {
@@ -124,21 +158,24 @@ export function SourcesTable({
   error = null,
   onRetry,
   onRename,
-  onToggle,
-  onOpen,
   locale = "en-US",
+  showDemoStateControl = false,
+  showHeader = true,
 }: SourcesTableProps) {
+  const [demoState, setDemoState] = useState<DemoDataState>(state);
+  const effectiveState = showDemoStateControl ? demoState : state;
   const columns = useMemo<DataTableColumn<PublisherSourceRow>[]>(
     () => [
       {
         accessorKey: "name",
-        header: uiMessage(locale, "ui.tableSource"),
+        header: uiMessage(locale, "sources.colName"),
         cell: ({ row }) =>
           onRename ? (
             <InlineEditableField
               value={row.original.name}
-              ariaLabel={`${uiMessage(locale, "ui.rename")} ${row.original.name}`}
+              ariaLabel={row.original.name}
               locale={locale}
+              className="text-[13px]"
               onSave={(name) => onRename(row.original.id, name)}
             />
           ) : (
@@ -147,86 +184,106 @@ export function SourcesTable({
       },
       {
         accessorKey: "kind",
-        header: uiMessage(locale, "column.type"),
+        header: uiMessage(locale, "sources.colType"),
         cell: ({ value }) => (
-          <Badge tone={value === "public" ? "outline" : "accent"}>
+          <Badge tone={value === "invitation" ? "accent" : "outline"}>
             {sourceKindLabel(locale, value as PublisherSourceRow["kind"])}
           </Badge>
         ),
       },
-      { accessorKey: "country", header: uiMessage(locale, "ui.market") },
       {
-        accessorKey: "publicationCount",
-        header: uiMessage(locale, "ui.publisherPublications"),
-        cell: ({ value }) =>
-          value === null || value === undefined ? "—" : formatNumber(locale, value as number),
-      },
-      {
-        accessorKey: "subscriberCount",
-        header: uiMessage(locale, "ui.publisherSubscribers"),
-        cell: ({ value }) =>
-          value === null || value === undefined ? "—" : formatNumber(locale, value as number),
-      },
-      {
-        accessorKey: "enabled",
-        header: uiMessage(locale, "ui.state"),
-        cell: ({ row }) => (
-          <span className="flex items-center gap-2">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={row.original.enabled}
-              className="font-mono text-[11px] underline"
-              onClick={() => onToggle?.(row.original.id, !row.original.enabled)}
-            >
-              {row.original.enabled
-                ? uiMessage(locale, "workspace.delivery.enabled")
-                : uiMessage(locale, "workspace.delivery.disabled")}
-            </button>
-            {row.original.error && (
-              <span role="alert" className="text-[11px] text-danger">
-                {row.original.error}
-              </span>
-            )}
+        id: "latestPublicationAt",
+        accessorFn: (row) => row.latestPublicationAt ?? row.updatedAt ?? "",
+        header: uiMessage(locale, "sources.colLatest"),
+        cell: ({ value }) => (
+          <span className="font-mono text-[12px] text-ink-2">
+            {formatDate(locale, value as string)}
           </span>
         ),
       },
       {
-        id: "open",
-        header: <span className="sr-only">{uiMessage(locale, "ui.actions")}</span>,
-        sortable: false,
-        cell: ({ row }) => (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`${uiMessage(locale, "ui.open")} ${row.original.name}`}
-            onClick={() => onOpen?.(row.original.id)}
-          >
-            <Pencil className="size-3" aria-hidden="true" />
-          </Button>
+        accessorKey: "subscriberCount",
+        header: uiMessage(locale, "sources.colSubscribers"),
+        cell: ({ value }) => (
+          <span className="font-mono text-[12.5px]">
+            {value === null || value === undefined ? "—" : formatNumber(locale, value as number)}
+          </span>
         ),
       },
+      {
+        accessorKey: "enabled",
+        header: uiMessage(locale, "sources.colSubscription"),
+        cell: ({ row }) => {
+          const subscribed = row.original.enabled;
+          return (
+            <Tooltip content={uiMessage(locale, "sources.readOnlySubscription")}>
+              <span className="inline-flex items-center gap-2">
+                <Switch
+                  checked={subscribed}
+                  disabled
+                  aria-label={`${uiMessage(locale, "sources.colSubscription")} — ${
+                    subscribed
+                      ? uiMessage(locale, "sources.subscribed")
+                      : uiMessage(locale, "sources.notSubscribed")
+                  }`}
+                />
+                <span
+                  aria-hidden="true"
+                  className={cn("text-[12px]", subscribed ? "text-ink" : "text-ink-2")}
+                >
+                  {subscribed
+                    ? uiMessage(locale, "sources.subscribed")
+                    : uiMessage(locale, "sources.notSubscribed")}
+                </span>
+              </span>
+            </Tooltip>
+          );
+        },
+      },
     ],
-    [locale, onOpen, onRename, onToggle],
+    [locale, onRename],
   );
   return (
     <section aria-label={uiMessage(locale, "ui.publisherSources")} className="grid gap-2">
-      <SectionHeader
-        kicker={uiMessage(locale, "ui.publisher")}
-        title={uiMessage(locale, "ui.publisherSources")}
-        description={error ?? uiMessage(locale, "ui.manageSourcesDescription")}
-        count={rows.length}
-      />
+      {showHeader && (
+        <SectionHeader
+          kicker={uiMessage(locale, "ui.publisher")}
+          title={uiMessage(locale, "ui.publisherSources")}
+          description={error ?? uiMessage(locale, "ui.manageSourcesDescription")}
+          count={rows.length}
+        />
+      )}
       <DataTable
         ariaLabel={uiMessage(locale, "ui.publisherSources")}
         columns={columns}
         data={rows}
-        demoState={state}
+        demoState={effectiveState}
         locale={locale}
         {...(onRetry === undefined ? {} : { onRetry })}
         emptyTitle={uiMessage(locale, "ui.noPublisherSources")}
         emptyDescription={uiMessage(locale, "ui.sourceRowsEmpty")}
-        facets={["kind", "country"]}
+        facets={["kind", "enabled"]}
+        facetLabel={(column, value) =>
+          value === "__col"
+            ? column === "kind"
+              ? uiMessage(locale, "sources.colType")
+              : uiMessage(locale, "sources.colSubscription")
+            : column === "kind"
+              ? sourceKindLabel(locale, value as PublisherSourceRow["kind"])
+              : value === "true"
+                ? uiMessage(locale, "sources.subscribed")
+                : uiMessage(locale, "sources.notSubscribed")
+        }
+        toolbarExtra={
+          showDemoStateControl ? (
+            <DemoDataControl
+              value={demoState}
+              onChange={setDemoState}
+              label={uiMessage(locale, "demoState.label")}
+              locale={locale}
+            />
+          ) : undefined
+        }
         stickyHeader
       />
     </section>
@@ -248,6 +305,7 @@ export function PublicationsTable({
   onDelete,
   onUndo,
   locale = "en-US",
+  showHeader = true,
 }: PublicationsTableProps) {
   const [immutablePublication, setImmutablePublication] = useState<PublisherPublicationRow | null>(
     null,
@@ -264,7 +322,11 @@ export function PublicationsTable({
         ) : (
           <button
             type="button"
-            className="text-left font-medium underline-offset-2 hover:underline"
+            className={cn(
+              "block max-w-[38ch] truncate text-left underline-offset-2 hover:underline",
+              row.original.status !== "published" && "text-ink-2",
+            )}
+            title={row.original.title}
             onClick={() => onOpen?.(row.original.id)}
           >
             {row.original.title}
@@ -278,7 +340,7 @@ export function PublicationsTable({
         row.original.deleted ? (
           <Badge tone="outline">{uiMessage(locale, "ui.deleted")}</Badge>
         ) : (
-          <span className="flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1.5">
             <Badge
               tone={
                 row.original.status === "published"
@@ -307,19 +369,49 @@ export function PublicationsTable({
                 <Check className="size-3 text-ok" aria-hidden="true" />
               </span>
             )}
+            {row.original.autoDeleteAt && (
+              <HoverCard>
+                <HoverCardTrigger asChild>
+                  <button
+                    type="button"
+                    className="font-mono text-[10.5px] text-warn underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {uiMessage(locale, "publications.deletionShort")}
+                  </button>
+                </HoverCardTrigger>
+                <HoverCardContent className="w-72">
+                  <p className="caps-label text-warn">
+                    {uiMessage(locale, "publications.deletionTitle")}
+                  </p>
+                  <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-2">
+                    {uiMessage(locale, "publications.deletionBody").replace(
+                      "{date}",
+                      formatDate(locale, row.original.autoDeleteAt),
+                    )}
+                  </p>
+                </HoverCardContent>
+              </HoverCard>
+            )}
           </span>
         ),
     },
     {
       accessorKey: "publicationDate",
       header: uiMessage(locale, "ui.date"),
-      cell: ({ value }) => formatDate(locale, value as string | null),
+      cell: ({ value }) => (
+        <span className="font-mono text-[12px] text-ink-2">
+          {formatDate(locale, value as string | null)}
+        </span>
+      ),
     },
     {
       accessorKey: "subscriberCount",
       header: uiMessage(locale, "ui.subscribers"),
-      cell: ({ value }) =>
-        value === null || value === undefined ? "—" : formatNumber(locale, value as number),
+      cell: ({ value }) => (
+        <span className="font-mono text-[12.5px]">
+          {value === null || value === undefined ? "—" : formatNumber(locale, value as number)}
+        </span>
+      ),
     },
     {
       accessorKey: "openRate",
@@ -394,12 +486,14 @@ export function PublicationsTable({
   return (
     <>
       <section aria-label={uiMessage(locale, "ui.publisherPublications")} className="grid gap-2">
-        <SectionHeader
-          kicker={uiMessage(locale, "ui.publisher")}
-          title={uiMessage(locale, "ui.publisherPublications")}
-          description={error ?? uiMessage(locale, "ui.publisherPublicationsDescription")}
-          count={rows.length}
-        />
+        {showHeader && (
+          <SectionHeader
+            kicker={uiMessage(locale, "ui.publisher")}
+            title={uiMessage(locale, "ui.publisherPublications")}
+            description={error ?? uiMessage(locale, "ui.publisherPublicationsDescription")}
+            count={rows.length}
+          />
+        )}
         <DataTable
           ariaLabel={uiMessage(locale, "ui.publisherPublications")}
           columns={columns}
@@ -425,7 +519,7 @@ export function PublicationsTable({
           <AlertDialogDescription>
             {immutablePublication?.title ?? uiMessage(locale, "ui.immutable")}
           </AlertDialogDescription>
-          <div className="mt-4 flex justify-end">
+          <div className="mt-4 flex justify-end gap-2">
             <AlertDialogAction>{uiMessage(locale, "ui.close")}</AlertDialogAction>
           </div>
         </AlertDialogContent>
@@ -447,15 +541,18 @@ export function DocumentsTable({
   onUpload,
   onOpen,
   locale = "en-US",
+  showHeader = true,
 }: DocumentsTableProps) {
   const columns: DataTableColumn<PublisherDocument>[] = [
     {
       accessorKey: "name",
       header: uiMessage(locale, "ui.document"),
       cell: ({ row }) => (
-        <span className="flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1.5">
           <FileText className="size-3 text-ink-2" aria-hidden="true" />
-          {row.original.name}
+          <span className="block max-w-[42ch] truncate text-[12.5px] text-ink-2">
+            {row.original.name}
+          </span>
         </span>
       ),
     },
@@ -495,13 +592,14 @@ export function DocumentsTable({
   ];
   return (
     <section aria-label={uiMessage(locale, "ui.publisherDocuments")} className="grid gap-2">
-      <SectionHeader
-        kicker={uiMessage(locale, "ui.publisher")}
-        title={uiMessage(locale, "ui.publisherDocuments")}
-        description={error ?? uiMessage(locale, "ui.publisherDocumentsDescription")}
-        count={rows.length}
-      />
-      <FileUpload locale={locale} {...(onUpload === undefined ? {} : { onUploaded: onUpload })} />
+      {showHeader && (
+        <SectionHeader
+          kicker={uiMessage(locale, "ui.publisher")}
+          title={uiMessage(locale, "ui.publisherDocuments")}
+          description={error ?? uiMessage(locale, "ui.publisherDocumentsDescription")}
+          count={rows.length}
+        />
+      )}
       <DataTable
         ariaLabel={uiMessage(locale, "ui.publisherDocuments")}
         columns={columns}
@@ -511,6 +609,28 @@ export function DocumentsTable({
         {...(onRetry === undefined ? {} : { onRetry })}
         emptyTitle={uiMessage(locale, "ui.noPublisherDocuments")}
         emptyDescription={uiMessage(locale, "ui.uploadedFilesEmpty")}
+        toolbarExtra={
+          onUpload ? (
+            <Sheet locale={locale}>
+              <SheetTrigger asChild>
+                <Button variant="secondary" size="sm" className="gap-1.5">
+                  <Upload className="size-3 text-ink-2" />
+                  {uiMessage(locale, "documents.upload")}
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right">
+                <SheetHeader>
+                  <SheetTitle className="font-display text-[16px] font-medium">
+                    {uiMessage(locale, "documents.uploadTitle")}
+                  </SheetTitle>
+                </SheetHeader>
+                <SheetBody>
+                  <FileUpload locale={locale} onUploaded={onUpload} />
+                </SheetBody>
+              </SheetContent>
+            </Sheet>
+          ) : undefined
+        }
         stickyHeader
       />
     </section>
@@ -541,6 +661,7 @@ export function SubscribersTable({
   onDelete,
   onUndo,
   locale = "en-US",
+  showHeader = true,
 }: SubscribersTableProps) {
   const [draftOpen, setDraftOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -561,13 +682,21 @@ export function SubscribersTable({
   };
   const columns: DataTableColumn<PublisherSubscriberRow>[] = [
     {
+      accessorKey: "company",
+      header: uiMessage(locale, "ui.company"),
+      cell: ({ value }) => (
+        <span className="max-w-[26ch] truncate font-medium">{String(value ?? "—")}</span>
+      ),
+    },
+    {
       accessorKey: "email",
       header: uiMessage(locale, "ui.subscriber"),
       cell: ({ row }) => (
-        <div className={row.original.deleted ? "text-ink-2 line-through" : undefined}>
-          <p className="font-medium">{row.original.email}</p>
-          {row.original.company && <p className="text-[11px] text-ink-2">{row.original.company}</p>}
-        </div>
+        <span
+          className={cn("font-mono text-[12px]", row.original.deleted && "text-ink-2 line-through")}
+        >
+          {row.original.email}
+        </span>
       ),
     },
     {
@@ -650,48 +779,57 @@ export function SubscribersTable({
   ];
   return (
     <section aria-label={uiMessage(locale, "ui.publisherSubscribers")} className="grid gap-2">
-      <SectionHeader
-        kicker={uiMessage(locale, "ui.publisher")}
-        title={uiMessage(locale, "ui.publisherSubscribers")}
-        description={error ?? uiMessage(locale, "ui.publisherSubscribersDescription")}
-        count={rows.length}
-        aside={
-          onAdd ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              aria-expanded={draftOpen}
-              onClick={() => {
-                setDraftOpen((open) => !open);
-                setAddError(null);
-              }}
-            >
-              <PlusCircle className="size-3" />
-              {uiMessage(locale, "ui.addSubscriber")}
-            </Button>
-          ) : undefined
-        }
-      />
+      {showHeader && (
+        <SectionHeader
+          kicker={uiMessage(locale, "ui.publisher")}
+          title={uiMessage(locale, "ui.publisherSubscribers")}
+          description={error ?? uiMessage(locale, "ui.publisherSubscribersDescription")}
+          count={rows.length}
+          aside={
+            onAdd ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-expanded={draftOpen}
+                onClick={() => {
+                  setDraftOpen((open) => !open);
+                  setAddError(null);
+                }}
+              >
+                <PlusCircle className="size-3" />
+                {uiMessage(locale, "ui.addSubscriber")}
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
       {draftOpen && onAdd && (
-        <div className="grid gap-2 rounded-tiny border border-line-2 bg-surface p-3">
-          <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
-            <label
-              className="grid gap-1 text-[12px] font-medium"
-              htmlFor="publisher-subscriber-company"
-            >
-              {uiMessage(locale, "ui.company")}
+        <div className="animate-enter rounded-tiny border border-line-2 bg-surface p-3">
+          <p className="caps-label mb-2 text-ink-2">
+            {uiMessage(locale, "subscribers.draftTitle")}
+          </p>
+          <div className="grid items-start gap-3 md:grid-cols-[1fr_1fr_auto]">
+            <div className="grid gap-1">
+              <label
+                htmlFor="publisher-subscriber-company"
+                className="text-[12px] font-medium text-ink"
+              >
+                {uiMessage(locale, "ui.company")}
+              </label>
               <Input
                 id="publisher-subscriber-company"
                 value={company}
                 onChange={(event) => setCompany(event.target.value)}
                 placeholder={uiMessage(locale, "ui.companyName")}
               />
-            </label>
-            <label
-              className="grid gap-1 text-[12px] font-medium"
-              htmlFor="publisher-subscriber-email"
-            >
-              {uiMessage(locale, "ui.email")}
+            </div>
+            <div className="grid gap-1">
+              <label
+                htmlFor="publisher-subscriber-email"
+                className="text-[12px] font-medium text-ink"
+              >
+                {uiMessage(locale, "ui.email")}
+              </label>
               <Input
                 id="publisher-subscriber-email"
                 type="email"
@@ -700,29 +838,46 @@ export function SubscribersTable({
                 aria-invalid={email.length > 0 && !emailValid}
                 placeholder={uiMessage(locale, "ui.emailPlaceholder")}
               />
-            </label>
-            <Button
-              variant="primary"
-              size="md"
-              className="sm:mt-5"
-              disabled={!emailValid}
-              onClick={() => void addDraft()}
-            >
-              {uiMessage(locale, "action.add")}
-            </Button>
+              <p
+                role={email.length > 0 && !emailValid ? "alert" : undefined}
+                className={cn(
+                  "flex items-center gap-1.5 text-[12px]",
+                  email.length === 0 && "text-ink-2",
+                  email.length > 0 && !emailValid && "text-danger",
+                  emailValid && "text-ok",
+                )}
+              >
+                {email.length === 0
+                  ? uiMessage(locale, "subscribers.emailEmpty")
+                  : emailValid
+                    ? uiMessage(locale, "ui.emailLooksValid")
+                    : uiMessage(locale, "ui.invalidEmail")}
+              </p>
+            </div>
+            <div className="flex gap-2 md:pt-6">
+              <Button
+                variant="primary"
+                size="md"
+                disabled={!company.trim() || !emailValid}
+                onClick={() => void addDraft()}
+              >
+                {uiMessage(locale, "action.add")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => {
+                  setDraftOpen(false);
+                  setCompany("");
+                  setEmail("");
+                }}
+              >
+                {uiMessage(locale, "ui.cancel")}
+              </Button>
+            </div>
           </div>
-          {email.length > 0 && (
-            <p
-              role="status"
-              className={emailValid ? "text-[12px] text-ok" : "text-[12px] text-danger"}
-            >
-              {emailValid
-                ? uiMessage(locale, "ui.emailLooksValid")
-                : uiMessage(locale, "ui.invalidEmail")}
-            </p>
-          )}
           {addError && (
-            <p role="alert" className="text-[12px] text-danger">
+            <p role="alert" className="mt-2 text-[12px] text-danger">
               {addError}
             </p>
           )}

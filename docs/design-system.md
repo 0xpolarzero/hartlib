@@ -2,11 +2,12 @@
 
 ## Visual direction
 
-Hartlib uses a quiet pressroom style for reading and source work. The oxblood
-accent marks interaction, citations, and intelligence states. The application
-ships light mode only. Every surface uses the standalone token system in
-`packages/ui/src/styles/tokens.css`; the document response uses the matching
-standalone style.
+Hartlib uses the `ui-playground` pressroom design without a second visual
+implementation. `ui-playground/src/styles/theme.css` is copied verbatim to
+`packages/ui/src/styles/tokens.css`; reference component DOM, classes, and
+responsive rules are canonical. The oxblood accent marks interaction,
+citations, and intelligence states. The application ships light mode only.
+The document response uses the matching standalone style.
 
 ## Tokens
 
@@ -57,19 +58,21 @@ calendar grid with localized weekday order and keyboard navigation.
 
 The chat message component renders user and assistant anatomy, five ordered run
 stages, six stage states, citations, source disclosure, failures, stopped
-answers, delete, last-question edit, debug, and optional visualization Show.
-There is no regenerate, branch, collection, or attachment presentation.
+answers, delete, last-question edit, debug, optional visualization Show, and
+the reference composer controls. Branch and collection views stay absent.
+Attachment and regenerate controls are active only when production supplies
+their callbacks.
 
 The visualization pane accepts prop-only versions, selection, restore, refresh,
 download, fullscreen, loading, regenerating, highlight, association, and Show
 callbacks. Its iframe uses `srcDoc` and `sandbox=""`. The reachable demo passes
 zero versions and no association.
 
-The dormant publisher composition accepts prop-only rows and callbacks and
-renders complete source, publication, document, subscriber, notification,
-settings, and issue-wizard states. Production passes empty arrays, zero counts,
-idle state, and no write callbacks. Direct fixtures test populated states;
-production has no route, command, link, navigation item, fetch, or import path.
+The reachable publisher composition accepts prop-only rows and callbacks and
+renders the reference source, publication, document, subscriber, notification,
+settings, and issue-wizard states. The web adapter supplies controlled local
+demo state for UI-only publisher routes. Client subscriptions still use
+authorized public sources from the API.
 Subscription rows accept `public`, `invitation`, and `publisher` source kinds
 for prop-only fixture states; the reachable demo still passes authorized public
 sources only.

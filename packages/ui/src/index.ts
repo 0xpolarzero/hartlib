@@ -70,6 +70,12 @@ export {
   type PublisherCompositionTab,
 } from "./components/product/publisher";
 export {
+  Gallery,
+  type GalleryCompanyOption,
+  type GalleryLinkProps,
+  type GalleryProps,
+} from "./components/product/gallery";
+export {
   CitationChip,
   CitationProvider,
   ClaimSpan,

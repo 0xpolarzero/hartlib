@@ -1,160 +1,56 @@
-import {
-  createContext,
-  useContext,
-  useId,
-  useRef,
-  useState,
-  type ButtonHTMLAttributes,
-  type HTMLAttributes,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
-} from "react";
+import { forwardRef, useRef, useState } from "react";
+import * as React from "react";
+import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "../../lib/utils";
+import { uiMessage } from "../../lib/format";
 
-type TabsCtx = { value: string; setValue: (value: string) => void; id: string };
-const TabsContext = createContext<TabsCtx | null>(null);
-export function Tabs({
-  value: controlled,
-  defaultValue,
-  onValueChange,
-  children,
-  className,
-  ...props
-}: {
-  value?: string;
-  defaultValue?: string;
-  onValueChange?: (value: string) => void;
-  children: ReactNode;
-  className?: string;
-} & HTMLAttributes<HTMLDivElement>) {
-  const [internal, setInternal] = useState(defaultValue ?? "");
-  const value = controlled ?? internal;
-  const id = useId();
-  const setValue = (next: string) => {
-    if (controlled === undefined) setInternal(next);
-    onValueChange?.(next);
-  };
-  return (
-    <TabsContext.Provider value={{ value, setValue, id }}>
-      <div {...props} className={className}>
-        {children}
-      </div>
-    </TabsContext.Provider>
-  );
-}
-export function TabsList({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return (
-    <div
-      role="tablist"
-      id={`${useContext(TabsContext)?.id ?? "tabs"}-list`}
-      className={cn("flex items-end gap-0.5 border-b border-line", className)}
-      {...props}
-    />
-  );
-}
-export function TabsTrigger({
-  value,
-  className,
-  children,
-  disabled,
-  onClick,
-  onKeyDown,
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { value: string }) {
-  const ctx = useContext(TabsContext);
-  const active = ctx?.value === value;
-  const tabId = `${ctx?.id ?? "tabs"}-tab-${value.replace(/[^A-Za-z0-9_-]/gu, "-")}`;
-  const panelId = `${ctx?.id ?? "tabs"}-panel-${value.replace(/[^A-Za-z0-9_-]/gu, "-")}`;
-  const move = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (
-      !ctx ||
-      !["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
-    )
-      return;
-    const list = event.currentTarget.closest('[role="tablist"]');
-    const tabs = list
-      ? Array.from(list.querySelectorAll<HTMLButtonElement>('[role="tab"]')).filter(
-          (tab) => !tab.disabled,
-        )
-      : [];
-    if (tabs.length === 0) return;
-    event.preventDefault();
-    const index = tabs.indexOf(event.currentTarget);
-    const next =
-      event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? tabs.length - 1
-          : (index +
-              (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) +
-              tabs.length) %
-            tabs.length;
-    const nextTab = tabs[next];
-    if (!nextTab) return;
-    nextTab.focus();
-    const nextValue = nextTab.dataset.tabValue;
-    if (nextValue) ctx.setValue(nextValue);
-  };
-  return (
-    <button
-      type="button"
-      role="tab"
-      id={tabId}
-      aria-controls={panelId}
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
-      disabled={disabled}
-      className={cn(
-        "relative -mb-px min-h-8 px-2.5 pb-2 pt-1.5 font-sans text-[13px] text-ink-2",
-        "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:text-ink",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-        "disabled:cursor-not-allowed disabled:text-ink-3 disabled:hover:text-ink-3",
-        active &&
-          "font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent",
-        className,
-      )}
-      onClick={(event) => {
-        onClick?.(event);
-        if (!event.defaultPrevented && !disabled) ctx?.setValue(value);
-      }}
-      {...props}
-      onKeyDown={(event) => {
-        onKeyDown?.(event);
-        if (!event.defaultPrevented) move(event);
-      }}
-      data-tab-value={value}
-    >
-      {children}
-    </button>
-  );
-}
-export function TabsContent({
-  value,
-  className,
-  children,
-  ...props
-}: HTMLAttributes<HTMLDivElement> & { value: string }) {
-  const ctx = useContext(TabsContext);
-  if (ctx?.value !== value) return null;
-  const suffix = value.replace(/[^A-Za-z0-9_-]/gu, "-");
-  return (
-    <div
-      role="tabpanel"
-      id={`${ctx?.id ?? "tabs"}-panel-${suffix}`}
-      aria-labelledby={`${ctx?.id ?? "tabs"}-tab-${suffix}`}
-      tabIndex={0}
-      className={cn(className)}
-      {...props}
-    >
-      {children}
-    </div>
-  );
-}
+/* ── Tabs (Radix, underline treatment) ────────────────────────────────── */
+
+export const Tabs = TabsPrimitive.Root;
+
+export const TabsList = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
+>(({ className, ...props }, ref) => (
+  <TabsPrimitive.List
+    ref={ref}
+    className={cn("flex items-end gap-0.5 border-b border-line", className)}
+    {...props}
+  />
+));
+TabsList.displayName = "TabsList";
+
+export const TabsTrigger = forwardRef<
+  HTMLButtonElement,
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>
+>(({ className, ...props }, ref) => (
+  <TabsPrimitive.Trigger
+    ref={ref}
+    className={cn(
+      "relative -mb-px min-h-8 px-2.5 pb-2 pt-1.5 font-sans text-[13px] text-ink-2",
+      "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+      "hover:text-ink",
+      "data-[state=active]:text-ink data-[state=active]:font-medium",
+      "data-[state=active]:after:absolute data-[state=active]:after:inset-x-0 data-[state=active]:after:bottom-0 data-[state=active]:after:h-[2px] data-[state=active]:after:bg-accent",
+      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+      "disabled:cursor-not-allowed disabled:text-ink-3 disabled:hover:text-ink-3",
+      className,
+    )}
+    {...props}
+  />
+));
+TabsTrigger.displayName = "TabsTrigger";
+
+export const TabsContent = TabsPrimitive.Content;
+
+/* ── Segmented control (radiogroup pattern, arrow keys) ──────────────── */
+
 export interface SegmentOption<T extends string> {
   value: T;
-  label: ReactNode;
+  label: React.ReactNode;
   "aria-label"?: string;
 }
+
 export function Segmented<T extends string>({
   options,
   value,
@@ -162,6 +58,7 @@ export function Segmented<T extends string>({
   size = "md",
   className,
   "aria-label": ariaLabel,
+  locale = "en-US",
 }: {
   options: SegmentOption<T>[];
   value: T;
@@ -169,8 +66,16 @@ export function Segmented<T extends string>({
   size?: "sm" | "md";
   className?: string;
   "aria-label"?: string;
+  locale?: string;
 }) {
-  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const moveFocus = (from: number, delta: number) => {
+    const n = options.length;
+    const next = (from + delta + n) % n;
+    refs.current[next]?.focus();
+  };
+
   return (
     <div
       role="radiogroup"
@@ -180,49 +85,55 @@ export function Segmented<T extends string>({
         className,
       )}
       onKeyDown={(e) => {
-        const idx = refs.current.indexOf(document.activeElement as HTMLButtonElement);
-        if (idx < 0) return;
-        if (
-          e.key === "ArrowRight" ||
-          e.key === "ArrowDown" ||
-          e.key === "ArrowLeft" ||
-          e.key === "ArrowUp"
-        ) {
+        const idx = refs.current.findIndex((r) => r === document.activeElement);
+        if (idx === -1) return;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
           e.preventDefault();
-          const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
-          const next = (idx + delta + options.length) % options.length;
-          refs.current[next]?.focus();
-          onChange(options[next]!.value);
+          moveFocus(idx, 1);
+        } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+          e.preventDefault();
+          moveFocus(idx, -1);
         }
       }}
     >
-      {options.map((option, index) => {
-        const selected = option.value === value;
+      {options.map((opt, i) => {
+        const selected = opt.value === value;
         return (
           <button
-            key={option.value}
-            ref={(el) => {
-              refs.current[index] = el;
+            key={opt.value}
+            ref={(node) => {
+              refs.current[i] = node;
             }}
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-label={opt["aria-label"]}
             tabIndex={selected ? 0 : -1}
-            aria-label={option["aria-label"]}
+            onClick={() => {
+              onChange(opt.value);
+              refs.current[i]?.focus();
+            }}
             className={cn(
-              "min-w-0 whitespace-nowrap border-r border-line-2 px-2.5 font-sans font-medium text-ink-2 first:rounded-l-tiny last:rounded-r-tiny",
+              "min-w-0 whitespace-nowrap px-2.5 font-sans font-medium text-ink-2 first:rounded-l-tiny last:rounded-r-tiny",
               "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
               size === "sm" ? "h-6 text-[11.5px]" : "h-7 text-[12.5px]",
-              "last:border-r-0",
+              "border-r border-line-2 last:border-r-0",
               selected ? "bg-ink text-paper" : "hover:bg-paper-deep hover:text-ink",
               "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
             )}
-            onClick={() => onChange(option.value)}
           >
-            {option.label}
+            {opt.label ?? opt.value}
+            <span className="sr-only">
+              {selected ? ` (${uiMessage(locale, "ui.selected")})` : ""}
+            </span>
           </button>
         );
       })}
     </div>
   );
+}
+
+/** useState helper for gallery demos that need forced states. */
+export function useForced<T>(initial: T) {
+  return useState<T>(initial);
 }

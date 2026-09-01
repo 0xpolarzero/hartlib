@@ -3,6 +3,11 @@ import { cn } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
 import { Button } from "./button";
 export { SectionHeader } from "./atoms";
+
+/**
+ * Illustration-free typographic states: a hairline, a Fraunces line, a sans
+ * detail, an optional action. Errors additionally carry a mono code.
+ */
 export function EmptyState({
   title,
   description,
@@ -29,6 +34,7 @@ export function EmptyState({
     </div>
   );
 }
+
 export function ErrorState({
   title,
   description,

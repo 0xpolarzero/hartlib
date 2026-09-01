@@ -13,6 +13,14 @@ export interface UploadedFile {
   error?: string | null;
 }
 
+/**
+ * Drag-drop + picker upload restricted to PDF. Markup and classes are ported
+ * verbatim from the ui-playground reference (dropzone, per-file rows with
+ * flat accent progress bar, inline rejection rows); the data flow stays
+ * controlled: files/progress come from the parent and mutations go back
+ * through onUploaded/onRemove/onOpen, so document URLs stay on the caller's
+ * side and are never opened by this component.
+ */
 export function FileUpload({
   files = [],
   onUploaded,
@@ -34,9 +42,9 @@ export function FileUpload({
   className?: string;
   locale?: string;
 }) {
-  const id = useId();
-  const input = useRef<HTMLInputElement>(null);
-  const [drag, setDrag] = useState(false);
+  const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [rejected, setRejected] = useState<UploadedFile[]>([]);
   const announce = useAnnounce();
 
@@ -63,55 +71,60 @@ export function FileUpload({
       <div
         role="button"
         tabIndex={0}
-        aria-describedby={`${id}-hint`}
-        className={cn(
-          "flex min-h-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-tiny border border-dashed border-line-2 px-4 py-4 text-center",
-          "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-ink-3 hover:bg-paper-deep/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-          drag && "border-accent bg-accent/5",
-        )}
+        aria-describedby={`${inputId}-hint`}
         aria-disabled={!onUploaded}
-        onClick={() => onUploaded && input.current?.click()}
+        onClick={() => {
+          if (onUploaded) inputRef.current?.click();
+        }}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            if (onUploaded) input.current?.click();
+            if (onUploaded) inputRef.current?.click();
           }
         }}
         onDragOver={(event: DragEvent) => {
           if (!onUploaded) return;
           event.preventDefault();
-          setDrag(true);
+          setDragOver(true);
         }}
         onDragLeave={() => {
-          if (onUploaded) setDrag(false);
+          if (onUploaded) setDragOver(false);
         }}
         onDrop={(event: DragEvent) => {
           if (!onUploaded) return;
           event.preventDefault();
-          setDrag(false);
+          setDragOver(false);
           add(event.dataTransfer.files);
         }}
+        className={cn(
+          "flex min-h-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-tiny border border-dashed px-4 py-4 text-center",
+          "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+          dragOver
+            ? "border-accent bg-accent/5"
+            : "border-line-2 hover:border-ink-3 hover:bg-paper-deep/40",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        )}
       >
-        <Paperclip className="size-4 text-ink-2" aria-hidden="true" />
-        <p className="font-sans text-[13px]">{uiMessage(locale, "ui.dropPdf")}</p>
-        <p id={`${id}-hint`} className="font-sans text-[12px] text-ink-2">
+        <Paperclip aria-hidden="true" className="size-4 text-ink-2" />
+        <p className="font-sans text-[13px] text-ink">{uiMessage(locale, "ui.dropPdf")}</p>
+        <p id={`${inputId}-hint`} className="font-sans text-[12px] text-ink-2">
           {uiMessage(locale, "ui.pdfOnly")}
         </p>
+        <input
+          ref={inputRef}
+          id={inputId}
+          type="file"
+          accept={accept}
+          multiple
+          aria-label={uiMessage(locale, "ui.dropPdf")}
+          disabled={!onUploaded}
+          className="sr-only"
+          onChange={(event) => {
+            if (event.target.files) add(event.target.files);
+            event.currentTarget.value = "";
+          }}
+        />
       </div>
-      <input
-        ref={input}
-        id={id}
-        type="file"
-        accept={accept}
-        multiple
-        aria-label={uiMessage(locale, "ui.dropPdf")}
-        disabled={!onUploaded}
-        className="sr-only"
-        onChange={(event) => {
-          if (event.target.files) add(event.target.files);
-          event.currentTarget.value = "";
-        }}
-      />
       {error && (
         <p role="alert" className="text-[12px] text-danger">
           {error}
@@ -129,44 +142,54 @@ export function FileUpload({
                 key={`${file.name}-${file.sizeKb}-${file.error ?? "ok"}-${index}`}
                 className="flex min-h-9 animate-enter items-center gap-2.5 px-2.5 py-1.5"
               >
-                <span>
-                  {file.error ? (
-                    <TriangleAlert className="size-3.5 text-danger" aria-hidden="true" />
-                  ) : (
-                    <FileText className="size-3.5 text-ink-2" aria-hidden="true" />
-                  )}
-                </span>
+                {file.error ? (
+                  <TriangleAlert aria-hidden="true" className="size-3.5 shrink-0 text-danger" />
+                ) : (
+                  <FileText aria-hidden="true" className="size-3.5 shrink-0 text-ink-2" />
+                )}
                 <div className="min-w-0 flex-1">
-                  <p
-                    className={cn("truncate font-sans text-[12.5px]", file.error && "text-danger")}
-                  >
-                    {file.name}
-                  </p>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p
+                      className={cn(
+                        "truncate font-sans text-[12.5px]",
+                        file.error ? "text-danger" : "text-ink",
+                      )}
+                    >
+                      {file.name}
+                      {file.error && (
+                        <span className="ml-1.5 font-sans text-[11.5px] text-danger">
+                          {uiMessage(locale, "ui.invalidFileTypeDetail")}
+                        </span>
+                      )}
+                    </p>
+                    <p className="shrink-0 font-mono text-[11px] text-ink-2">
+                      {formatBytes(locale, file.sizeKb * 1000)}
+                    </p>
+                  </div>
                   {file.error ? (
-                    <p role="alert" className="font-sans text-[11.5px] text-danger">
+                    <p role="alert" className="mt-0.5 font-sans text-[11.5px] text-danger">
                       {file.error}
                     </p>
                   ) : file.progress !== undefined && file.progress < 100 ? (
                     <div
                       role="progressbar"
-                      aria-valuenow={file.progress}
+                      aria-valuenow={Math.round(file.progress)}
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-label={uiMessage(locale, "ui.uploadProgress").replace(
                         "{name}",
                         file.name,
                       )}
-                      className="mt-1 h-1 bg-paper-deep"
+                      className="mt-1 h-1 w-full bg-paper-deep"
                     >
-                      <div className="h-full bg-accent" style={{ width: `${file.progress}%` }} />
+                      <div
+                        className="h-full bg-accent transition-[width] duration-150"
+                        style={{ width: `${file.progress}%` }}
+                      />
                     </div>
-                  ) : (
-                    <p className="font-mono text-[11px] text-ink-2">
-                      {formatBytes(locale, file.sizeKb * 1000)}
-                    </p>
-                  )}
+                  ) : null}
                 </div>
-                {file.url && onOpen && (
+                {file.url && (file.progress === undefined || file.progress >= 100) && onOpen && (
                   <Button variant="secondary" size="sm" onClick={() => onOpen(file)}>
                     {uiMessage(locale, "ui.open")}
                   </Button>

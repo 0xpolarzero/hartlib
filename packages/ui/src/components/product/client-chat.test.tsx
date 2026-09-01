@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ClientChat } from "./client-chat";
 
 describe("client chat layout", () => {
-  it("exposes keyboard-resizable panel separators and mobile tabs", () => {
+  it("exposes a keyboard-resizable conversation/visualization separator and mobile tabs", () => {
     const html = renderToStaticMarkup(
       <ClientChat
         transcript={<p>Conversation</p>}
@@ -12,10 +12,11 @@ describe("client chat layout", () => {
       />,
     );
     expect(html).toContain('role="separator"');
-    expect(html).toContain('aria-valuemin="220"');
-    expect(html).toContain('aria-valuemax="480"');
+    expect(html).toContain('aria-valuemin="30"');
+    expect(html).toContain('aria-valuemax="76"');
+    expect(html).toContain('aria-valuenow="62"');
     expect(html).toContain('aria-label="Conversation"');
-    expect(html).toContain('aria-label="Visualization"');
+    expect(html).toContain(">Visualization<");
   });
   it("keeps the visualization workspace reachable from the mobile tab", () => {
     const html = renderToStaticMarkup(
@@ -23,8 +24,8 @@ describe("client chat layout", () => {
         layout={{
           leftOpen: true,
           rightOpen: true,
-          leftWidth: 280,
-          rightWidth: 360,
+          leftWidth: 432,
+          rightWidth: 432,
           mobileTab: "visualization",
         }}
         transcript={<p>Conversation</p>}
@@ -33,14 +34,14 @@ describe("client chat layout", () => {
     );
     expect(html.match(/mobile-visualization/g)?.length).toBe(2);
   });
-  it("removes collapsed panel controls from the accessibility tree", () => {
+  it("hides collapsed side panels from the accessibility tree", () => {
     const html = renderToStaticMarkup(
       <ClientChat
         layout={{
           leftOpen: false,
           rightOpen: false,
-          leftWidth: 280,
-          rightWidth: 360,
+          leftWidth: 432,
+          rightWidth: 432,
           mobileTab: "chat",
         }}
         transcript={<p>Conversation</p>}

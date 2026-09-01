@@ -3,16 +3,16 @@
 ## Product
 
 Hartlib is a durable client chat over authorized public-source documents. The
-reachable product is a single client workspace with one conversation, source
-subscriptions, memories, an owner-only debug drawer, and an empty visualization
-pane. It uses real API data and worker results; it does not show seeded chat
-text, fabricated issue state, invitation state, or mock document links.
+reachable product uses the complete `ui-playground` frontend: client workspace,
+publisher workspace, issue flow, notification settings, component gallery, and
+visualization presentation. Client chat uses real API data and worker results.
+Publisher and gallery routes use local demo adapters for UI-only state and do
+not invent backend records.
 
-Reachable paths are `/`, `/en-US`, `/fr-FR`, `/client`, `/en-US/client`,
-`/fr-FR/client`, nested client source and publication paths, and `/docs`.
-Unknown paths show a branded localized 404. Publisher and gallery paths return
-the same 404 and have no links, commands, navigation entries, or production
-imports.
+Reachable paths are `/`, canonical and alias locale roots, locale client chat,
+nested client source and publication paths, locale publisher workspace,
+publisher issue creation, publisher notification settings, locale component
+gallery, and `/docs`. Unknown paths show a branded localized 404.
 
 ## Demo
 
@@ -32,9 +32,10 @@ right panel. Keyboard and pointer resizers persist through the demo registry.
 The transcript renders user and assistant messages, five ordered stages
 (Understanding, Evidence, Preparing, Writing, Finishing), six stage states,
 retries, citations, sources read, debug data, failures, stopped answers, delete,
-and last-question edit. There is no Regenerate control, branch view, or
-collection-chat view. Composer dictation, suggestions, web policy, and the
-persisted web choice remain available; attachments and audio storage do not.
+and last-question edit. Composer dictation, suggestions, web policy, attachment
+presentation, and the persisted web choice remain available. An attachment
+control performs work only when the app supplies a real callback; audio is not
+stored.
 
 ## Chat and reset
 
@@ -67,11 +68,11 @@ server quotes or an honest unavailable state, source ordinals, and exact
 authenticated or official targets. Raw HTML and remote images stay disabled in
 markdown.
 
-The dormant publisher composition contains complete source, publication,
-document, subscriber, notification, settings, and issue-wizard presentations.
-It is imported only by direct fixture tests, receives empty arrays, zero honest
-counts, idle state, and no enabled mutation callback in the product, and has no
-route, command, link, navigation item, fetch, write, or production-chunk path.
+The publisher composition is reachable and contains the reference source,
+publication, document, subscriber, notification, settings, and issue-wizard
+presentations. `apps/web` supplies local controlled demo state and action
+callbacks. No publisher UI route claims a backend write that the API does not
+provide.
 
 The visualization pane supports versions, selection, restore, refresh,
 download, fullscreen, loading, regenerating, highlight, message association,

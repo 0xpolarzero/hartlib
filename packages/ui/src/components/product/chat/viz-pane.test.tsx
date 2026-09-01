@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { VizPane } from "./viz-pane";
+import { TooltipProvider } from "../../ui/overlays";
 
 const version = {
   id: "v1",
@@ -22,7 +23,9 @@ describe("visualization presentation", () => {
   });
   it("uses a sandboxed srcDoc iframe and renders association", () => {
     const html = renderToStaticMarkup(
-      <VizPane versions={[version]} activeVersionId="v1" association={{ messageId: "m1" }} />,
+      <TooltipProvider>
+        <VizPane versions={[version]} activeVersionId="v1" association={{ messageId: "m1" }} />
+      </TooltipProvider>,
     );
     expect(html).toContain('sandbox=""');
     expect(html).toContain('srcDoc="&lt;h1&gt;Chart&lt;/h1&gt;"');

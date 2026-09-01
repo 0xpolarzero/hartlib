@@ -254,7 +254,9 @@ export function PublisherComposition({
             <p className="text-[12px] text-ink-2">
               {uiMessage(locale, "ui.recordsAvailable").replace(
                 "{count}",
-                String(sources.length + publications.length + documents.length + subscribers.length),
+                String(
+                  sources.length + publications.length + documents.length + subscribers.length,
+                ),
               )}
             </p>
           </CardBody>

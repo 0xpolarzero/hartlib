@@ -4,8 +4,10 @@
 
 The repository ships one reachable React demo, one API, one worker, and the
 packages needed by those applications. The demo is a real Postgres product
-path, not a mock. The reference tree under `ui-playground/` is never imported,
-copied, built, or used as a dependency.
+path, not a mock. `ui-playground/` is the canonical frontend source. Its CSS,
+component trees, classes, and page composition are copied into `packages/ui`
+and connected to production data through `apps/web` adapters. The deployed app
+never imports or ships the playground tree at runtime.
 
 ## Runtime and tools
 
@@ -17,14 +19,11 @@ copied, built, or used as a dependency.
 - oxlint and oxfmt enforce source and formatting checks.
 - PostgreSQL runs through the repository Docker setup for integration and
   full-stack tests.
-- Playwright owns deterministic, live-provider, visual, and accessibility
-  checks.
-- Exact cross-surface parity checks use `bun scripts/ui-parity/capture.ts` with
-  two explicit HTTP origins or argv commands. The runner captures 1440×900 and
-  390×844 at both surfaces, waits for stable rendering, compares decoded RGBA
-  pixels, and requires the repository state-control matrix unless a route smoke
-  opts into partial coverage. It never resolves or imports a source-tree path
-  for the reference surface.
+- Playwright owns deterministic, live-provider, responsive, and accessibility
+  checks. Responsive checks exercise the running app without committed
+  screenshot baselines. Frontend parity comes from direct source ownership:
+  production uses the copied playground CSS and component trees rather than a
+  second visual implementation.
 
 ## Local development startup
 
@@ -95,11 +94,12 @@ services for chat, sessions, public sources, documents, memories, and
 run-owned evidence. `packages/workspace` owns the narrow public-source toggle
 seam. `packages/config` owns environment parsing.
 
-`packages/ui` is the sole visual package. It owns tokens, document styles,
-primitives, product composition, chat presentation, tables, dormant publisher
-presentation, visualization presentation, and formatting helpers. It accepts
-data and callbacks only. It does not fetch, route, read browser storage, or
-call browser APIs.
+`packages/ui` is the sole visual package. Its CSS, primitives, shell, product
+composition, chat presentation, tables, publisher pages, gallery, and
+visualization presentation come directly from `ui-playground/`. Production
+adapters may add props and types, but they must not replace the reference DOM,
+class names, or responsive rules. The package accepts data and callbacks only;
+it does not fetch, route, read browser storage, or call browser APIs.
 
 `packages/docs` owns the static English document response. `packages/i18n`
 owns the matching `en-US` and `fr-FR` catalogs. `packages/source-ingestion`
@@ -110,15 +110,17 @@ package is reintroduced as a compatibility layer.
 
 `apps/web` owns routes, locale and market selection, API calls, cookies,
 controllers, browser storage, stream lifecycle, reset recovery, and live
-composition. It passes empty data and no write callbacks to dormant publisher
-and visualization composition. `apps/api` authenticates the active demo
+composition. It connects the shared reference UI to real client data and to
+local publisher and gallery demo state. `apps/api` authenticates the active demo
 session, decodes the strict HTTP contracts, calls domain services, and encodes
 responses. `apps/worker` runs durable AI and purge jobs and never exposes
 provider credentials or SQL to a model.
 
-The only product paths are the neutral root, canonical locale paths, accepted
-`/fr` and `/us` aliases, nested client source and publication paths, and
-`/docs`. Unknown, publisher, and gallery paths render the branded localized 404. Route registries contain no hidden or write-only product path.
+Product paths include the neutral root, canonical locale paths, accepted `/fr`
+and `/us` aliases, client chat and nested source/publication paths, publisher
+workspace, publisher issue and notification settings, component gallery, and
+`/docs`. Unknown paths render the branded localized 404. Route registries
+contain no hidden or write-only product path.
 
 ## API and state rules
 
@@ -179,8 +181,8 @@ Focused unit tests cover schemas, domain seams, workers, UI primitives,
 controllers, and storage. Integration tests use real PostgreSQL. Deterministic
 Playwright uses the API, worker, and provider boundary together. Live
 Playwright uses real credentials for retrieval, Stop, and reset-during-run;
-skips are failures. Visual checks cover 320, 390, 1024, 1535, 1536, and 1920
-pixels; the parity runner adds exact paired 1440×900 and 390×844 captures.
-Accessibility checks cover keyboard, focus, overlays, announcements, and Axe.
-Builds and scans prove that dormant fixtures have no product reachability and
-that no protected reference or deleted dependency ships.
+skips are failures. Responsive checks cover 320, 390, 1024, 1535, 1536, and
+1920 pixels without committed screenshots. Accessibility checks cover keyboard,
+focus, overlays, announcements, and Axe. Builds prove that the production
+bundle contains the shared UI package and does not import the playground source
+tree at runtime.

@@ -1,9 +1,13 @@
 import { forwardRef, type HTMLAttributes, type LabelHTMLAttributes, type ReactNode } from "react";
+import * as React from "react";
+import * as LabelPrimitive from "@radix-ui/react-label";
+import * as SeparatorPrimitive from "@radix-ui/react-separator";
+import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "../../lib/utils";
 
 export const Label = forwardRef<HTMLLabelElement, LabelHTMLAttributes<HTMLLabelElement>>(
   ({ className, ...props }, ref) => (
-    <label
+    <LabelPrimitive.Root
       ref={ref}
       className={cn("font-sans text-[12px] font-medium text-ink select-none", className)}
       {...props}
@@ -14,15 +18,12 @@ Label.displayName = "Label";
 
 export const Separator = forwardRef<
   HTMLDivElement,
-  HTMLAttributes<HTMLDivElement> & {
-    orientation?: "horizontal" | "vertical";
-    decorative?: boolean;
-  }
+  React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>
 >(({ className, orientation = "horizontal", decorative = true, ...props }, ref) => (
-  <div
+  <SeparatorPrimitive.Root
     ref={ref}
-    role={decorative ? undefined : "separator"}
-    aria-orientation={decorative ? undefined : orientation}
+    decorative={decorative}
+    orientation={orientation}
     className={cn(
       "shrink-0 bg-line",
       orientation === "horizontal" ? "h-px w-full" : "w-px self-stretch",
@@ -33,33 +34,36 @@ export const Separator = forwardRef<
 ));
 Separator.displayName = "Separator";
 
+const badgeVariants = cva(
+  "inline-flex select-none items-center gap-1 rounded-tiny border px-1.5 py-0.5 font-sans text-[11px] font-medium leading-4 whitespace-nowrap",
+  {
+    variants: {
+      tone: {
+        neutral: "border-line-2 bg-paper-deep/60 text-ink-2",
+        outline: "border-line-2 bg-transparent text-ink-2",
+        success: "border-ok/30 bg-ok/10 text-ok",
+        warning: "border-warn/30 bg-warn/10 text-warn",
+        danger: "border-danger/30 bg-danger/10 text-danger",
+        accent: "border-accent/30 bg-accent/10 text-accent",
+      },
+    },
+    defaultVariants: { tone: "neutral" },
+  },
+);
+
 export type BadgeTone = "neutral" | "outline" | "success" | "warning" | "danger" | "accent";
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
-  tone?: BadgeTone;
+export interface BadgeProps
+  extends HTMLAttributes<HTMLSpanElement>, VariantProps<typeof badgeVariants> {}
+
+export function Badge({ className, tone, ...props }: BadgeProps) {
+  return <span className={cn(badgeVariants({ tone }), className)} {...props} />;
 }
-export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
-  const toneClass: Record<BadgeTone, string> = {
-    neutral: "border-line-2 bg-paper-deep/60 text-ink-2",
-    outline: "border-line-2 bg-transparent text-ink-2",
-    success: "border-ok/30 bg-ok/10 text-ok",
-    warning: "border-warn/30 bg-warn/10 text-warn",
-    danger: "border-danger/30 bg-danger/10 text-danger",
-    accent: "border-accent/30 bg-accent/10 text-accent",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex select-none items-center gap-1 rounded-tiny border px-1.5 py-0.5 font-sans text-[11px] font-medium leading-4 whitespace-nowrap",
-        toneClass[tone],
-        className,
-      )}
-      {...props}
-    />
-  );
-}
+
+/** Flat hairline card — no shadow, no nesting. */
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("rounded-tiny border border-line bg-surface", className)} {...props} />;
 }
+
 export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
@@ -71,12 +75,16 @@ export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElemen
     />
   );
 }
+
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
   return <h3 className={cn("font-display text-[15px] font-medium", className)} {...props} />;
 }
+
 export function CardBody({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("px-3 py-3 text-[13px]", className)} {...props} />;
 }
+
+/** Flat opacity pulse — no shimmer gradient (register: no gradient motion). */
 export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
@@ -86,6 +94,8 @@ export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>
     />
   );
 }
+
+/** Keyboard key hint. */
 export function Kbd({ className, children }: { className?: string; children: ReactNode }) {
   return (
     <kbd
@@ -98,9 +108,13 @@ export function Kbd({ className, children }: { className?: string; children: Rea
     </kbd>
   );
 }
+
+/** Small-caps meta label. */
 export function CapsLabel({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
   return <span className={cn("caps-label text-ink-2", className)} {...props} />;
 }
+
+/** Metadata key–value row (dl semantics). */
 export function MetaRow({
   label,
   children,
@@ -122,6 +136,8 @@ export function MetaRow({
     </div>
   );
 }
+
+/** Section header: small-caps kicker + display title + optional aside. */
 export interface SectionHeaderProps extends HTMLAttributes<HTMLDivElement> {
   kicker?: string;
   title: string;
@@ -145,7 +161,7 @@ export function SectionHeader({
     >
       <div className="min-w-0">
         {kicker && <p className="caps-label text-accent">{kicker}</p>}
-        <h2 className="mt-1 font-display text-[22px] font-medium leading-tight text-ink">
+        <h2 className="mt-1 font-display text-[22px] leading-tight font-medium text-ink">
           {title}
           {count !== undefined && (
             <span className="ml-2 font-mono text-[11px] text-ink-2">{count}</span>

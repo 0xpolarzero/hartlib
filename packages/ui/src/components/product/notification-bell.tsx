@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Bell, CalendarClock, Newspaper } from "lucide-react";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/atoms";
+import { Badge, Skeleton } from "../ui/atoms";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "../ui/overlays";
 import { formatDateTime, uiMessage } from "../../lib/format";
+
 export interface PublisherNotification {
   id: string;
   kind: "delivered" | "scheduled" | string;
@@ -17,6 +18,13 @@ export interface PublisherNotification {
   at: string;
   read?: boolean;
 }
+
+/**
+ * Publisher notification affordance (reference tree: ghost trigger with unread
+ * dot, header label, separator, skeleton/empty/list states, optional settings
+ * row). Data stays prop-driven: the dormant fixtures supply rows and the
+ * settings callback; the reachable product never mounts the bell.
+ */
 export function NotificationBell({
   items = [],
   loading = false,
@@ -48,7 +56,7 @@ export function NotificationBell({
           aria-busy={loading || undefined}
           className={loading ? "relative animate-pulse-soft" : "relative"}
         >
-          <Bell className="size-3.5" />
+          <Bell />
           {unread > 0 && (
             <span
               aria-hidden="true"
@@ -58,44 +66,39 @@ export function NotificationBell({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80">
-        <DropdownMenuLabel>
-          {resolvedLabel}
-          {unread > 0 && (
-            <Badge tone="accent" className="ml-2">
-              {unread}
-            </Badge>
-          )}
-        </DropdownMenuLabel>
+        <DropdownMenuLabel>{resolvedLabel}</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        {loading ? (
+        {loading && (
           <div className="grid gap-2 p-2">
-            <div className="h-8 animate-pulse-soft bg-paper-deep" />
-            <div className="h-8 animate-pulse-soft bg-paper-deep" />
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-8 w-full" />
+            ))}
           </div>
-        ) : items.length === 0 ? (
+        )}
+        {!loading && items.length === 0 && (
           <p className="px-2 py-6 text-center text-[12.5px] text-ink-2">{resolvedEmptyLabel}</p>
-        ) : (
-          <ul role="none" className="max-h-72 overflow-y-auto">
-            {items.map((item) => (
-              <li
-                key={item.id}
-                role="menuitem"
-                aria-disabled="true"
-                tabIndex={-1}
-                className="flex items-start gap-2.5 px-2 py-2"
-              >
+        )}
+        {!loading && items.length > 0 && (
+          <ul className="max-h-72 overflow-y-auto">
+            {items.slice(0, 8).map((item) => (
+              <li key={item.id} className="flex items-start gap-2.5 px-2 py-2">
                 {item.kind === "delivered" ? (
-                  <Newspaper className="mt-0.5 size-3.5 text-ink-2" aria-hidden="true" />
+                  <Newspaper aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-ink-2" />
                 ) : (
-                  <CalendarClock className="mt-0.5 size-3.5 text-ink-2" aria-hidden="true" />
+                  <CalendarClock
+                    aria-hidden="true"
+                    className="mt-0.5 size-3.5 shrink-0 text-ink-2"
+                  />
                 )}
                 <div className="min-w-0">
-                  <p className="truncate text-[12.5px]">{item.publicationTitle}</p>
-                  <p className="font-mono text-[10.5px] text-ink-2">
-                    {formatDateTime(locale, item.at)}
-                    {!item.read && (
-                      <span className="ml-1.5 text-accent">{uiMessage(locale, "ui.new")}</span>
-                    )}
+                  <p className="truncate text-[12.5px] text-ink" title={item.publicationTitle}>
+                    {item.publicationTitle}
+                  </p>
+                  <p className="mt-0.5 flex items-center gap-1.5">
+                    <span className="font-mono text-[10.5px] text-ink-2">
+                      {formatDateTime(locale, item.at)}
+                    </span>
+                    {!item.read && <Badge tone="accent">{uiMessage(locale, "ui.new")}</Badge>}
                   </p>
                 </div>
               </li>

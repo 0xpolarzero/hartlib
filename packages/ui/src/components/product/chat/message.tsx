@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { CircleAlert, Bug, MoreHorizontal } from "lucide-react";
+import { CircleAlert, MoreHorizontal, RotateCcw } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { uiMessage } from "../../../lib/format";
 import { Button } from "../../ui/button";
@@ -17,6 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../ui/overlays";
+import { Tooltip } from "../../ui/overlays";
 import { AnswerBody, type CopyAdapter } from "./markdown";
 import { SourcesDisclosure } from "./sources-disclosure";
 import type { ChatTranscriptMessage, PublicCitationRecord, RunFailure } from "./types";
@@ -33,18 +34,20 @@ export const FailureBlock = memo(function FailureBlock({
     <div
       role="alert"
       className={cn(
-        "mt-1.5 max-w-[42ch] rounded-tiny border px-2.5 py-2 text-right",
+        "animate-enter mt-1.5 max-w-[42ch] rounded-tiny border px-2.5 py-2 text-right",
         failure.retryable ? "border-warn/40 bg-warn/5" : "border-danger/40 bg-danger/5",
       )}
     >
-      <p className="flex items-center justify-end gap-1.5 font-mono text-[11px]">
+      <p className="flex items-center justify-end gap-1.5 font-mono text-[11px] tracking-wide">
         <CircleAlert
           className={cn("size-3", failure.retryable ? "text-warn" : "text-danger")}
           aria-hidden="true"
         />
         <span className={failure.retryable ? "text-warn" : "text-danger"}>{failure.code}</span>
       </p>
-      {failure.message && <p className="mt-1 text-[12px] text-ink-2">{failure.message}</p>}
+      {failure.message && (
+        <p className="mt-1 text-[12px] leading-snug text-ink-2">{failure.message}</p>
+      )}
       {failure.retryable && onRetry && (
         <Button variant="secondary" size="sm" className="mt-2" onClick={onRetry}>
           {uiMessage(locale, "ui.retry")}
@@ -185,19 +188,24 @@ export const UserMessage = memo(function UserMessage({
         </div>
       ) : (
         <div className="max-w-[42ch] rounded-tiny border border-line bg-paper-deep/70 px-3 py-1.5">
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed">{message.content}</p>
+          <p className="text-left font-sans text-[13px] leading-relaxed whitespace-pre-wrap text-ink">
+            {message.content}
+          </p>
         </div>
       )}
-      <div className="mt-0.5 flex items-center gap-1 font-mono text-[10px] text-ink-2">
-        {message.createdAt ?? ""}
-        {message.stopped && <span className="text-warn">{uiMessage(locale, "ui.stopped")}</span>}
-        {message.failure && (
-          <FailureBlock
-            failure={message.failure}
-            locale={locale}
-            {...(onRetry === undefined ? {} : { onRetry: () => onRetry(message) })}
-          />
-        )}{" "}
+      <div className="flex items-center gap-1">
+        <p
+          className="mt-0.5 font-mono text-[10px] text-ink-2"
+          aria-label={uiMessage(locale, "chat.sentAtLabel")}
+        >
+          {message.createdAt ?? ""}
+          {(message as ChatTranscriptMessage & { webSearch?: boolean }).webSearch && (
+            <span className="ml-1.5 text-accent">· web</span>
+          )}
+          {message.stopped && (
+            <span className="ml-1.5 text-warn">{uiMessage(locale, "ui.stopped")}</span>
+          )}
+        </p>
         {!editing && (
           <MessageActions
             message={message}
@@ -214,6 +222,13 @@ export const UserMessage = memo(function UserMessage({
           />
         )}
       </div>
+      {message.failure && (
+        <FailureBlock
+          failure={message.failure}
+          locale={locale}
+          {...(onRetry === undefined ? {} : { onRetry: () => onRetry(message) })}
+        />
+      )}
     </div>
   );
 });
@@ -226,11 +241,13 @@ export const AssistantMessage = memo(function AssistantMessage({
   locale = "en-US",
   onCitation,
   copyAdapter,
+  onRegenerate,
 }: {
   message: ChatTranscriptMessage;
   onDelete?: (message: ChatTranscriptMessage) => void;
   onDebug?: (runId: string) => void;
   onShowVisualization?: (message: ChatTranscriptMessage) => void;
+  onRegenerate?: () => void;
   isLast?: boolean;
   locale?: string;
   onCitation?: (citation: PublicCitationRecord) => void | Promise<void>;
@@ -247,19 +264,32 @@ export const AssistantMessage = memo(function AssistantMessage({
       data-testid="chat-message-assistant"
     >
       <header className="flex items-center gap-2">
-        <p className="font-mono text-[10px] uppercase tracking-[.12em] text-ink-2">
+        <p className="font-mono text-[10px] tracking-[0.12em] text-ink-2 uppercase">
           {uiMessage(locale, "chat.author.assistant")}
           {message.createdAt ? ` · ${message.createdAt}` : ""}
         </p>
         <span aria-hidden="true" className="h-px flex-1 bg-line" />
+        {isLast && !message.streaming && onRegenerate && (
+          <Tooltip content={uiMessage(locale, "chat.regenerateTip")}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={uiMessage(locale, "chat.regenerate")}
+              onClick={onRegenerate}
+            >
+              <RotateCcw className="size-3" />
+            </Button>
+          </Tooltip>
+        )}
         {message.runId && onDebug && (
           <Button
             variant="ghost"
             size="icon-sm"
             aria-label={uiMessage(locale, "ui.showDiagnostics")}
+            className="font-mono text-[10px]"
             onClick={() => onDebug(message.runId!)}
           >
-            <Bug className="size-3" />
+            {"{}"}
           </Button>
         )}
         <MessageActions
@@ -291,7 +321,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       {message.referencesVisualization && onShowVisualization && (
         <button
           type="button"
-          className="w-fit font-mono text-[11px] text-accent underline decoration-dotted underline-offset-4"
+          className="w-fit font-mono text-[11px] text-accent underline decoration-dotted underline-offset-4 transition-colors duration-100 hover:text-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent lg:hidden"
           onClick={() => onShowVisualization(message)}
         >
           {uiMessage(locale, "ui.showVisualization")}

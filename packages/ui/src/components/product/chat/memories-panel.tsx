@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { History, RotateCcw } from "lucide-react";
 import { Button } from "../../ui/button";
+import { Badge, Skeleton } from "../../ui/atoms";
 import { ConfirmingDeleteButton } from "../../ui/confirming-delete-button";
 import { EmptyState, ErrorState } from "../../ui/states";
 import { cn } from "../../../lib/utils";
 import { formatDateTime, uiMessage } from "../../../lib/format";
 import type { MemoryRecord, MemoryRevision } from "@hartlib/shared";
+
+const THIRTY_DAYS = 30 * 86400000;
 
 export interface MemoriesPanelProps {
   memories?: readonly MemoryRecord[];
@@ -27,6 +30,12 @@ const emptyMemoriesDescription = (locale: string): string =>
     ? "Les préférences et échéances que vous confierez à l’assistant apparaîtront ici, avec leur historique réversible."
     : "Preferences and deadlines you entrust to the assistant will appear here, with their reversible history.";
 
+/**
+ * Reflowing Memories panel: saved memories with content, origin turn,
+ * timestamps; tombstone soft-delete (struck-through row), a 30-day reversible
+ * history timeline, per-entry Revert that appends a new revision, and an
+ * empty state. Data and mutations are production-controlled through props.
+ */
 export function MemoriesPanel({
   memories = [],
   status = "ready",
@@ -34,7 +43,7 @@ export function MemoriesPanel({
   onRetry,
   onDelete,
   onRevert,
-  onOpenRevision,
+  onOpenRevision: _onOpenRevision,
   onOpenProvenance,
   selectedRevision = null,
   onCloseRevision,
@@ -42,11 +51,17 @@ export function MemoriesPanel({
   locale = "en-US",
 }: MemoriesPanelProps) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const cutoff = useMemo(() => Date.now() - THIRTY_DAYS, []);
+  const withinWindow = (revision: MemoryRevision) =>
+    new Date(revision.createdAt).getTime() >= cutoff;
+
   if (status === "loading")
     return (
-      <p role="status" className={cn("p-3 text-[12px] text-ink-2", className)}>
-        {uiMessage(locale, "state.loadingMemories")}
-      </p>
+      <div className={cn("grid gap-2 p-4", className)}>
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-16 w-full" />
+        ))}
+      </div>
     );
   if (status === "error")
     return (
@@ -116,21 +131,18 @@ export function MemoriesPanel({
         <EmptyState
           title={uiMessage(locale, "ui.noMemories")}
           description={emptyMemoriesDescription(locale)}
-          className="px-0 py-16"
+          className="py-16"
         />
       ) : (
         <ul
           className="divide-y divide-line"
           data-testid="memory-list"
-          aria-label={uiMessage(locale, "section.memories")}
+          aria-label={uiMessage(locale, "memories.list")}
         >
           {memories.map((memory) => {
             const deleted = memory.current.deleted;
             const open = expanded === memory.id;
-            const historyLabel = uiMessage(
-              locale,
-              open ? "action.hideRevisions" : "action.viewRevisions",
-            );
+            const revs = memory.revisions.filter(withinWindow);
             return (
               <li key={memory.id} className={cn("py-3", deleted && "opacity-75")}>
                 <div className="flex items-start justify-between gap-3">
@@ -143,9 +155,7 @@ export function MemoriesPanel({
                     >
                       {memory.current.kind}
                       {deleted && (
-                        <span className="rounded-tiny border border-danger/40 px-1 py-0.5 font-sans text-[10px] font-normal text-danger">
-                          {uiMessage(locale, "memory.deleted")}
-                        </span>
+                        <Badge tone="danger">{uiMessage(locale, "memories.tombstoned")}</Badge>
                       )}
                     </p>
                     <p
@@ -157,56 +167,70 @@ export function MemoriesPanel({
                       {memory.current.content}
                     </p>
                     <p className="mt-1 font-mono text-[10.5px] text-ink-2">
-                      {formatDateTime(locale, memory.createdAt)} · {formatDateTime(locale, memory.updatedAt)}
+                      {uiMessage(locale, "memories.created")}{" "}
+                      {formatDateTime(locale, memory.createdAt)} ·{" "}
+                      {uiMessage(locale, "memories.updated")}{" "}
+                      {formatDateTime(locale, memory.updatedAt)}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    {memory.revisions.length > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-expanded={open}
-                        aria-label={historyLabel}
-                        title={historyLabel}
-                        onClick={() => setExpanded(open ? null : memory.id)}
-                      >
-                        <History className="size-3.5" aria-hidden="true" />
-                        <span className="sr-only">{historyLabel}</span>
-                      </Button>
-                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-expanded={open}
+                      aria-label={uiMessage(locale, "memories.history").replace(
+                        "{label}",
+                        memory.current.kind,
+                      )}
+                      onClick={() => setExpanded(open ? null : memory.id)}
+                    >
+                      <History className="size-3.5" />
+                    </Button>
                     {!deleted && onDelete && (
                       <ConfirmingDeleteButton
+                        label={uiMessage(locale, "memories.deleteA11y").replace(
+                          "{label}",
+                          memory.current.kind,
+                        )}
                         onConfirm={() => void onDelete(memory.id)}
-                        label={uiMessage(locale, "action.delete")}
                         locale={locale}
                       />
                     )}
                   </div>
                 </div>
+
                 {open && (
-                  <div className="mt-2.5 border-l border-line-2 pl-3">
-                    <p className="caps-label mb-1.5 text-ink-2">{historyLabel}</p>
+                  <div className="mt-2.5 animate-enter border-l border-line-2 pl-3">
+                    <p className="caps-label mb-1.5 text-ink-2">
+                      {uiMessage(locale, "memories.timeline").replace("{n}", String(revs.length))}
+                    </p>
+                    {revs.length === 0 && (
+                      <p className="text-[12px] text-ink-2">
+                        {uiMessage(locale, "memories.noRecentRevisions")}
+                      </p>
+                    )}
                     <ol className="grid gap-1">
-                      {memory.revisions.map((revision) => (
+                      {revs.map((revision) => (
                         <li
                           key={revision.id}
-                          className="flex items-start gap-2.5 rounded-tiny px-1 py-1.5"
+                          id={`mem-${memory.id}-rev-${revision.id}`}
+                          className="flex items-start gap-2.5 rounded-tiny px-1 py-1.5 transition-colors duration-100 hover:bg-paper-deep/50"
                         >
-                          <button
-                            type="button"
-                            className="min-w-0 flex-1 text-left"
-                            onClick={() => onOpenRevision?.(memory.id, revision.id)}
-                          >
-                            <span className="block font-mono text-[11px] text-ink-2">
-                              {revision.action} · {formatDateTime(locale, revision.createdAt)}
-                            </span>
-                            <span className="mt-0.5 block font-read text-[13px] leading-snug text-ink">
+                          <span className="mt-0.5 inline-flex h-4 shrink-0 items-center rounded-tiny border border-line-2 px-1 font-mono text-[9.5px] text-ink-2">
+                            r{memory.revisions.indexOf(revision) + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[12.5px] leading-snug text-ink">
                               {revision.after.content}
-                            </span>
-                          </button>
-                          {!revision.after.deleted &&
-                            revision.id !== memory.headRevisionId &&
-                            onRevert && (
+                            </p>
+                            <p className="mt-0.5 font-mono text-[10px] text-ink-2">
+                              {formatDateTime(locale, revision.createdAt)} —{" "}
+                              {uiMessage(locale, "memories.originCreated")}
+                            </p>
+                          </div>
+                          {onRevert &&
+                            !revision.after.deleted &&
+                            revision.id !== memory.headRevisionId && (
                               <Button
                                 variant="ghost"
                                 size="sm"

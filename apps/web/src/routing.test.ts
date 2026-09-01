@@ -18,8 +18,13 @@ describe("demo routing", () => {
       buildDemoPath({ locale: "en-US", role: "client", sourceId: "source-1", issueId: "issue-1" }),
     ).toBe("/en-US/client/sources/source-1/publications/issue-1");
   });
-  it("marks publisher and gallery paths unreachable", () => {
-    expect(getDemoRouteFromPath("/publisher").notFound).toBe(true);
+  it("accepts reference publisher and component-gallery routes", () => {
+    expect(getDemoRouteFromPath("/fr-FR/publisher").role).toBe("publisher");
+    expect(getDemoRouteFromPath("/fr-FR/publisher/issues/new").role).toBe("publisher-issue");
+    expect(getDemoRouteFromPath("/fr-FR/publisher/settings/notifications").role).toBe(
+      "publisher-notifications",
+    );
+    expect(getDemoRouteFromPath("/fr-FR/components").role).toBe("gallery");
     expect(getDemoRouteFromPath("/gallery").notFound).toBe(true);
   });
   it("maps locale aliases to locale and market", () => {

@@ -1,465 +1,228 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  useId,
-  type ButtonHTMLAttributes,
-  type HTMLAttributes,
-  type ReactNode,
-} from "react";
-import * as React from "react";
+import { forwardRef, type ComponentProps } from "react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
+import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
+import * as HoverCardPrimitive from "@radix-ui/react-hover-card";
 import { Check, ChevronRight } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { uiMessage } from "../../lib/format";
 
-type OpenCtx = {
-  open: boolean;
-  setOpen: (value: boolean) => void;
-  setTrigger: (element: HTMLElement | null) => void;
-  contentId: string;
-  locale: string;
-};
-type MenuItemProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onSelect">;
-const OpenContext = createContext<OpenCtx | null>(null);
-function Root({
-  children,
-  open: controlled,
-  defaultOpen = false,
-  onOpenChange,
-  locale = "en-US",
-}: {
-  children: ReactNode;
-  open?: boolean;
-  defaultOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  locale?: string;
-}) {
-  const [internal, setInternal] = useState(defaultOpen);
-  const open = controlled ?? internal;
-  const trigger = useRef<HTMLElement | null>(null);
-  const contentId = useId();
-  const previousOpen = useRef(open);
-  const setOpen = (next: boolean) => {
-    if (controlled === undefined) setInternal(next);
-    onOpenChange?.(next);
-  };
-  useEffect(() => {
-    let timer: number | undefined;
-    if (previousOpen.current && !open) {
-      timer = window.setTimeout(() => trigger.current?.focus(), 0);
-    }
-    previousOpen.current = open;
-    return () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [open]);
-  return (
-    <OpenContext.Provider
-      value={{
-        open,
-        setOpen,
-        setTrigger: (element) => {
-          trigger.current = element;
-        },
-        contentId,
-        locale,
-      }}
-    >
-      {children}
-    </OpenContext.Provider>
-  );
-}
-export const Popover = Root;
-export const DropdownMenu = Root;
-export function PopoverClose({
-  children,
-  onClick,
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { children?: ReactNode }) {
-  const ctx = useContext(OpenContext);
-  const resolvedChildren = children ?? uiMessage(ctx?.locale ?? "en-US", "ui.close");
-  return (
-    <button
-      type="button"
-      {...props}
-      onClick={(event) => {
-        onClick?.(event);
-        if (!event.defaultPrevented) ctx?.setOpen(false);
-      }}
-    >
-      {resolvedChildren}
-    </button>
-  );
-}
-/** Positioning anchor for a popover. It does not open the popover. */
-export function PopoverTrigger({ children, asChild }: { children: ReactNode; asChild?: boolean }) {
-  if (asChild && React.isValidElement(children)) return children;
-  return <span>{children}</span>;
-}
-export function PopoverTriggerButton({
-  children,
-  asChild,
-  popupRole = "true",
-}: {
-  children: ReactNode;
-  asChild?: boolean;
-  popupRole?: "true" | "menu" | "dialog";
-}) {
-  const ctx = useContext(OpenContext);
-  if (asChild && React.isValidElement(children)) {
-    const childProps = children.props as {
-      onClick?: React.MouseEventHandler;
-      onKeyDown?: React.KeyboardEventHandler;
-    };
-    return React.cloneElement(children, {
-      "aria-haspopup": popupRole,
-      "aria-expanded": ctx?.open ?? false,
-      "aria-controls": ctx?.contentId,
-      "data-state": ctx?.open ? "open" : "closed",
-      onClick: (event: React.MouseEvent) => {
-        ctx?.setTrigger(event.currentTarget as HTMLElement);
-        childProps.onClick?.(event);
-        if (!event.defaultPrevented) ctx?.setOpen(!ctx.open);
-      },
-      onKeyDown: (event: React.KeyboardEvent) => {
-        childProps.onKeyDown?.(event);
-        if (!event.defaultPrevented && event.key === "Escape" && ctx?.open) {
-          event.preventDefault();
-          event.stopPropagation();
-          ctx.setOpen(false);
-        }
-      },
-    } as never);
-  }
-  return (
-    <button
-      type="button"
-      aria-haspopup={popupRole}
-      aria-expanded={ctx?.open ?? false}
-      aria-controls={ctx?.contentId}
-      data-state={ctx?.open ? "open" : "closed"}
-      onClick={(event) => {
-        ctx?.setTrigger(event.currentTarget);
-        ctx?.setOpen(!ctx.open);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && ctx?.open) {
-          event.preventDefault();
-          event.stopPropagation();
-          ctx.setOpen(false);
-        }
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-export function DropdownMenuTrigger(props: { children: ReactNode; asChild?: boolean }) {
-  return <PopoverTriggerButton {...props} popupRole="menu" />;
-}
-function LayerContent({
-  className,
-  children,
-  align = "start",
-  onKeyDown,
-  ...props
-}: HTMLAttributes<HTMLDivElement> & { align?: "start" | "end" | "center" }) {
-  const ctx = useContext(OpenContext);
-  const ref = useRef<HTMLDivElement>(null);
-  const isMenu = props.role === "menu";
-  useEffect(() => {
-    if (!ctx?.open) return;
-    const menu = ref.current?.getAttribute("role") === "menu" ? ref.current : null;
-    const focusableItems = () =>
-      menu
-        ? Array.from(
-            menu.querySelectorAll<HTMLButtonElement>(
-              '[role="menuitem"], [role="menuitemcheckbox"]',
-            ),
-          ).filter((item) => !item.disabled)
-        : [];
-    const focusFirst = () => focusableItems()[0]?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (menu && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-        const items = focusableItems();
-        if (items.length === 0) return;
-        event.preventDefault();
-        const current = items.indexOf(document.activeElement as HTMLButtonElement);
-        const next =
-          event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? items.length - 1
-              : (current + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
-        items[next]?.focus();
-      }
-    };
-    const onPointer = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) ctx.setOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onPointer);
-    if (menu) requestAnimationFrame(focusFirst);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onPointer);
-    };
-  }, [ctx]);
-  if (!ctx?.open) return null;
-  return (
-    <div
+/* ── Popover ──────────────────────────────────────────────────────────── */
+
+export const Popover = PopoverPrimitive.Root;
+export const PopoverTrigger = PopoverPrimitive.Anchor;
+export const PopoverTriggerButton = PopoverPrimitive.Trigger;
+export const PopoverClose = PopoverPrimitive.Close;
+
+export const PopoverContent = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
+>(({ className, align = "start", sideOffset = 6, ...props }, ref) => (
+  <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Content
       ref={ref}
-      id={props.id ?? ctx.contentId}
-      data-state="open"
+      align={align}
+      sideOffset={sideOffset}
       className={cn(
-        "absolute z-50 mt-1 rounded-tiny border border-line-2 bg-surface p-1 shadow-none animate-enter",
-        isMenu && "min-w-44",
-        align === "end" && "right-0",
+        "z-50 rounded-tiny border border-line-2 bg-surface shadow-none",
+        "data-[state=open]:animate-enter",
         className,
       )}
-      {...props}
-      onKeyDown={(event) => {
-        onKeyDown?.(event);
-        if (!event.defaultPrevented && event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          ctx?.setOpen(false);
-        }
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-export const PopoverContent = LayerContent;
-export function DropdownMenuContent(
-  props: HTMLAttributes<HTMLDivElement> & { align?: "start" | "end" | "center" },
-) {
-  return <LayerContent role="menu" {...props} />;
-}
-export function DropdownMenuItem({
-  className,
-  destructive,
-  onSelect,
-  onClick,
-  ...props
-}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onSelect"> & {
-  destructive?: boolean;
-  onSelect?: () => void;
-}) {
-  const ctx = useContext(OpenContext);
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className={cn(
-        "flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none transition-colors duration-100",
-        "hover:bg-paper-deep focus:bg-paper-deep disabled:cursor-not-allowed disabled:pointer-events-none disabled:text-ink-3",
-        "[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-ink-2",
-        destructive && "text-danger [&_svg]:text-danger hover:bg-danger/10 focus:bg-danger/10",
-        className,
-      )}
-      onClick={(event) => {
-        onClick?.(event);
-        if (!event.defaultPrevented) {
-          onSelect?.();
-          ctx?.setOpen(false);
-        }
-      }}
       {...props}
     />
-  );
+  </PopoverPrimitive.Portal>
+));
+PopoverContent.displayName = "PopoverContent";
+
+/* ── Dropdown menu ───────────────────────────────────────────────────── */
+
+export type DropdownMenuProps = ComponentProps<typeof DropdownMenuPrimitive.Root> & {
+  locale?: string;
+};
+export function DropdownMenu({ locale: _locale, ...props }: DropdownMenuProps) {
+  return <DropdownMenuPrimitive.Root {...props} />;
 }
-export function DropdownMenuCheckboxItem({
-  checked,
-  onCheckedChange,
-  children,
-  ...props
-}: MenuItemProps & { checked?: boolean; onCheckedChange?: (checked: boolean) => void }) {
-  return (
-    <DropdownMenuItem
+export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
+export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
+
+export const DropdownMenuContent = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
+>(({ className, sideOffset = 4, ...props }, ref) => (
+  <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Content
+      ref={ref}
+      sideOffset={sideOffset}
+      className={cn(
+        "z-50 min-w-44 rounded-tiny border border-line-2 bg-surface p-1 shadow-none",
+        "data-[state=open]:animate-enter",
+        className,
+      )}
       {...props}
-      role="menuitemcheckbox"
-      aria-checked={checked}
-      onSelect={() => onCheckedChange?.(!checked)}
-      className="relative py-1 pr-2 pl-6"
-    >
-      <span className="absolute left-1.5">
-        {checked ? <Check className="size-3 text-accent" /> : null}
-      </span>
-      {children}
-    </DropdownMenuItem>
-  );
-}
-export const DropdownMenuGroup = ({ children }: { children: ReactNode }) => <>{children}</>;
-export function DropdownMenuLabel({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("caps-label px-1.5 py-1.5 text-ink-2", className)} {...props} />;
-}
-export function DropdownMenuSeparator({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("my-1 h-px bg-line", className)} {...props} />;
-}
-export const DropdownMenuSub = Root;
-export function DropdownMenuSubTrigger({ children, ...props }: MenuItemProps) {
-  const ctx = useContext(OpenContext);
-  return (
-    <PopoverTriggerButton asChild popupRole="menu">
-      <button
-        type="button"
-        role="menuitem"
-        aria-haspopup="menu"
-        aria-expanded={ctx?.open ?? false}
-        data-state={ctx?.open ? "open" : "closed"}
-        className="flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none transition-colors duration-100 hover:bg-paper-deep focus:bg-paper-deep data-[state=open]:bg-paper-deep"
-        {...props}
-      >
-        {children}
-        <ChevronRight className="ml-auto size-3 text-ink-2" />
-      </button>
-    </PopoverTriggerButton>
-  );
-}
-export function DropdownMenuSubContent(
-  props: HTMLAttributes<HTMLDivElement> & { align?: "start" | "end" | "center" },
-) {
-  return <LayerContent role="menu" {...props} />;
-}
+    />
+  </DropdownMenuPrimitive.Portal>
+));
+DropdownMenuContent.displayName = "DropdownMenuContent";
+
+export const DropdownMenuItem = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Item> & { destructive?: boolean }
+>(({ className, destructive, ...props }, ref) => (
+  <DropdownMenuPrimitive.Item
+    ref={ref}
+    className={cn(
+      "flex min-h-7 cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-[13px] text-ink",
+      "outline-none transition-colors duration-100",
+      "data-[highlighted]:bg-paper-deep",
+      "data-[disabled]:cursor-not-allowed data-[disabled]:text-ink-3 data-[disabled]:pointer-events-none",
+      "[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-ink-2",
+      destructive && "text-danger [&_svg]:text-danger data-[highlighted]:bg-danger/10",
+      className,
+    )}
+    {...props}
+  />
+));
+DropdownMenuItem.displayName = "DropdownMenuItem";
+
+export const DropdownMenuCheckboxItem = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.CheckboxItem>
+>(({ className, children, checked, ...props }, ref) => (
+  <DropdownMenuPrimitive.CheckboxItem
+    ref={ref}
+    {...(checked === undefined ? {} : { checked })}
+    className={cn(
+      "relative flex min-h-7 cursor-pointer select-none items-center gap-2 rounded-tiny py-1 pr-2 pl-6 text-[13px] text-ink",
+      "outline-none transition-colors duration-100 data-[highlighted]:bg-paper-deep",
+      "data-[disabled]:pointer-events-none data-[disabled]:text-ink-3",
+      className,
+    )}
+    {...props}
+  >
+    <DropdownMenuPrimitive.ItemIndicator className="absolute left-1.5">
+      <Check className="size-3 text-accent" />
+    </DropdownMenuPrimitive.ItemIndicator>
+    {children}
+  </DropdownMenuPrimitive.CheckboxItem>
+));
+DropdownMenuCheckboxItem.displayName = "DropdownMenuCheckboxItem";
+
+export const DropdownMenuLabel = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Label>
+>(({ className, ...props }, ref) => (
+  <DropdownMenuPrimitive.Label
+    ref={ref}
+    className={cn("caps-label px-1.5 py-1.5 text-ink-2", className)}
+    {...props}
+  />
+));
+DropdownMenuLabel.displayName = "DropdownMenuLabel";
+
+export const DropdownMenuSeparator = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Separator>
+>(({ className, ...props }, ref) => (
+  <DropdownMenuPrimitive.Separator
+    ref={ref}
+    className={cn("my-1 h-px bg-line", className)}
+    {...props}
+  />
+));
+DropdownMenuSeparator.displayName = "DropdownMenuSeparator";
+
+export const DropdownMenuSub = DropdownMenuPrimitive.Sub;
+export const DropdownMenuSubTrigger = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger>
+>(({ className, children, ...props }, ref) => (
+  <DropdownMenuPrimitive.SubTrigger
+    ref={ref}
+    className={cn(
+      "flex min-h-7 cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-[13px] outline-none transition-colors duration-100 data-[highlighted]:bg-paper-deep data-[state=open]:bg-paper-deep",
+      className,
+    )}
+    {...props}
+  >
+    {children}
+    <ChevronRight className="ml-auto size-3 text-ink-2" />
+  </DropdownMenuPrimitive.SubTrigger>
+));
+DropdownMenuSubTrigger.displayName = "DropdownMenuSubTrigger";
+
+export const DropdownMenuSubContent = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
+>(({ className, ...props }, ref) => (
+  <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.SubContent
+      ref={ref}
+      sideOffset={2}
+      className={cn(
+        "z-50 min-w-40 rounded-tiny border border-line-2 bg-surface p-1 shadow-none data-[state=open]:animate-enter",
+        className,
+      )}
+      {...props}
+    />
+  </DropdownMenuPrimitive.Portal>
+));
+DropdownMenuSubContent.displayName = "DropdownMenuSubContent";
+
+/* ── Tooltip (keyboard-triggerable: Radix opens on focus) ────────────── */
+
+export const TooltipProvider = TooltipPrimitive.Provider;
+
 export function Tooltip({
   content,
   children,
   side = "top",
   shortcut,
 }: {
-  content: ReactNode;
-  children: ReactNode;
+  content: React.ReactNode;
+  children: React.ReactNode;
   side?: "top" | "bottom" | "left" | "right";
   shortcut?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const tooltipId = useId();
-  const child = React.isValidElement(children)
-    ? React.cloneElement(children, {
-        "aria-describedby": tooltipId,
-      } as never)
-    : children;
   return (
-    <span
-      className="relative inline-flex"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && open) {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(false);
-        }
-      }}
-    >
-      {child}
-      {open && (
-        <span
-          id={tooltipId}
-          role="tooltip"
+    <TooltipPrimitive.Root delayDuration={320}>
+      <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+      <TooltipPrimitive.Portal>
+        <TooltipPrimitive.Content
+          side={side}
+          sideOffset={5}
           className={cn(
-            "absolute z-50 flex items-center gap-1.5 whitespace-nowrap rounded-tiny border border-line-2 bg-ink px-2 py-1 font-sans text-[11.5px] leading-none text-paper animate-enter-fade",
-            side === "bottom"
-              ? "left-1/2 top-full mt-1 -translate-x-1/2"
-              : side === "left"
-                ? "right-full top-1/2 mr-1 -translate-y-1/2"
-                : side === "right"
-                  ? "left-full top-1/2 ml-1 -translate-y-1/2"
-                  : "bottom-full left-1/2 mb-1 -translate-x-1/2",
+            "z-50 flex items-center gap-1.5 rounded-tiny border border-line-2 bg-ink px-2 py-1",
+            "font-sans text-[11.5px] leading-none text-paper",
+            "data-[state=delayed-open]:animate-enter-fade",
           )}
         >
           {content}
-          {shortcut && <span className="ml-1 font-mono text-[10px] text-paper/70">{shortcut}</span>}
-        </span>
-      )}
-    </span>
+          {shortcut && <span className="font-mono text-[10px] text-paper/70">{shortcut}</span>}
+        </TooltipPrimitive.Content>
+      </TooltipPrimitive.Portal>
+    </TooltipPrimitive.Root>
   );
 }
-export const TooltipProvider = ({ children }: { children: ReactNode }) => <>{children}</>;
-type HoverCtx = { open: boolean; setOpen: (open: boolean) => void };
-const HoverContext = createContext<HoverCtx | null>(null);
-export function HoverCard({
-  children,
-  open: controlled,
-  defaultOpen = false,
-  onOpenChange,
-}: {
-  children: ReactNode;
-  open?: boolean;
-  defaultOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
-}) {
-  const [internal, setInternal] = useState(defaultOpen);
-  const open = controlled ?? internal;
-  const setOpen = (next: boolean) => {
-    if (controlled === undefined) setInternal(next);
-    onOpenChange?.(next);
-  };
-  return (
-    <HoverContext.Provider value={{ open, setOpen }}>
-      <span
-        className="relative inline-flex"
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-      >
-        {children}
-      </span>
-    </HoverContext.Provider>
-  );
-}
-export function HoverCardTrigger({
-  children,
-  asChild = false,
-}: {
-  children: ReactNode;
-  asChild?: boolean;
-}) {
-  const ctx = useContext(HoverContext);
-  if (asChild && React.isValidElement(children)) {
-    const childProps = children.props as {
-      onFocus?: React.FocusEventHandler;
-      onMouseEnter?: React.MouseEventHandler;
-    };
-    return React.cloneElement(children, {
-      onFocus: (event: React.FocusEvent) => {
-        childProps.onFocus?.(event);
-        if (!event.defaultPrevented) ctx?.setOpen(true);
-      },
-      onMouseEnter: (event: React.MouseEvent) => {
-        childProps.onMouseEnter?.(event);
-        if (!event.defaultPrevented) ctx?.setOpen(true);
-      },
-    } as never);
-  }
-  return (
-    <span tabIndex={0} onFocus={() => ctx?.setOpen(true)} onMouseEnter={() => ctx?.setOpen(true)}>
-      {children}
-    </span>
-  );
-}
-export const HoverCardContent = ({
-  children,
-  className,
-  ...props
-}: HTMLAttributes<HTMLDivElement>) => {
-  const ctx = useContext(HoverContext);
-  return ctx?.open ? (
-    <div
+
+/* ── HoverCard (citation / source previews) ──────────────────────────── */
+
+export const HoverCard = HoverCardPrimitive.Root;
+export const HoverCardTrigger = HoverCardPrimitive.Trigger;
+
+export const HoverCardContent = forwardRef<
+  HTMLDivElement,
+  React.ComponentPropsWithoutRef<typeof HoverCardPrimitive.Content>
+>(({ className, sideOffset = 6, ...props }, ref) => (
+  <HoverCardPrimitive.Portal>
+    <HoverCardPrimitive.Content
+      ref={ref}
+      sideOffset={sideOffset}
       className={cn(
-        "absolute z-50 mt-1 w-80 rounded-tiny border border-line-2 bg-surface p-3 animate-enter",
+        "z-50 w-80 rounded-tiny border border-line-2 bg-surface p-3 shadow-none",
+        "data-[state=open]:animate-enter",
         className,
       )}
       {...props}
-    >
-      {children}
-    </div>
-  ) : null;
-};
+    />
+  </HoverCardPrimitive.Portal>
+));
+HoverCardContent.displayName = "HoverCardContent";

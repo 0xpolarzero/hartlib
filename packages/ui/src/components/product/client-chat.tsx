@@ -3,10 +3,11 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
-import { PanelLeft, PanelRight } from "lucide-react";
+import { BookOpen, Brain, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn, clamp } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
 import { Button } from "../ui/button";
@@ -24,8 +25,8 @@ export interface ClientChatLayoutState {
 const defaultLayout: ClientChatLayoutState = {
   leftOpen: true,
   rightOpen: true,
-  leftWidth: 280,
-  rightWidth: 360,
+  leftWidth: 432,
+  rightWidth: 432,
   mobileTab: "chat",
 };
 export interface ClientChatProps {
@@ -47,6 +48,86 @@ export interface ClientChatResizeAdapter {
   setCursor: (cursor: string) => void;
 }
 
+type WorkspacePage = "chat" | "subscriptions" | "memories";
+type SidebarSide = "left" | "right";
+
+const SIDEBAR_MIN_WIDTH = 432;
+const SIDEBAR_MAX_WIDTH = 960;
+const CHAT_MIN_WIDTH = 480;
+const CHAT_MAX_WIDTH = 1440;
+/** Center split keeps the conversation above its minimum and the
+ * visualization above its own minimum (24%). */
+const CHAT_SPLIT_MIN = 30;
+const CHAT_SPLIT_MAX = 76;
+
+type SidebarTracks = {
+  left: number;
+  leftMin: number;
+  leftMax: number;
+  right: number;
+  rightMin: number;
+  rightMax: number;
+};
+
+function normalizeSidebarWidth(width: number) {
+  if (!Number.isFinite(width)) return SIDEBAR_MIN_WIDTH;
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width));
+}
+
+function sidebarMaxWidth(viewportWidth: number, minWidth: number, otherTrack: number) {
+  return Math.max(
+    minWidth,
+    Math.min(SIDEBAR_MAX_WIDTH, viewportWidth - CHAT_MIN_WIDTH - otherTrack),
+  );
+}
+
+function resolveSidebarTracks({
+  viewportWidth,
+  leftOpen,
+  rightOpen,
+  leftRequested,
+  rightRequested,
+}: {
+  viewportWidth: number;
+  leftOpen: boolean;
+  rightOpen: boolean;
+  leftRequested: number;
+  rightRequested: number;
+}): SidebarTracks {
+  const naturalGutter = Math.max(0, (viewportWidth - CHAT_MAX_WIDTH) / 2);
+  const leftMin = Math.max(SIDEBAR_MIN_WIDTH, naturalGutter);
+  const rightMin = Math.max(SIDEBAR_MIN_WIDTH, naturalGutter);
+  let left = leftOpen ? Math.max(leftMin, normalizeSidebarWidth(leftRequested)) : naturalGutter;
+  let right = rightOpen ? Math.max(rightMin, normalizeSidebarWidth(rightRequested)) : naturalGutter;
+
+  // Preserve a usable center when both requested tracks would consume too much
+  // space. Reduce only the portion above each side's effective minimum.
+  const availableForSidebars = Math.max(0, viewportWidth - CHAT_MIN_WIDTH);
+  const overflow = Math.max(0, left + right - availableForSidebars);
+  if (overflow > 0) {
+    const leftFlex = leftOpen ? Math.max(0, left - leftMin) : 0;
+    const rightFlex = rightOpen ? Math.max(0, right - rightMin) : 0;
+    const flexTotal = leftFlex + rightFlex;
+    if (flexTotal > 0) {
+      left -= Math.min(leftFlex, overflow * (leftFlex / flexTotal));
+      right -= Math.min(rightFlex, overflow * (rightFlex / flexTotal));
+    }
+  }
+
+  return {
+    left,
+    leftMin,
+    leftMax: sidebarMaxWidth(viewportWidth, leftMin, right),
+    right,
+    rightMin,
+    rightMax: sidebarMaxWidth(viewportWidth, rightMin, left),
+  };
+}
+
+function clampSidebarWidth(width: number, minWidth: number, maxWidth: number) {
+  return Math.min(maxWidth, Math.max(minWidth, width));
+}
+
 export function ClientChat({
   transcript,
   composerProps,
@@ -64,337 +145,598 @@ export function ClientChat({
   const resolvedTitle = title === "Chat" ? uiMessage(locale, "nav.chat") : title;
   const [localLayout, setLocalLayout] = useState(defaultLayout);
   const layout = controlledLayout ?? localLayout;
-  const [compactView, setCompactView] = useState<"chat" | "subscriptions" | "memories">("chat");
-  const compactPanel = useRef<HTMLDivElement>(null);
-  const leftToggle = useRef<HTMLButtonElement>(null);
-  const rightToggle = useRef<HTMLButtonElement>(null);
-  const wideRightToggle = useRef<HTMLButtonElement>(null);
   const setLayout = (next: ClientChatLayoutState) => {
     if (controlledLayout === undefined) setLocalLayout(next);
     onLayoutChange?.(next);
   };
+  const [workspacePage, setWorkspacePage] = useState<WorkspacePage>("chat");
+  const [resizingSide, setResizingSide] = useState<SidebarSide | null>(null);
+  const [chatSplit, setChatSplit] = useState(62);
+  const [chatSplitDragging, setChatSplitDragging] = useState(false);
+  const leftToggle = useRef<HTMLButtonElement>(null);
+  const rightToggle = useRef<HTMLButtonElement>(null);
+  const subscriptionsPanel = useRef<HTMLElement | null>(null);
+  const memoriesPanel = useRef<HTMLElement | null>(null);
+  const isWideDesktop = useMediaQuery("(min-width: 1536px)");
+  const viewportWidth = useViewportWidth();
+  const sidebarTracks = resolveSidebarTracks({
+    viewportWidth,
+    leftOpen: layout.leftOpen,
+    rightOpen: layout.rightOpen,
+    leftRequested: layout.leftWidth,
+    rightRequested: layout.rightWidth,
+  });
+
   useEffect(() => {
     if (!layout.leftOpen) leftToggle.current?.focus();
   }, [layout.leftOpen]);
   useEffect(() => {
     if (layout.rightOpen) return;
-    if (
-      typeof window !== "undefined" &&
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(min-width: 1536px)").matches
-    ) {
-      wideRightToggle.current?.focus();
-      return;
-    }
     rightToggle.current?.focus();
   }, [layout.rightOpen]);
-  const dragging = useRef<{
-    readonly side: "left" | "right";
-    readonly startX: number;
-    readonly startWidth: number;
-  } | null>(null);
+  // A citation or a deep link opens the corresponding side panel.
   useEffect(() => {
-    if (!resizeAdapter) return;
-    const move = (clientX: number) => {
-      const drag = dragging.current;
-      if (!drag) return;
-      const delta = clientX - drag.startX;
-      const width =
-        drag.side === "left"
-          ? clamp(drag.startWidth + delta, 220, 420)
-          : clamp(drag.startWidth - delta, 280, 480);
-      setLayout({
-        ...layout,
-        ...(drag.side === "left" ? { leftWidth: width } : { rightWidth: width }),
-      });
-    };
-    const up = () => {
-      dragging.current = null;
-      resizeAdapter.setCursor("");
-    };
-    return resizeAdapter.subscribe(move, up);
-  }, [layout, resizeAdapter]);
+    if (focusPanel === null) return;
+    setWorkspacePage(focusPanel);
+    if (focusPanel === "subscriptions") setLayout({ ...layout, leftOpen: true });
+    if (focusPanel === "memories") setLayout({ ...layout, rightOpen: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusPanel]);
+  // Compact pages below the wide breakpoint move keyboard focus into the panel.
+  useEffect(() => {
+    if (workspacePage === "chat" || isWideDesktop) return;
+    const panel = workspacePage === "subscriptions" ? subscriptionsPanel : memoriesPanel;
+    panel.current?.focus();
+  }, [workspacePage, isWideDesktop]);
+
+  const selectWorkspacePage = (page: WorkspacePage) => {
+    setWorkspacePage(page);
+    if (page === "subscriptions") setLayout({ ...layout, leftOpen: true });
+    if (page === "memories") setLayout({ ...layout, rightOpen: true });
+  };
+
   const chatView = transcript ?? null;
   const vizView = visualization ?? <VizPane versions={[]} activeVersionId={null} locale={locale} />;
-  const compactContent = compactView === "subscriptions" ? subscriptions : memories;
-  useEffect(() => {
-    if (compactView !== "chat") compactPanel.current?.focus();
-  }, [compactView]);
-  useEffect(() => {
-    if (focusPanel !== null) setCompactView(focusPanel);
-  }, [focusPanel]);
-  const gridStyle = {
-    "--left": layout.leftOpen ? `${layout.leftWidth}px` : "0px",
-    "--right": layout.rightOpen ? `${layout.rightWidth}px` : "0px",
-  } as CSSProperties;
-  const resizeWithKeyboard = (
-    side: "left" | "right",
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-  ) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const min = side === "left" ? 220 : 280;
-    const max = side === "left" ? 420 : 480;
-    const current = side === "left" ? layout.leftWidth : layout.rightWidth;
-    const delta =
-      side === "left"
-        ? event.key === "ArrowRight"
-          ? 16
-          : -16
-        : event.key === "ArrowLeft"
-          ? 16
-          : -16;
-    const width =
-      event.key === "Home" ? min : event.key === "End" ? max : clamp(current + delta, min, max);
-    setLayout({ ...layout, ...(side === "left" ? { leftWidth: width } : { rightWidth: width }) });
-  };
-  const centerGridStyle = {
-    gridTemplateColumns: layout.rightOpen
-      ? "minmax(0, 62fr) minmax(0, 38fr)"
-      : "minmax(0, 1fr) 0px",
-  } as CSSProperties;
+  const subscriptionsLabel = uiMessage(locale, "ui.subscriptions");
+  const memoriesLabel = uiMessage(locale, "section.memories");
+
   return (
     <section
       className={cn(
-        "subscriber-chat-viewport relative -ml-4 -mt-5 flex h-[calc(100dvh-52px)] min-h-0 w-[calc(100%+2rem)] flex-1 flex-col overflow-hidden",
+        "subscriber-chat-viewport relative -mt-5 flex h-[calc(100dvh-52px)] min-h-0 flex-1 flex-col overflow-hidden",
         className,
       )}
       aria-label={resolvedTitle}
+      data-sidebar-resizing={resizingSide ? "true" : undefined}
+      style={
+        {
+          "--subscriber-left-track": `${sidebarTracks.left}px`,
+          "--subscriber-right-track": `${sidebarTracks.right}px`,
+        } as CSSProperties
+      }
     >
       <h1 className="sr-only">{resolvedTitle}</h1>
-      <div className="subscriber-compact-nav flex shrink-0 justify-center px-3 py-1.5 min-[1536px]:hidden max-[1535px]:translate-x-[15px]">
+      <div className="subscriber-compact-nav flex shrink-0 justify-center px-3 py-1.5">
         <Segmented
           size="sm"
-          aria-label={uiMessage(locale, "nav.chat")}
-          value={compactView}
-          onChange={setCompactView}
+          aria-label={resolvedTitle}
+          value={workspacePage}
+          onChange={selectWorkspacePage}
           options={[
             { value: "chat", label: uiMessage(locale, "nav.chat") },
-            { value: "subscriptions", label: uiMessage(locale, "ui.subscriptions") },
-            { value: "memories", label: uiMessage(locale, "section.memories") },
+            { value: "subscriptions", label: subscriptionsLabel },
+            { value: "memories", label: memoriesLabel },
           ]}
         />
       </div>
-      <div
-        className="grid min-h-0 flex-1 overflow-hidden min-[1536px]:relative min-[1536px]:left-1/2 min-[1536px]:w-screen min-[1536px]:-translate-x-1/2 min-[1536px]:grid-cols-[var(--left)_minmax(0,1440px)_var(--right)]"
-        style={gridStyle}
-      >
-        <aside
-          className="relative hidden min-w-0 overflow-visible border-r border-line bg-paper min-[1536px]:block"
-          aria-label={uiMessage(locale, "ui.subscriptions")}
-          aria-hidden={!layout.leftOpen}
-          {...(!layout.leftOpen ? { inert: true } : {})}
+      <div className="subscriber-chat-layout min-h-0 flex-1">
+        <SidePanel
+          side="left"
+          id="subscriptions-panel"
+          label={subscriptionsLabel}
+          open={layout.leftOpen}
+          compactActive={workspacePage === "subscriptions"}
+          wide={isWideDesktop}
+          width={sidebarTracks.left}
+          minWidth={sidebarTracks.leftMin}
+          maxWidth={sidebarTracks.leftMax}
+          resizeLabel={uiMessage(locale, "ui.resizeSubscriptions")}
+          panelRef={subscriptionsPanel}
+          {...(resizeAdapter ? { adapter: resizeAdapter } : {})}
+          onResize={(width) => setLayout({ ...layout, leftWidth: width })}
+          onResizeStart={() => setResizingSide("left")}
+          onResizeEnd={() => setResizingSide((current) => (current === "left" ? null : current))}
         >
-          {layout.leftOpen && (
-            <>
-              <div className="flex min-h-10 shrink-0 items-center justify-between border-b border-line px-3">
-                <span className="caps-label">{uiMessage(locale, "ui.subscriptions")}</span>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`${uiMessage(locale, "ui.subscriptions")} · ${uiMessage(locale, "ui.close")}`}
-                  onClick={() => setLayout({ ...layout, leftOpen: false })}
-                >
-                  <PanelLeft className="size-3" aria-hidden="true" />
-                </Button>
-              </div>
-              <div className="h-[calc(100%-40px)] overflow-x-auto overflow-y-auto p-3">
-                {subscriptions ?? (
-                  <p className="text-[12px] text-ink-2">{uiMessage(locale, "ui.subscriptions")}</p>
-                )}
-              </div>
-              <button
-                type="button"
-                role="separator"
-                tabIndex={0}
-                aria-orientation="vertical"
-                aria-label={uiMessage(locale, "ui.resizeSubscriptions")}
-                aria-valuemin={220}
-                aria-valuemax={420}
-                aria-valuenow={layout.leftWidth}
-                className="absolute inset-y-0 -right-1.5 z-10 hidden w-3 cursor-col-resize min-[1536px]:block"
-                onKeyDown={(event) => resizeWithKeyboard("left", event)}
-                onPointerDown={(event) => {
-                  dragging.current = {
-                    side: "left",
-                    startX: event.clientX,
-                    startWidth: layout.leftWidth,
-                  };
-                  resizeAdapter?.setCursor("col-resize");
-                }}
-              >
-                <span className="mx-auto block h-full w-px bg-line" />
-              </button>
-            </>
-          )}
-        </aside>
+          <div className="subscriptions-panel-table">
+            {subscriptions ?? <p className="text-[12px] text-ink-2">{subscriptionsLabel}</p>}
+          </div>
+        </SidePanel>
 
-        <div className="relative col-start-1 flex min-h-0 min-w-0 flex-col min-[1536px]:col-start-2">
-          {!layout.leftOpen && (
-            <Button
-              ref={leftToggle}
-              variant="ghost"
-              size="icon-sm"
-              className="absolute left-3 top-1.5 z-10 hidden min-[1536px]:inline-flex"
-              aria-label={uiMessage(locale, "ui.openSubscriptions")}
-              onClick={() => setLayout({ ...layout, leftOpen: true })}
-            >
-              <PanelLeft className="size-3.5" aria-hidden="true" />
-            </Button>
-          )}
-          {!layout.rightOpen && (
-            <Button
-              ref={rightToggle}
-              variant="ghost"
-              size="icon-sm"
-              className="absolute right-3 top-1.5 z-10 hidden lg:inline-flex min-[1536px]:hidden"
-              aria-label={uiMessage(locale, "ui.openVisualization")}
-              onClick={() => setLayout({ ...layout, rightOpen: true })}
-            >
-              <PanelRight className="size-3.5" aria-hidden="true" />
-            </Button>
-          )}
-          {!layout.rightOpen && (
-            <Button
-              ref={wideRightToggle}
-              variant="ghost"
-              size="icon-sm"
-              className="absolute right-3 top-1.5 z-10 hidden min-[1536px]:inline-flex"
-              aria-label={uiMessage(locale, "ui.openVisualization")}
-              onClick={() => setLayout({ ...layout, rightOpen: true })}
-            >
-              <PanelRight className="size-3.5" aria-hidden="true" />
-            </Button>
-          )}
-          {compactView !== "chat" && (
-            <div
-              ref={compactPanel}
-              tabIndex={-1}
-              className="min-h-full min-w-0 overflow-x-auto overflow-y-auto bg-paper p-3 outline-none min-[1536px]:hidden"
-              aria-label={
-                compactView === "subscriptions"
-                  ? uiMessage(locale, "ui.subscriptions")
-                  : uiMessage(locale, "section.memories")
-              }
-            >
-              {compactContent ?? (
-                <p className="text-[12px] text-ink-2">{uiMessage(locale, "ui.noContent")}</p>
-              )}
-            </div>
-          )}
-          <div
+        <section
+          aria-label={resolvedTitle}
+          className="subscriber-chat-main relative flex min-h-0 min-w-0 flex-col"
+          data-compact-active={workspacePage === "chat"}
+          aria-hidden={!isWideDesktop && workspacePage !== "chat"}
+          inert={!isWideDesktop && workspacePage !== "chat"}
+        >
+          <Button
+            ref={leftToggle}
+            variant="secondary"
+            size="md"
             className={cn(
-              "flex min-h-0 flex-1 flex-col max-[1023px]:min-w-[496px]",
-              compactView !== "chat" && "hidden min-[1536px]:flex",
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-left absolute top-1.5 z-[1] bg-surface gap-1 px-2.5",
+              layout.leftOpen ? "-left-14" : "left-3",
             )}
+            id="subscriptions-panel-toggle"
+            title={
+              layout.leftOpen
+                ? `${subscriptionsLabel} · ${uiMessage(locale, "ui.close")}`
+                : uiMessage(locale, "ui.openSubscriptions")
+            }
+            aria-label={
+              layout.leftOpen
+                ? `${subscriptionsLabel} · ${uiMessage(locale, "ui.close")}`
+                : uiMessage(locale, "ui.openSubscriptions")
+            }
+            aria-expanded={layout.leftOpen}
+            aria-controls="subscriptions-panel"
+            onClick={() => setLayout({ ...layout, leftOpen: !layout.leftOpen })}
           >
-            <div className="flex shrink-0 justify-center border-b border-line px-4 py-1.5 lg:hidden max-[1535px]:translate-x-[7px]">
-              <Segmented
-                aria-label={uiMessage(locale, "ui.conversation")}
-                value={layout.mobileTab}
-                onChange={(value) => setLayout({ ...layout, mobileTab: value })}
-                options={[
-                  { value: "chat", label: uiMessage(locale, "ui.conversation") },
-                  {
-                    value: "visualization",
-                    label: uiMessage(locale, "ui.visualization"),
-                    "aria-label": uiMessage(locale, "ui.visualization"),
-                  },
-                ]}
-              />
-            </div>
-            <div
-              className="flex min-h-0 flex-1 overflow-hidden lg:min-w-0 lg:grid lg:grid-cols-[minmax(0,62fr)_minmax(0,38fr)]"
-              style={centerGridStyle}
-            >
+            <BookOpen aria-hidden="true" className="size-3.5" />
+            {layout.leftOpen ? (
+              <ChevronLeft aria-hidden="true" className="!size-2.5" />
+            ) : (
+              <ChevronRight aria-hidden="true" className="!size-2.5" />
+            )}
+          </Button>
+          <Button
+            ref={rightToggle}
+            variant="secondary"
+            size="md"
+            className={cn(
+              "subscriber-wide-only subscriber-chat-panel-toggle subscriber-chat-panel-toggle-right absolute top-1.5 z-[1] bg-surface gap-1 px-2.5",
+              layout.rightOpen ? "-right-14" : "right-3",
+            )}
+            id="memories-panel-toggle"
+            title={
+              layout.rightOpen
+                ? `${memoriesLabel} · ${uiMessage(locale, "ui.close")}`
+                : uiMessage(locale, "ui.openVisualization")
+            }
+            aria-label={
+              layout.rightOpen
+                ? `${memoriesLabel} · ${uiMessage(locale, "ui.close")}`
+                : uiMessage(locale, "ui.openVisualization")
+            }
+            aria-expanded={layout.rightOpen}
+            aria-controls="memories-panel"
+            onClick={() => setLayout({ ...layout, rightOpen: !layout.rightOpen })}
+          >
+            <Brain aria-hidden="true" className="size-3.5" />
+            {layout.rightOpen ? (
+              <ChevronRight aria-hidden="true" className="!size-2.5" />
+            ) : (
+              <ChevronLeft aria-hidden="true" className="!size-2.5" />
+            )}
+          </Button>
+
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            {/* Below lg: conversation / visualization switch stays local to the chat. */}
+            <div className="flex min-h-0 flex-1 flex-col lg:hidden">
+              <div className="flex justify-center border-b border-line px-4 py-1.5">
+                <Segmented
+                  aria-label={uiMessage(locale, "ui.conversation")}
+                  value={layout.mobileTab}
+                  onChange={(value) => setLayout({ ...layout, mobileTab: value })}
+                  options={[
+                    { value: "chat", label: uiMessage(locale, "ui.conversation") },
+                    { value: "visualization", label: uiMessage(locale, "ui.visualization") },
+                  ]}
+                />
+              </div>
               <div
                 className={cn(
-                  "relative flex min-h-0 flex-1 flex-col bg-paper lg:min-w-0",
-                  layout.mobileTab !== "chat" && "hidden lg:flex",
+                  "flex min-h-0 flex-1 flex-col",
+                  layout.mobileTab !== "chat" && "hidden",
                 )}
               >
-                <div className="flex min-h-0 flex-1 flex-col">{chatView}</div>
+                {chatView}
                 {composerProps && <Composer {...composerProps} />}
               </div>
               <div
-                className={cn(
-                  "relative hidden min-h-0 min-w-0 overflow-hidden bg-paper lg:block",
-                  !layout.rightOpen && "hidden min-[1536px]:block",
-                )}
-              >
-                {layout.rightOpen && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="absolute right-3 top-1.5 z-10 bg-paper"
-                    aria-label={`${uiMessage(locale, "ui.visualization")} · ${uiMessage(locale, "ui.close")}`}
-                    onClick={() => setLayout({ ...layout, rightOpen: false })}
-                  >
-                    <PanelRight className="size-3" aria-hidden="true" />
-                  </Button>
-                )}
-                <div className="h-full min-h-0">{vizView}</div>
-              </div>
-              <div
-                className={cn(
-                  "min-h-0 flex-1 overflow-hidden bg-paper lg:hidden",
-                  layout.mobileTab !== "visualization" && "hidden",
-                )}
+                className={cn("min-h-0 flex-1", layout.mobileTab !== "visualization" && "hidden")}
               >
                 {vizView}
               </div>
             </div>
-          </div>
-        </div>
 
-        <aside
-          className="relative hidden min-w-0 overflow-visible border-l border-line bg-paper min-[1536px]:col-start-3 min-[1536px]:block"
-          aria-label={uiMessage(locale, "section.memories")}
-          aria-hidden={!layout.rightOpen}
-          {...(!layout.rightOpen ? { inert: true } : {})}
-        >
-          {layout.rightOpen && (
-            <>
-              <div className="flex min-h-10 shrink-0 items-center justify-between border-b border-line px-3">
-                <span className="caps-label">{uiMessage(locale, "section.memories")}</span>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`${uiMessage(locale, "section.memories")} · ${uiMessage(locale, "ui.close")}`}
-                  onClick={() => setLayout({ ...layout, rightOpen: false })}
+            {/* lg+: resizable chat | visualization split. */}
+            <div className="hidden min-h-0 flex-1 overflow-hidden lg:block">
+              <div className="flex h-full min-h-0">
+                <div
+                  className="subscriber-chat-panel-content flex h-full min-h-0 flex-col overflow-hidden"
+                  style={{
+                    flexBasis: 0,
+                    flexGrow: chatSplit,
+                    flexShrink: 1,
+                    overflow: "hidden",
+                    pointerEvents: chatSplitDragging ? "none" : undefined,
+                  }}
                 >
-                  <PanelRight className="size-3" aria-hidden="true" />
-                </Button>
+                  {chatView}
+                  {composerProps && <Composer {...composerProps} />}
+                </div>
+                <ChatSplitHandle
+                  percent={chatSplit}
+                  label={`${uiMessage(locale, "ui.conversation")} / ${uiMessage(locale, "ui.visualization")}`}
+                  onResize={setChatSplit}
+                  onResizeStart={() => setChatSplitDragging(true)}
+                  onResizeEnd={() => setChatSplitDragging(false)}
+                />
+                <div
+                  className="min-h-0 min-w-0"
+                  style={{
+                    flexBasis: 0,
+                    flexGrow: 100 - chatSplit,
+                    flexShrink: 1,
+                    overflow: "hidden",
+                    pointerEvents: chatSplitDragging ? "none" : undefined,
+                  }}
+                >
+                  {vizView}
+                </div>
               </div>
-              <div className="h-[calc(100%-40px)] overflow-x-auto overflow-y-auto p-3">
-                {memories}
-              </div>
-              <button
-                type="button"
-                role="separator"
-                tabIndex={0}
-                aria-orientation="vertical"
-                aria-label={uiMessage(locale, "ui.resizeVisualization")}
-                aria-valuemin={280}
-                aria-valuemax={480}
-                aria-valuenow={layout.rightWidth}
-                className="absolute inset-y-0 -left-1.5 z-10 hidden w-3 cursor-col-resize min-[1536px]:block"
-                onKeyDown={(event) => resizeWithKeyboard("right", event)}
-                onPointerDown={(event) => {
-                  dragging.current = {
-                    side: "right",
-                    startX: event.clientX,
-                    startWidth: layout.rightWidth,
-                  };
-                  resizeAdapter?.setCursor("col-resize");
-                }}
-              >
-                <span className="mx-auto block h-full w-px bg-line" />
-              </button>
-            </>
-          )}
-        </aside>
+            </div>
+          </div>
+        </section>
+
+        <SidePanel
+          side="right"
+          id="memories-panel"
+          label={memoriesLabel}
+          open={layout.rightOpen}
+          compactActive={workspacePage === "memories"}
+          wide={isWideDesktop}
+          width={sidebarTracks.right}
+          minWidth={sidebarTracks.rightMin}
+          maxWidth={sidebarTracks.rightMax}
+          resizeLabel={uiMessage(locale, "ui.resizeVisualization")}
+          panelRef={memoriesPanel}
+          {...(resizeAdapter ? { adapter: resizeAdapter } : {})}
+          onResize={(width) => setLayout({ ...layout, rightWidth: width })}
+          onResizeStart={() => setResizingSide("right")}
+          onResizeEnd={() => setResizingSide((current) => (current === "right" ? null : current))}
+        >
+          <div className="p-3">
+            {memories ?? (
+              <p className="text-[12px] text-ink-2">{uiMessage(locale, "ui.noContent")}</p>
+            )}
+          </div>
+        </SidePanel>
       </div>
     </section>
   );
+}
+
+function SidePanel({
+  side,
+  id,
+  label,
+  open,
+  compactActive,
+  wide,
+  width,
+  minWidth,
+  maxWidth,
+  resizeLabel,
+  panelRef,
+  adapter,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
+  children,
+}: {
+  side: SidebarSide;
+  id: string;
+  label: string;
+  open: boolean;
+  compactActive: boolean;
+  wide: boolean;
+  width: number;
+  minWidth: number;
+  maxWidth: number;
+  resizeLabel: string;
+  panelRef?: Ref<HTMLElement>;
+  adapter?: ClientChatResizeAdapter;
+  onResize: (width: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
+  children: ReactNode;
+}) {
+  const visible = wide ? open : compactActive;
+
+  return (
+    <aside
+      ref={panelRef}
+      id={id}
+      tabIndex={-1}
+      className={cn(
+        "subscriber-panel subscriber-panel-" + side,
+        "relative min-h-0 min-w-0 overflow-visible bg-paper outline-none",
+        side === "left" ? "border-r border-line" : "border-l border-line",
+      )}
+      data-open={open}
+      data-compact-active={compactActive}
+      data-panel-visible={visible}
+      aria-label={label}
+      aria-hidden={!visible}
+      inert={!visible}
+    >
+      <div className="subscriber-panel-inner flex h-full min-h-0 flex-col">
+        <header className="flex min-h-10 shrink-0 items-center border-b border-line px-3">
+          <h2 className="truncate font-display text-[15px] font-medium text-ink">{label}</h2>
+        </header>
+        <div className="subscriber-panel-scroll min-h-0 flex-1 overflow-x-auto overflow-y-auto">
+          {children}
+        </div>
+      </div>
+      {wide && open && (
+        <SidebarResizeHandle
+          side={side}
+          width={width}
+          minWidth={minWidth}
+          maxWidth={maxWidth}
+          label={resizeLabel}
+          {...(adapter ? { adapter } : {})}
+          onResize={onResize}
+          onResizeStart={onResizeStart}
+          onResizeEnd={onResizeEnd}
+        />
+      )}
+    </aside>
+  );
+}
+
+function SidebarResizeHandle({
+  side,
+  width,
+  minWidth,
+  maxWidth,
+  label,
+  adapter,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
+}: {
+  side: SidebarSide;
+  width: number;
+  minWidth: number;
+  maxWidth: number;
+  label: string;
+  adapter?: ClientChatResizeAdapter;
+  onResize: (width: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
+}) {
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+    unsubscribe?: () => void;
+  } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const growsWithRightwardMotion = side === "left";
+
+  const resizeTo = (clientX: number, start: { startX: number; startWidth: number }) => {
+    const delta = clientX - start.startX;
+    const signedDelta = growsWithRightwardMotion ? delta : -delta;
+    onResize(clampSidebarWidth(start.startWidth + signedDelta, minWidth, maxWidth));
+  };
+
+  const endResize = () => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    drag.unsubscribe?.();
+    dragRef.current = null;
+    setIsDragging(false);
+    onResizeEnd();
+  };
+
+  const finishPointerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    endResize();
+  };
+
+  return (
+    <div
+      className="subscriber-sidebar-resize-handle"
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuemin={Math.round(minWidth)}
+      aria-valuemax={Math.round(maxWidth)}
+      aria-valuenow={Math.round(width)}
+      data-resize-dragging={isDragging ? "true" : undefined}
+      onKeyDown={(event) => {
+        if (event.key === "Home") {
+          event.preventDefault();
+          onResize(minWidth);
+          return;
+        }
+        const grows = growsWithRightwardMotion
+          ? event.key === "ArrowRight"
+          : event.key === "ArrowLeft";
+        const shrinks = growsWithRightwardMotion
+          ? event.key === "ArrowLeft"
+          : event.key === "ArrowRight";
+        if (!grows && !shrinks) return;
+        event.preventDefault();
+        onResize(clampSidebarWidth(width + (grows ? 16 : -16), minWidth, maxWidth));
+      }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const start = { startX: event.clientX, startWidth: width };
+        if (adapter) {
+          adapter.setCursor("col-resize");
+          dragRef.current = {
+            pointerId: event.pointerId,
+            ...start,
+            unsubscribe: adapter.subscribe(
+              (clientX) => resizeTo(clientX, start),
+              () => {
+                adapter.setCursor("");
+                endResize();
+              },
+            ),
+          };
+        } else {
+          dragRef.current = { pointerId: event.pointerId, ...start };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
+        setIsDragging(true);
+        onResizeStart();
+      }}
+      {...(adapter
+        ? {}
+        : {
+            onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => {
+              const drag = dragRef.current;
+              if (!drag || drag.pointerId !== event.pointerId) return;
+              resizeTo(event.clientX, drag);
+            },
+            onPointerUp: finishPointerResize,
+            onPointerCancel: finishPointerResize,
+          })}
+    >
+      <span aria-hidden="true" className="subscriber-sidebar-resize-line" />
+    </div>
+  );
+}
+
+/** Resizable conversation | visualization divider (lg+), mirroring the
+ * reference PanelGroup: 62/38 default split, 10% keyboard steps. */
+function ChatSplitHandle({
+  percent,
+  label,
+  onResize,
+  onResizeStart,
+  onResizeEnd,
+}: {
+  percent: number;
+  label: string;
+  onResize: (percent: number) => void;
+  onResizeStart: () => void;
+  onResizeEnd: () => void;
+}) {
+  const dragRef = useRef<{ pointerId: number; startX: number; startPercent: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const handleRef = useRef<HTMLDivElement>(null);
+
+  const finishPointerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+    setIsDragging(false);
+    onResizeEnd();
+  };
+
+  return (
+    <div
+      ref={handleRef}
+      role="separator"
+      tabIndex={0}
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuemin={CHAT_SPLIT_MIN}
+      aria-valuemax={CHAT_SPLIT_MAX}
+      aria-valuenow={Math.round(percent)}
+      className="subscriber-chat-resize-handle group relative flex w-5 cursor-col-resize items-stretch justify-center outline-none"
+      style={{ touchAction: "none", userSelect: "none" }}
+      data-resize-handle-state={isDragging ? "drag" : undefined}
+      onKeyDown={(event) => {
+        if (event.key === "Home") {
+          event.preventDefault();
+          onResize(CHAT_SPLIT_MIN);
+          return;
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          onResize(CHAT_SPLIT_MAX);
+          return;
+        }
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        onResize(
+          clamp(percent + (event.key === "ArrowRight" ? 10 : -10), CHAT_SPLIT_MIN, CHAT_SPLIT_MAX),
+        );
+      }}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        dragRef.current = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startPercent: percent,
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setIsDragging(true);
+        onResizeStart();
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const width = handleRef.current?.parentElement?.getBoundingClientRect().width ?? 1;
+        const deltaPercent = ((event.clientX - drag.startX) / width) * 100;
+        onResize(clamp(drag.startPercent + deltaPercent, CHAT_SPLIT_MIN, CHAT_SPLIT_MAX));
+      }}
+      onPointerUp={finishPointerResize}
+      onPointerCancel={finishPointerResize}
+    >
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line transition-colors duration-100 group-hover:bg-accent group-focus-visible:bg-accent group-data-[resize-handle-state=drag]:bg-accent"
+      />
+    </div>
+  );
+}
+
+function useViewportWidth() {
+  const [width, setWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const update = () => setWidth(window.innerWidth);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  return width;
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia(query).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, [query]);
+
+  return matches;
 }

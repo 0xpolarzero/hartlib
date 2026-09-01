@@ -60,6 +60,7 @@ export {
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogTitle,
+  AlertDialogTrigger,
   Dialog,
   DialogBody,
   DialogClose,

@@ -9,9 +9,31 @@ import {
 import { Check, Info, TriangleAlert } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
+
 export type FieldState = "default" | "error" | "success";
-type FieldContextValue = { id: string; describedBy?: string; invalid: boolean };
-const FieldContext = createContext<FieldContextValue | null>(null);
+
+interface FieldCtx {
+  id: string;
+  describedBy: string | undefined;
+  state: FieldState;
+}
+
+const FieldContext = createContext<FieldCtx | null>(null);
+
+/** Renders a control function INSIDE the provider so it can read context. */
+function FieldSlot({ children }: { children: (ctx: FieldCtx) => ReactNode }) {
+  const ctx = useField();
+  if (!ctx) throw new Error("FieldSlot requires FormField");
+  return <>{children(ctx)}</>;
+}
+
+/**
+ * FormField wires label, description and validation message to its control
+ * (htmlFor, aria-describedby, aria-invalid). Three validation states:
+ * default, error, success. Children may be plain nodes, a function
+ * receiving { id, describedBy, invalid }, or a single element which is
+ * wired through the same props.
+ */
 export function FormField({
   label,
   description,
@@ -26,33 +48,21 @@ export function FormField({
   description?: string;
   message?: string;
   state?: FieldState;
-  children: ReactNode | ((props: FieldContextValue) => ReactNode);
+  children:
+    | ReactNode
+    | ((ctx: { id: string; describedBy?: string; invalid: boolean }) => ReactNode);
   required?: boolean;
   locale?: string;
   className?: string;
 }) {
   const id = useId();
   const descId = useId();
-  const messageId = useId();
+  const msgId = useId();
   const describedBy =
-    [description ? descId : "", message ? messageId : ""].filter(Boolean).join(" ") || undefined;
-  const field: FieldContextValue = {
-    id,
-    invalid: state === "error",
-    ...(describedBy === undefined ? {} : { describedBy }),
-  };
-  const control =
-    typeof children === "function"
-      ? children(field)
-      : isValidElement(children)
-        ? cloneElement(children, {
-            id,
-            ...(describedBy === undefined ? {} : { "aria-describedby": describedBy }),
-            ...(field.invalid ? { "aria-invalid": true } : {}),
-          } as never)
-        : children;
+    [description ? descId : "", message ? msgId : ""].filter(Boolean).join(" ") || undefined;
+
   return (
-    <FieldContext.Provider value={field}>
+    <FieldContext.Provider value={{ id, describedBy, state }}>
       <div className={cn("grid gap-1", className)} data-field-state={state}>
         <label
           htmlFor={id}
@@ -61,7 +71,7 @@ export function FormField({
           {label}
           {required && (
             <>
-              <span aria-hidden="true" className="text-accent">
+              <span className="text-accent" aria-hidden="true">
                 ∗
               </span>
               <span className="sr-only">{uiMessage(locale, "ui.required")}</span>
@@ -74,10 +84,28 @@ export function FormField({
             {description}
           </p>
         )}
-        {control}
+        {typeof children === "function" ? (
+          <FieldSlot>
+            {(ctx) =>
+              children({
+                id: ctx.id,
+                invalid: ctx.state === "error",
+                ...(ctx.describedBy === undefined ? {} : { describedBy: ctx.describedBy }),
+              })
+            }
+          </FieldSlot>
+        ) : isValidElement(children) ? (
+          cloneElement(children, {
+            id,
+            ...(describedBy === undefined ? {} : { "aria-describedby": describedBy }),
+            ...(state === "error" ? { "aria-invalid": true } : {}),
+          } as never)
+        ) : (
+          children
+        )}
         {message && (
           <p
-            id={messageId}
+            id={msgId}
             role={state === "error" ? "alert" : "status"}
             className={cn(
               "flex items-center gap-1.5 text-[12px] leading-snug",
@@ -86,8 +114,8 @@ export function FormField({
               state === "default" && "text-ink-2",
             )}
           >
-            {state === "error" && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
-            {state === "success" && <Check className="size-3 shrink-0" aria-hidden="true" />}
+            {state === "error" && <TriangleAlert aria-hidden="true" className="size-3 shrink-0" />}
+            {state === "success" && <Check aria-hidden="true" className="size-3 shrink-0" />}
             {message}
           </p>
         )}
@@ -95,15 +123,18 @@ export function FormField({
     </FieldContext.Provider>
   );
 }
-export function useField() {
+
+export function useField(): FieldCtx | null {
   return useContext(FieldContext);
 }
+
+/** Control wiring for raw inputs placed inside a FormField. */
 export function fieldControlProps() {
-  const field = useField();
-  if (!field) throw new Error("fieldControlProps must be used inside FormField");
+  const ctx = useField();
+  if (!ctx) throw new Error("fieldControlProps must be used inside FormField");
   return {
-    id: field.id,
-    "aria-describedby": field.describedBy,
-    "aria-invalid": field.invalid || undefined,
+    id: ctx.id,
+    "aria-describedby": ctx.describedBy,
+    "aria-invalid": (ctx.state === "error" || undefined) as boolean | undefined,
   };
 }

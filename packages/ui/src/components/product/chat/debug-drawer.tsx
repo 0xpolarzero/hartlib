@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bug, X } from "lucide-react";
-import { Button } from "../../ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog";
-import { ErrorState } from "../../ui/states";
+import { Bug } from "lucide-react";
+import {
+  Badge,
+  Button,
+  ErrorState,
+  Sheet,
+  SheetBody,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  Skeleton,
+} from "../../ui";
 import { uiMessage } from "../../../lib/format";
 import type { PublicAiRunDebug } from "@hartlib/shared";
 export type DebugLoadState =
@@ -112,28 +120,28 @@ export function DebugDrawer({
   return (
     <>
       {trigger}
-      <Dialog
+      <Sheet
         locale={locale}
         open={open}
         onOpenChange={(value) => (value ? setOpen(true) : close())}
       >
-        <DialogContent className="w-[min(94vw,36rem)] p-0">
-          <DialogHeader>
-            <DialogTitle>{uiMessage(locale, "ui.debugDetails")}</DialogTitle>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={uiMessage(locale, "ui.close")}
-              onClick={close}
-            >
-              <X className="size-3.5" />
-            </Button>
-          </DialogHeader>
-          <div className="max-h-[65vh] overflow-y-auto px-4 py-3">
+        <SheetContent side="right" className="w-[min(94vw,27rem)]">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2 font-display text-[16px] font-medium">
+              {uiMessage(locale, "ui.debugDetails")}
+              <Badge tone="warning">{uiMessage(locale, "debug.internal")}</Badge>
+            </SheetTitle>
+          </SheetHeader>
+          <SheetBody>
             {loadState === "loading" && (
-              <p role="status" className="text-[13px] text-ink-2">
-                {uiMessage(locale, "ui.loadingSafeRunDetails")}
-              </p>
+              <div role="status" aria-label={uiMessage(locale, "debug.loading")}>
+                <p className="caps-label text-ink-2">{uiMessage(locale, "debug.loading")}</p>
+                <div className="mt-3 grid gap-2">
+                  <Skeleton className="h-6 w-2/3" />
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
+                </div>
+              </div>
             )}
             {loadState === "denied" && (
               <ErrorState
@@ -164,28 +172,32 @@ export function DebugDrawer({
               </p>
             )}
             {(loadState === "ready" || (loadState === "idle" && loaded)) && loaded && (
-              <dl className="grid gap-1 text-[13px]">
-                {Object.entries(loaded)
-                  .filter(([key]) => key !== "events")
-                  .map(([key, value]) => (
-                    <div
-                      key={key}
-                      className="flex justify-between gap-3 border-b border-line py-1.5"
-                    >
-                      <dt className="caps-label text-ink-2">{key}</dt>
-                      <dd className="text-right text-ink">
-                        {typeof value === "string" || typeof value === "number"
-                          ? String(value)
-                          : JSON.stringify(value)}
-                      </dd>
-                    </div>
-                  ))}
-              </dl>
+              <div className="grid gap-5 pb-6">
+                <section>
+                  <h3 className="caps-label mb-1.5 text-ink-2">
+                    {uiMessage(locale, "debug.meta")}
+                  </h3>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">
+                    {Object.entries(loaded)
+                      .filter(([key]) => key !== "events")
+                      .map(([key, value]) => (
+                        <div key={key} className="contents">
+                          <dt className="text-ink-2">{key}</dt>
+                          <dd className="truncate text-ink">
+                            {typeof value === "string" || typeof value === "number"
+                              ? String(value)
+                              : JSON.stringify(value)}
+                          </dd>
+                        </div>
+                      ))}
+                  </dl>
+                </section>
+              </div>
             )}
             {children}
-          </div>
-        </DialogContent>
-      </Dialog>
+          </SheetBody>
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

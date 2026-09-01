@@ -1,8 +1,14 @@
 import { LOCALE_MARKET_ALIASES, isLocale, type Locale, type Market } from "@hartlib/i18n";
 
+export type DemoRole =
+  | "client"
+  | "publisher"
+  | "publisher-issue"
+  | "publisher-notifications"
+  | "gallery";
 export type DemoRoute = {
   locale: Locale | null;
-  role: "client";
+  role: DemoRole;
   sourceId: string | null;
   issueId: string | null;
   notFound?: boolean;
@@ -35,6 +41,12 @@ const clientRoute = (
   sourceId: string | null = null,
   issueId: string | null = null,
 ): DemoRoute => ({ locale, role: "client", sourceId, issueId });
+const pageRoute = (locale: Locale | null, role: Exclude<DemoRole, "client">): DemoRoute => ({
+  locale,
+  role,
+  sourceId: null,
+  issueId: null,
+});
 export function getDemoRouteFromPath(pathname: string): DemoRoute {
   let segments: string[];
   try {
@@ -49,8 +61,17 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
   const locale = prefix.locale;
   const rest = locale === null ? segments : segments.slice(1);
   if (rest.length === 0) return clientRoute(locale);
+  if (rest[0] === "components" && rest.length === 1) return pageRoute(locale, "gallery");
+  if (rest[0] === "publisher") {
+    if (rest.length === 1) return pageRoute(locale, "publisher");
+    if (rest.length === 3 && rest[1] === "issues" && rest[2] === "new")
+      return pageRoute(locale, "publisher-issue");
+    if (rest.length === 3 && rest[1] === "settings" && rest[2] === "notifications")
+      return pageRoute(locale, "publisher-notifications");
+    return { ...clientRoute(locale), notFound: true };
+  }
   if (rest[0] !== "client") return { ...clientRoute(locale), notFound: true };
-  if (rest.length === 1) return clientRoute(locale);
+  if (rest.length === 1 || (rest.length === 2 && rest[1] === "chat")) return clientRoute(locale);
   if (
     rest[1] !== "sources" ||
     rest[2] === undefined ||
@@ -64,7 +85,11 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
 
 function buildRolePath(route: Omit<DemoRoute, "locale">): string {
   if (route.notFound) return "/404";
-  if (!route.sourceId) return "/client";
+  if (route.role === "publisher") return "/publisher";
+  if (route.role === "publisher-issue") return "/publisher/issues/new";
+  if (route.role === "publisher-notifications") return "/publisher/settings/notifications";
+  if (route.role === "gallery") return "/components";
+  if (!route.sourceId) return "/client/chat";
   const sourcePath = `/client/sources/${encodeURIComponent(route.sourceId)}`;
   return route.issueId
     ? `${sourcePath}/publications/${encodeURIComponent(route.issueId)}`
@@ -90,6 +115,7 @@ export function resolveDemoRoute(
   sources: readonly RouteSource[] = [],
 ): DemoRoute {
   if (route.notFound) return route;
+  if (route.role !== "client") return route;
   if (!route.sourceId) return clientRoute(route.locale);
   if (!sources.some((source) => source.id === route.sourceId))
     return { ...clientRoute(route.locale), notFound: true };

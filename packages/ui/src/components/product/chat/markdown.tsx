@@ -1,35 +1,47 @@
 import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
-import { cn } from "../../../lib/utils";
 import { uiMessage } from "../../../lib/format";
 import { CitationChip, CitationProvider, ClaimSpan, MarginCard } from "./citations";
 import { stripPendingCitationTail } from "./citation-tags";
 import type { PublicCitationRecord } from "./types";
 
-export function splitBlocks(source: string): string[] {
-  const lines = source.split("\n");
+/* ── Block splitting (fence-aware) ──────────────────────────────────────
+ * Top-level markdown blocks split on blank lines outside code fences.
+ * Each block renders as its own memoized renderer — completed messages
+ * never re-render, and during streaming only the growing last block does.
+ */
+export function splitBlocks(src: string): string[] {
+  const lines = src.split("\n");
   const blocks: string[] = [];
   let current: string[] = [];
-  let fence = false;
+  let inFence = false;
   for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
-    if (!fence && line.trim() === "") {
-      if (current.length) blocks.push(current.join("\n"));
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (!inFence && line.trim() === "") {
+      if (current.length > 0) blocks.push(current.join("\n"));
       current = [];
-    } else current.push(line);
+    } else {
+      current.push(line);
+    }
   }
-  if (current.length) blocks.push(current.join("\n"));
+  if (current.length > 0) blocks.push(current.join("\n"));
   return blocks;
 }
-type NumberedCitation = PublicCitationRecord & { ordinal: number };
+
 export interface CopyAdapter {
   copy: (text: string) => Promise<void>;
   defer: (callback: () => void, milliseconds: number) => void;
 }
 const CopyContext = createContext<CopyAdapter | null>(null);
+const LocaleContext = createContext<string>("en-US");
+
+/* ── Inline rendering (fence-aware blocks, secure links) ──────────────── */
+
+type NumberedCitation = PublicCitationRecord & { ordinal: number; meta?: string | undefined };
+
 function inline(
   text: string,
-  sources: readonly PublicCitationRecord[],
+  sources: readonly NumberedCitation[],
   focusKeys: Set<string>,
 ): ReactNode[] {
   const map = new Map(sources.map((source) => [source.sourceKey, source]));
@@ -100,9 +112,10 @@ function inline(
   if (cursor < text.length) nodes.push(text.slice(cursor));
   return nodes;
 }
+
 function tableBlock(
   lines: readonly string[],
-  sources: readonly PublicCitationRecord[],
+  sources: readonly NumberedCitation[],
   focusKeys: Set<string>,
 ): ReactNode | null {
   if (
@@ -125,7 +138,9 @@ function tableBlock(
         <thead>
           <tr>
             {headings.map((heading, index) => (
-              <th key={index}>{inline(heading, sources, focusKeys)}</th>
+              <th key={index} scope="col">
+                {inline(heading, sources, focusKeys)}
+              </th>
             ))}
           </tr>
         </thead>
@@ -145,16 +160,66 @@ function tableBlock(
     </div>
   );
 }
+
+/* ── Code block with copy ─────────────────────────────────────────────── */
+
+function CodeBlock({ children, className }: { children?: ReactNode; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const preRef = useRef<HTMLPreElement>(null);
+  const copyAdapter = useContext(CopyContext);
+  const lang = /language-([\w-]+)/.exec(String(className ?? ""))?.[1] ?? "";
+  const locale = useContext(LocaleContext);
+
+  return (
+    <div className="group/code relative">
+      <div className="absolute right-1.5 top-1.5 flex items-center gap-1.5">
+        {lang && <span className="font-mono text-[10px] tracking-wide text-ink-2">{lang}</span>}
+        <button
+          type="button"
+          className="flex h-5 items-center gap-1 rounded-tiny border border-line-2 bg-surface px-1.5 font-sans text-[10.5px] text-ink-2 opacity-0 transition-opacity duration-100 group-hover/code:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          aria-label={uiMessage(locale, "ui.copyCode")}
+          onClick={async () => {
+            const text = preRef.current?.textContent ?? "";
+            try {
+              if (copyAdapter !== null) {
+                await copyAdapter.copy(text);
+                setCopied(true);
+                copyAdapter.defer(() => setCopied(false), 1400);
+              } else {
+                await navigator.clipboard.writeText(text);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1400);
+              }
+            } catch {
+              /* clipboard unavailable — ignore */
+            }
+          }}
+        >
+          {copied ? (
+            <Check aria-hidden="true" className="size-2.5 text-ok" />
+          ) : (
+            <Copy aria-hidden="true" className="size-2.5" />
+          )}
+          {copied ? uiMessage(locale, "ui.copied") : uiMessage(locale, "ui.copy")}
+        </button>
+      </div>
+      <pre ref={preRef} className={className}>
+        {children}
+      </pre>
+    </div>
+  );
+}
+
+/* ── Block renderer (fence/table/lists/quote/headings/paragraph) ──────── */
+
 function Block({
   source,
   sources,
   focusKeys,
-  locale,
 }: {
   source: string;
-  sources: readonly PublicCitationRecord[];
+  sources: readonly NumberedCitation[];
   focusKeys: Set<string>;
-  locale: string;
 }) {
   const lines = source.split("\n");
   const fence = lines[0]?.match(/^\s*```(?:([\w-]+))?/);
@@ -162,11 +227,10 @@ function Block({
     const code = lines
       .slice(1, lines[lines.length - 1]?.startsWith("```") ? -1 : undefined)
       .join("\n");
-    return fence[1] === undefined ? (
-      <CodeBlock locale={locale}>{code}</CodeBlock>
-    ) : (
-      <CodeBlock language={fence[1]} locale={locale}>
-        {code}
+    const language = fence[1];
+    return (
+      <CodeBlock {...(language === undefined ? {} : { className: `language-${language}` })}>
+        <code>{code}</code>
       </CodeBlock>
     );
   }
@@ -210,46 +274,9 @@ function Block({
   }
   return <p>{inline(source, sources, focusKeys)}</p>;
 }
-function CodeBlock({
-  language,
-  children,
-  locale = "en-US",
-}: {
-  language?: string;
-  children: string;
-  locale?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-  const ref = useRef<HTMLPreElement>(null);
-  const copyAdapter = useContext(CopyContext);
-  return (
-    <div className="group/code relative">
-      <pre ref={ref}>
-        <code className={cn(language === undefined ? false : `language-${language}`)}>
-          {children}
-        </code>
-      </pre>
-      <button
-        type="button"
-        aria-label={uiMessage(locale, "ui.copyCode")}
-        className="absolute right-1.5 top-1.5 inline-flex items-center gap-1 rounded-tiny border border-line-2 bg-surface px-1.5 py-0.5 text-[10.5px] opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100"
-        onClick={async () => {
-          if (copyAdapter === null) return;
-          try {
-            await copyAdapter.copy(ref.current?.textContent ?? children);
-            setCopied(true);
-            copyAdapter.defer(() => setCopied(false), 1200);
-          } catch {
-            setCopied(false);
-          }
-        }}
-      >
-        {copied ? <Check className="size-2.5 text-ok" /> : <Copy className="size-2.5" />}
-        {copied ? uiMessage(locale, "ui.copied") : uiMessage(locale, "ui.copy")}
-      </button>
-    </div>
-  );
-}
+
+/* ── Answer body: reading column + citation gutter ─────────────────────── */
+
 export function AnswerBody({
   content,
   sources = [],
@@ -268,52 +295,73 @@ export function AnswerBody({
   const visibleContent = streaming ? stripPendingCitationTail(content) : content;
   const blocks = useMemo(() => splitBlocks(visibleContent), [visibleContent]);
   const citationSources = useMemo<NumberedCitation[]>(
-    () => sources.map((source, index) => ({ ...source, ordinal: index + 1 })),
+    () =>
+      sources.map((source, index) => ({
+        ...source,
+        ordinal: index + 1,
+        ...(source.kind === "web" && source.domain ? { meta: source.domain } : {}),
+        ...(source.kind === "document" && (source.sourceName ?? source.issueTitle)
+          ? { meta: source.sourceName ?? source.issueTitle }
+          : {}),
+      })),
     [sources],
   );
-  const shown = new Set<string>();
+  const carded = useMemo(() => {
+    const map = new Map<number, number>();
+    blocks.forEach((block, index) => {
+      for (const match of block.matchAll(/\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/g)) {
+        for (const sourceKey of match[1]!.split(",")) {
+          const ordinal =
+            citationSources.findIndex((candidate) => candidate.sourceKey === sourceKey) + 1;
+          if (ordinal > 0 && !map.has(ordinal)) map.set(ordinal, index);
+        }
+      }
+    });
+    return map;
+  }, [blocks, citationSources]);
   const focusKeys = new Set<string>();
+
   return (
     <CopyContext.Provider value={copyAdapter ?? null}>
       <CitationProvider
         sources={citationSources}
+        carded={carded}
         locale={locale}
-        {...(onCitation === undefined ? {} : { onCitation })}
+        {...(onCitation ? { onCitation } : {})}
       >
-        {blocks.map((block, index) => {
-          const blockKeys = [
-            ...block.matchAll(/\[\[cite:([A-Za-z0-9_-]+(?:,[A-Za-z0-9_-]+)*)\]\]/g),
-          ].flatMap((match) => match[1]!.split(","));
-          const marginSources = citationSources.filter(
-            (source) => blockKeys.includes(source.sourceKey) && !shown.has(source.sourceKey),
-          );
-          marginSources.forEach((source) => shown.add(source.sourceKey));
-          return (
-            <div key={index} className="lg:grid lg:grid-cols-[minmax(0,1fr)_13rem] lg:gap-x-5">
-              <div className="prose-answer min-w-0">
-                <Block
-                  source={block}
-                  sources={citationSources}
-                  focusKeys={focusKeys}
-                  locale={locale}
-                />
-                {streaming && index === blocks.length - 1 && (
-                  <span
-                    aria-hidden="true"
-                    className="animate-caret ml-px inline-block h-[1em] w-[2px] bg-accent align-baseline"
-                  />
-                )}
-              </div>
-              {marginSources.length > 0 && (
-                <div className="hidden gap-2 lg:grid">
-                  {marginSources.map((source) => (
-                    <MarginCard key={source.sourceKey} source={source} />
-                  ))}
+        <LocaleContext.Provider value={locale}>
+          <div className="grid gap-3">
+            {blocks.map((block, index) => {
+              const blockCards = citationSources.filter(
+                (source) => source.ordinal > 0 && carded.get(source.ordinal) === index,
+              );
+              const isLast = index === blocks.length - 1;
+              return (
+                <div
+                  key={index}
+                  className="lg:grid lg:grid-cols-[minmax(0,1fr)_13rem] lg:items-start lg:gap-x-5"
+                >
+                  <div className="prose-answer min-w-0">
+                    <Block source={block} sources={citationSources} focusKeys={focusKeys} />
+                    {streaming && isLast && (
+                      <span
+                        aria-hidden="true"
+                        className="animate-caret ml-px inline-block h-[1em] w-[2px] translate-y-[2px] bg-accent align-baseline"
+                      />
+                    )}
+                  </div>
+                  {blockCards.length > 0 && (
+                    <div className="hidden gap-2 lg:grid">
+                      {blockCards.map((source) => (
+                        <MarginCard key={source.sourceKey} source={source} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        </LocaleContext.Provider>
       </CitationProvider>
     </CopyContext.Provider>
   );

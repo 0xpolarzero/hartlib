@@ -13,7 +13,7 @@ describe("data table", () => {
         emptyTitle="No rows"
       />,
     );
-    expect(html).toContain('aria-label="Rechercher Sources"');
+    expect(html).toContain('aria-label="Recherche dans Sources"');
     expect(html).toContain('aria-sort="none"');
     expect(html).toContain("Atlas");
     expect(html).toContain("1–1 / 1");

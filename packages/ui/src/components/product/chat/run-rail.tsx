@@ -1,42 +1,44 @@
+import { Fragment } from "react";
 import { AlertCircle, Check, Minus, RefreshCw } from "lucide-react";
-import type { Messages } from "@hartlib/i18n";
 import { cn } from "../../../lib/utils";
-import { uiMessage } from "../../../lib/format";
+import { t } from "./localize";
 import type { RunStageId, RunStages, StageStatus } from "./types";
-const stages: RunStageId[] = ["understanding", "evidence", "preparing", "writing", "finishing"];
-const stageMessageIds: Record<
-  RunStageId,
-  | "chat.progress.stage.understanding"
-  | "chat.progress.stage.evidence"
-  | "chat.progress.stage.preparing"
-  | "chat.progress.stage.writing"
-  | "chat.progress.stage.finishing"
-> = {
-  understanding: "chat.progress.stage.understanding",
-  evidence: "chat.progress.stage.evidence",
-  preparing: "chat.progress.stage.preparing",
-  writing: "chat.progress.stage.writing",
-  finishing: "chat.progress.stage.finishing",
-};
-const statusMessageIds: Record<StageStatus, keyof Messages> = {
-  waiting: "chat.progress.status.waiting",
-  running: "chat.progress.status.running",
-  complete: "chat.progress.status.complete",
-  retrying: "chat.progress.status.retrying",
-  failed: "chat.progress.status.failed",
-  skipped: "chat.progress.status.skipped",
-};
-function Glyph({ status }: { status: StageStatus }) {
-  if (status === "complete") return <Check className="size-3" />;
-  if (status === "failed") return <AlertCircle className="size-3" />;
-  if (status === "retrying") return <RefreshCw className="size-3 animate-spin-slow" />;
-  if (status === "skipped") return <Minus className="size-3" />;
-  if (status === "running")
-    return (
-      <span className="size-2.5 animate-pulse-soft rounded-full border-2 border-current border-t-transparent" />
-    );
-  return <span className="size-2 rounded-full border border-current opacity-50" />;
+
+const STAGES: RunStageId[] = ["understanding", "evidence", "preparing", "writing", "finishing"];
+
+function StageGlyph({ status }: { status: StageStatus }) {
+  switch (status) {
+    case "complete":
+      return <Check aria-hidden="true" className="size-3" strokeWidth={2.5} />;
+    case "failed":
+      return <AlertCircle aria-hidden="true" className="size-3" strokeWidth={2.5} />;
+    case "skipped":
+      return <Minus aria-hidden="true" className="size-3" strokeWidth={2.5} />;
+    case "retrying":
+      return <RefreshCw aria-hidden="true" className="size-3 animate-spin-slow" />;
+    case "running":
+      return (
+        <span
+          aria-hidden="true"
+          className="block size-2.5 animate-pulse-soft rounded-full border-[2px] border-current border-t-transparent"
+        />
+      );
+    default:
+      return (
+        <span
+          aria-hidden="true"
+          className="block size-2 rounded-full border border-current opacity-50"
+        />
+      );
+  }
 }
+
+/**
+ * Fixed five-slot run rail shown before the answer while it runs: slots are
+ * positionally stable (no reflow), joined by a 1px rule; completed slots
+ * fill with the accent. Stage changes are announced by the transcript's
+ * live region — this component stays silent (aria-hidden decorative).
+ */
 export function RunRail({
   stages: state,
   className,
@@ -57,55 +59,51 @@ export function RunRail({
     ...state,
   } as RunStages;
   return (
-    <ol
-      className={cn("relative flex select-none items-start", className)}
-      aria-label={uiMessage(locale, "chat.progress.active")}
-    >
-      {stages.map((stage, index) => (
-        <li
-          key={stage}
-          role="listitem"
-          aria-label={`${customLabels?.[stage] ?? uiMessage(locale, stageMessageIds[stage])}: ${uiMessage(locale, statusMessageIds[resolved[stage]])}`}
-          className="relative flex min-w-0 flex-1 flex-col items-center gap-1.5"
-        >
-          {index < stages.length - 1 && (
-            <span
-              aria-hidden="true"
-              className={cn(
-                "absolute left-1/2 top-3 h-px w-[calc(100%+1rem)] bg-line-2",
-                resolved[stage] === "complete" && "bg-accent",
-              )}
-            />
-          )}
-          <span
-            className={cn(
-              "relative z-10 flex size-6 items-center justify-center rounded-full border bg-paper",
-              resolved[stage] === "complete" && "border-accent bg-accent text-paper",
-              resolved[stage] === "failed" && "border-danger text-danger",
-              resolved[stage] === "retrying" && "border-warn text-warn",
-              resolved[stage] === "running" && "border-ink",
-              (resolved[stage] === "waiting" || resolved[stage] === "skipped") &&
-                "border-line-2 text-ink-3",
-            )}
-          >
-            <Glyph status={resolved[stage]} />
-          </span>
-          <span
-            className={cn(
-              "text-center text-[10px] uppercase leading-tight",
-              resolved[stage] === "complete" && "text-accent",
-              resolved[stage] === "failed" && "text-danger",
-              resolved[stage] === "retrying" && "text-warn",
-              !["complete", "failed", "retrying"].includes(resolved[stage]) && "text-ink-2",
-            )}
-          >
-            {customLabels?.[stage] ?? uiMessage(locale, stageMessageIds[stage])}
-          </span>
-        </li>
-      ))}
+    <ol className={cn("relative flex select-none items-start", className)} aria-hidden="true">
+      {/* Connecting hairline */}
+      <span aria-hidden="true" className="absolute left-2 right-2 top-[11px] h-px bg-line-2" />
+      {STAGES.map((id, i) => {
+        const status = resolved[id];
+        const done = status === "complete";
+        const bad = status === "failed";
+        const warn = status === "retrying";
+        return (
+          <Fragment key={id}>
+            {i > 0 && <span aria-hidden="true" className="w-4 shrink-0" />}
+            <li className="relative flex w-[68px] shrink-0 flex-col items-center gap-1.5">
+              <span
+                className={cn(
+                  "relative z-10 flex size-6 items-center justify-center rounded-full border bg-paper",
+                  "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+                  done && "border-accent bg-accent text-paper",
+                  bad && "border-danger text-danger",
+                  warn && "border-warn text-warn",
+                  status === "running" && "border-ink text-ink",
+                  (status === "waiting" || status === "skipped") && "border-line-2 text-ink-3",
+                )}
+              >
+                <StageGlyph status={status} />
+              </span>
+              <span
+                className={cn(
+                  "text-center font-sans text-[10px] leading-tight tracking-[0.04em] uppercase",
+                  done && "text-accent",
+                  bad && "text-danger",
+                  warn && "text-warn",
+                  !done && !bad && !warn && "text-ink-2",
+                )}
+              >
+                {customLabels?.[id] ?? t(locale, `run.stage_${id}`)}
+              </span>
+            </li>
+          </Fragment>
+        );
+      })}
     </ol>
   );
 }
+
+/** Compact mono status line shown under the rail. */
 export function RunStatusLine({
   status,
   attempt = 0,
@@ -120,25 +118,19 @@ export function RunStatusLine({
   const text =
     label ??
     (status === "queued"
-      ? uiMessage(locale, "chat.runQueued")
-      : status === "stopped"
-        ? uiMessage(locale, "ui.stopped")
-        : status === "failed" || status === "error"
-          ? `${uiMessage(locale, "chat.progress.status.failed")}${attempt ? ` · ${uiMessage(locale, "ui.attempt")} ${attempt}` : ""}`
-          : status === "succeeded" || status === "done"
-            ? uiMessage(locale, "chat.progress.status.complete")
-            : uiMessage(locale, "chat.runRunning"));
+      ? t(locale, "run.queued")
+      : status === "streaming"
+        ? t(locale, "run.streaming")
+        : status === "error"
+          ? t(locale, "run.failedShort", { attempt })
+          : t(locale, "run.working"));
   return (
-    <p role="status" aria-live="polite" className="font-mono text-[11px] text-ink-2">
+    <p className="font-mono text-[11px] tracking-wide text-ink-2">
       <span
         aria-hidden="true"
         className={cn(
           "mr-1.5 inline-block size-1.5 rounded-full",
-          status === "failed" || status === "error"
-            ? "bg-danger"
-            : status === "stopped"
-              ? "bg-warn"
-              : "animate-pulse-soft bg-accent",
+          status === "error" ? "bg-danger" : "animate-pulse-soft bg-accent",
         )}
       />
       {text}

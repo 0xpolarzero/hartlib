@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { formatMonthYear, uiMessage } from "../../lib/format";
@@ -47,6 +48,14 @@ const clampToMonth = (date: Date, month: Date): Date =>
 const intlLocale = (locale: string): string =>
   locale === "fr" || locale === "fr-FR" ? "fr-FR" : "en-US";
 
+/**
+ * DatePicker used to schedule publications. The popover, grid, and classes are
+ * ported verbatim from the ui-playground reference (Radix Popover anchor +
+ * content); date math stays UTC-based so yyyy-mm-dd values round-trip in any
+ * timezone. Calendar grid with roving tabindex: arrows move by day,
+ * PageUp/PageDown by month (Shift for year), Home/End to week bounds.
+ * All labels localized through the canonical catalogs.
+ */
 export function DatePicker({
   value,
   onChange,
@@ -73,7 +82,6 @@ export function DatePicker({
   "aria-describedby"?: string;
 }) {
   const calendarId = useId();
-  const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const dayRefs = useRef(new Map<string, HTMLButtonElement>());
   const selectedDate = parseIsoDate(value);
@@ -87,7 +95,7 @@ export function DatePicker({
   const firstDayIndex = localeTag === "en-US" ? 0 : 1;
 
   const weekdays = useMemo(() => {
-    const formatter = new Intl.DateTimeFormat(localeTag, { weekday: "short" });
+    const formatter = new Intl.DateTimeFormat(localeTag, { weekday: "narrow" });
     const sunday = new Date(Date.UTC(2024, 0, 7));
     return Array.from({ length: 7 }, (_, index) =>
       formatter.format(addDays(sunday, (index + firstDayIndex) % 7)),
@@ -143,15 +151,6 @@ export function DatePicker({
 
   useEffect(() => {
     if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) close();
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
     const frame = requestAnimationFrame(() => {
       const active = dayRefs.current.get(activeIso) ?? dayRefs.current.values().next().value;
       active?.focus();
@@ -202,129 +201,131 @@ export function DatePicker({
   };
 
   return (
-    <div ref={root} className="relative">
-      <button
-        ref={trigger}
-        id={id}
-        type="button"
-        aria-label={`${ariaLabel}${selectedDate ? `, ${dateLabel(selectedDate)}` : ""}`}
-        {...(described === undefined ? {} : { "aria-describedby": described })}
-        aria-expanded={open}
-        aria-controls={calendarId}
-        aria-haspopup="dialog"
-        aria-invalid={invalid ?? ariaInvalid ?? undefined}
-        className={cn(
-          "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left font-sans text-[13px] transition-colors duration-100 hover:border-ink-3",
-          "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
-          "data-[state=open]:border-ink",
-          invalid && "border-danger",
-          className,
-        )}
-        onClick={openCalendar}
-      >
-        <span className={cn("truncate", !selectedDate && "text-ink-2")}>{displayDate}</span>
-        <CalendarDays className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" />
-      </button>
-      {open && (
-        <div
-          id={calendarId}
-          role="dialog"
-          aria-label={ariaLabel}
-          className="absolute z-50 mt-1 w-64 rounded-tiny border border-line-2 bg-surface p-2.5 shadow-none animate-enter"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              event.stopPropagation();
-              close();
-            }
-          }}
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Anchor asChild>
+        <button
+          ref={trigger}
+          id={id}
+          type="button"
+          aria-label={`${ariaLabel}${selectedDate ? `, ${dateLabel(selectedDate)}` : ""}`}
+          {...(described === undefined ? {} : { "aria-describedby": described })}
+          aria-expanded={open}
+          aria-controls={calendarId}
+          aria-haspopup="dialog"
+          aria-invalid={invalid ?? ariaInvalid ?? undefined}
+          className={cn(
+            "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left font-sans text-[13px]",
+            "transition-colors duration-100 hover:border-ink-3",
+            "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+            "data-[state=open]:border-ink",
+            invalid && "border-danger hover:border-danger",
+            className,
+          )}
+          onClick={openCalendar}
         >
-          <div className="mb-1.5 flex items-center justify-between">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={uiMessage(locale, "ui.previousMonth")}
-              onClick={() => moveMonth(-1)}
-            >
-              <ChevronLeft className="size-3.5" aria-hidden="true" />
-            </Button>
-            <p aria-live="polite" className="font-display text-[14px] font-medium">
-              {formatMonthYear(locale, viewMonth)}
-            </p>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={uiMessage(locale, "ui.nextMonth")}
-              onClick={() => moveMonth(1)}
-            >
-              <ChevronRight className="size-3.5" aria-hidden="true" />
-            </Button>
-          </div>
-          <div
-            role="grid"
-            aria-label={formatMonthYear(locale, viewMonth)}
-            className="grid grid-cols-7 gap-y-0.5"
+          <span className={cn("truncate", !selectedDate && "text-ink-2")}>{displayDate}</span>
+          <CalendarDays className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" />
+        </button>
+      </PopoverPrimitive.Anchor>
+      <PopoverPrimitive.Content
+        id={calendarId}
+        role="dialog"
+        aria-label={ariaLabel}
+        sideOffset={6}
+        align="start"
+        className="z-50 w-64 rounded-tiny border border-line-2 bg-surface p-2.5 shadow-none data-[state=open]:animate-enter"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          requestAnimationFrame(() => {
+            const cell = dayRefs.current.get(activeIso) ?? dayRefs.current.values().next().value;
+            cell?.focus();
+          });
+        }}
+      >
+        <div className="mb-1.5 flex items-center justify-between">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={uiMessage(locale, "ui.previousMonth")}
+            onClick={() => moveMonth(-1)}
           >
-            <div role="row" className="col-span-7 grid grid-cols-7">
-              {weekdays.map((weekday) => (
-                <div
-                  key={weekday}
-                  role="columnheader"
-                  className="flex h-6 items-center justify-center font-sans text-[10.5px] font-medium text-ink-2"
-                >
-                  {weekday}
-                </div>
-              ))}
-            </div>
-            {Array.from({ length: 6 }, (_, row) => (
-              <div key={row} role="row" className="col-span-7 grid grid-cols-7">
-                {days.slice(row * 7, row * 7 + 7).map((date) => {
-                  const dateKey = isoDate(date);
-                  const inMonth = date.getUTCMonth() === viewMonth.getUTCMonth();
-                  const selected = value === dateKey;
-                  const isToday = todayIso === dateKey;
-                  return (
-                    <button
-                      key={dateKey}
-                      ref={(element) => {
-                        if (element) dayRefs.current.set(dateKey, element);
-                        else dayRefs.current.delete(dateKey);
-                      }}
-                      type="button"
-                      role="gridcell"
-                      tabIndex={activeIso === dateKey ? 0 : -1}
-                      data-day={dateKey}
-                      aria-selected={selected}
-                      aria-label={dateLabel(date)}
-                      aria-current={isToday ? "date" : undefined}
-                      onClick={() => choose(date)}
-                      onKeyDown={(event) => onDayKeyDown(event, date)}
-                      className={cn(
-                        "relative flex size-8 items-center justify-center rounded-tiny font-sans text-[12.5px] transition-colors duration-100 hover:bg-paper-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
-                        inMonth ? "text-ink" : "text-ink-3",
-                        selected && "bg-ink font-semibold text-paper hover:bg-ink",
-                        isToday &&
-                          !selected &&
-                          "after:absolute after:bottom-1 after:size-1 after:rounded-full after:bg-accent",
-                      )}
-                    >
-                      <span aria-hidden="true">{date.getUTCDate()}</span>
-                    </button>
-                  );
-                })}
+            <ChevronLeft className="size-3.5" aria-hidden="true" />
+          </Button>
+          <p aria-live="polite" className="font-display text-[14px] font-medium">
+            {formatMonthYear(locale, viewMonth)}
+          </p>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={uiMessage(locale, "ui.nextMonth")}
+            onClick={() => moveMonth(1)}
+          >
+            <ChevronRight className="size-3.5" aria-hidden="true" />
+          </Button>
+        </div>
+        <div
+          role="grid"
+          aria-label={formatMonthYear(locale, viewMonth)}
+          className="grid grid-cols-7 gap-y-0.5"
+        >
+          <div role="row" className="col-span-7 grid grid-cols-7">
+            {weekdays.map((weekday, index) => (
+              <div
+                key={index}
+                role="columnheader"
+                className="flex h-6 items-center justify-center font-sans text-[10.5px] font-medium text-ink-2"
+              >
+                <span aria-hidden="true">{weekday}</span>
               </div>
             ))}
           </div>
-          <div className="mt-2 flex justify-between border-t border-line pt-2">
-            <Button variant="ghost" size="sm" onClick={() => choose(null)}>
-              {uiMessage(locale, "ui.clear")}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => choose(today)}>
-              {uiMessage(locale, "ui.today")}
-            </Button>
+          <div role="row" className="col-span-7 grid grid-cols-7">
+            {days.map((date) => {
+              const dateKey = isoDate(date);
+              const inMonth = date.getUTCMonth() === viewMonth.getUTCMonth();
+              const selected = value === dateKey;
+              const isToday = todayIso === dateKey;
+              return (
+                <button
+                  key={dateKey}
+                  ref={(element) => {
+                    if (element) dayRefs.current.set(dateKey, element);
+                    else dayRefs.current.delete(dateKey);
+                  }}
+                  type="button"
+                  role="gridcell"
+                  tabIndex={activeIso === dateKey ? 0 : -1}
+                  data-day={dateKey}
+                  aria-selected={selected}
+                  aria-label={dateLabel(date)}
+                  aria-current={isToday ? "date" : undefined}
+                  onClick={() => choose(date)}
+                  onKeyDown={(event) => onDayKeyDown(event, date)}
+                  className={cn(
+                    "relative flex size-8 items-center justify-center rounded-tiny font-sans text-[12.5px] transition-colors duration-100",
+                    "hover:bg-paper-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                    inMonth ? "text-ink" : "text-ink-3",
+                    selected && "bg-ink font-semibold text-paper hover:bg-ink",
+                    isToday &&
+                      !selected &&
+                      "after:absolute after:bottom-1 after:size-1 after:rounded-full after:bg-accent",
+                  )}
+                >
+                  <span aria-hidden="true">{date.getUTCDate()}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
-      )}
-    </div>
+        <div className="mt-2 flex justify-between border-t border-line pt-2">
+          <Button variant="ghost" size="sm" onClick={() => choose(null)}>
+            {uiMessage(locale, "ui.clear")}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => choose(today)}>
+            {uiMessage(locale, "ui.today")}
+          </Button>
+        </div>
+      </PopoverPrimitive.Content>
+    </PopoverPrimitive.Root>
   );
 }

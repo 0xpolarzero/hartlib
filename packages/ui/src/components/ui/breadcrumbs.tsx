@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
+
 export interface BreadcrumbItem {
   label: string;
   href?: string;
@@ -10,67 +11,80 @@ export interface BreadcrumbItem {
   onClick?: () => void;
   truncate?: boolean;
 }
+
 export interface BreadcrumbsProps {
   items: readonly BreadcrumbItem[];
   className?: string;
   ariaLabel?: string;
   locale?: string;
 }
+const breadcrumbHref = (crumb: BreadcrumbItem): string => {
+  let href = crumb.href ?? crumb.to ?? "#";
+  for (const [key, value] of Object.entries(crumb.params ?? {}))
+    href = href.replaceAll(`$${key}`, encodeURIComponent(value));
+  return href;
+};
+
+/**
+ * Breadcrumbs with responsive truncation: past three levels, middle crumbs
+ * collapse to an ellipsis carrying the full path via `title`.
+ */
 export function Breadcrumbs({ items, className, ariaLabel, locale = "en-US" }: BreadcrumbsProps) {
   const collapsed = items.length > 3;
-  const visible = collapsed ? [items[0]!, { label: "…" }, ...items.slice(-2)] : items;
+  const visible: readonly (BreadcrumbItem | "ellipsis")[] = collapsed
+    ? [items[0]!, "ellipsis", ...items.slice(-2)]
+    : items;
   const hidden = collapsed ? items.slice(1, -2) : [];
+
   return (
     <nav
       aria-label={ariaLabel ?? uiMessage(locale, "ui.breadcrumb")}
       className={cn("min-w-0", className)}
     >
       <ol className="flex min-w-0 items-center gap-1.5">
-        {visible.map((item, index) => {
-          const last = index === visible.length - 1;
-          const href = item.href ?? item.to;
+        {visible.map((crumb, i) => {
+          const last = i === visible.length - 1;
           return (
-            <li key={`${item.label}-${index}`} className="flex min-w-0 items-center gap-1.5">
-              {index > 0 && (
-                <ChevronRight className="size-3 shrink-0 text-ink-3" aria-hidden="true" />
-              )}
-              {item.label === "…" ? (
+            <li key={i} className="flex min-w-0 items-center gap-1.5">
+              {i > 0 && <ChevronRight aria-hidden="true" className="size-3 shrink-0 text-ink-3" />}
+              {crumb === "ellipsis" ? (
                 <span
                   className="max-w-16 truncate font-sans text-[12px] text-ink-2"
-                  title={hidden.map((crumb) => crumb.label).join(" › ")}
+                  title={hidden.map((h) => h.label).join(" › ")}
                 >
                   …
                 </span>
-              ) : href && !last ? (
+              ) : (crumb.to || crumb.href) && !last ? (
                 <a
-                  href={href}
+                  href={breadcrumbHref(crumb)}
                   onClick={(event) => {
-                    if (item.onClick) {
+                    if (crumb.onClick) {
                       event.preventDefault();
-                      item.onClick();
+                      crumb.onClick();
                     }
                   }}
                   className="truncate font-sans text-[12px] text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >
-                  {item.label}
+                  {crumb.label}
                 </a>
-              ) : item.onClick && !last ? (
+              ) : crumb.onClick && !last ? (
                 <button
                   type="button"
-                  onClick={item.onClick}
+                  onClick={crumb.onClick}
                   className="truncate font-sans text-[12px] text-ink-2 underline-offset-2 transition-colors duration-100 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                 >
-                  {item.label}
+                  {crumb.label}
                 </button>
               ) : (
                 <span
                   aria-current={last ? "page" : undefined}
                   className={cn(
                     "truncate font-sans text-[12px] text-ink",
-                    item.truncate && "max-w-56",
+                    crumb.truncate && "max-w-56",
                   )}
+                  title={crumb.label}
                 >
-                  {item.label}
+                  {crumb.label}
                 </span>
               )}
             </li>

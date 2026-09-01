@@ -83,10 +83,11 @@ export function Transcript({
   const announce = useAnnounce();
   const previousLength = useRef(messages.length);
   const previousStreamText = useRef(run?.streamedText ?? "");
-  const lastUserId = useMemo(
-    () => [...messages].reverse().find((message) => message.author === "user")?.id,
+  const lastUserMessage = useMemo(
+    () => [...messages].reverse().find((message) => message.author === "user"),
     [messages],
   );
+  const lastUserId = lastUserMessage?.id;
   const provisionalId = run === null ? null : `streaming:${run.id}`;
   const hasProvisional =
     provisionalId !== null && messages.some((message) => message.id === provisionalId);
@@ -125,11 +126,6 @@ export function Transcript({
     return { start, end };
   }, [layout.rows, scrollTop, viewportHeight]);
   const visibleItems = items.slice(range.start, range.end);
-  const topSpacer = layout.rows[range.start]?.top ?? 0;
-  const bottomSpacer = Math.max(
-    0,
-    layout.total - (layout.rows[range.end - 1]?.bottom ?? layout.total),
-  );
   const updatePosition = useCallback(() => {
     const element = viewport.current;
     if (!element) return;
@@ -262,8 +258,8 @@ export function Transcript({
         data-testid="chat-transcript"
       >
         <div className="w-full max-w-md animate-enter text-center">
-          <Sparkles className="mx-auto size-4 text-accent" aria-hidden="true" />
-          <h2 className="mt-3 font-display text-[22px] font-medium leading-tight text-ink">
+          <Sparkles aria-hidden="true" className="mx-auto size-4 text-accent" />
+          <h2 className="mt-3 font-display text-[22px] leading-tight font-medium text-ink">
             {resolvedEmptyTitle}
           </h2>
           {resolvedEmptyDescription && (
@@ -299,7 +295,7 @@ export function Transcript({
       return (
         <article className="grid gap-3" aria-label={uiMessage(locale, "chat.progress.active")}>
           <header className="flex items-center gap-2">
-            <p className="animate-pulse-soft font-mono text-[10px] uppercase tracking-[.12em] text-ink-2">
+            <p className="animate-pulse-soft font-mono text-[10px] tracking-[0.12em] text-ink-2 uppercase">
               {uiMessage(locale, "chat.author.assistant")} · …
             </p>
             <span aria-hidden="true" className="h-px flex-1 bg-line" />
@@ -321,14 +317,16 @@ export function Transcript({
             {...(run.attempt === undefined ? {} : { attempt: run.attempt })}
           />
           {(run.streamedText ?? message.content) && (
-            <AnswerBody
-              content={run.streamedText ?? message.content}
-              sources={message.citations ?? []}
-              locale={locale}
-              {...(onCitation === undefined ? {} : { onCitation })}
-              {...(copyAdapter === undefined ? {} : { copyAdapter })}
-              streaming
-            />
+            <div className="min-h-24">
+              <AnswerBody
+                content={run.streamedText ?? message.content}
+                sources={message.citations ?? []}
+                locale={locale}
+                {...(onCitation === undefined ? {} : { onCitation })}
+                {...(copyAdapter === undefined ? {} : { copyAdapter })}
+                streaming
+              />
+            </div>
           )}
           {run.status === "stopped" && (
             <p className="font-mono text-[11px] text-ink-2">
@@ -361,6 +359,9 @@ export function Transcript({
         {...(onShowVisualization === undefined ? {} : { onShowVisualization })}
         {...(onCitation === undefined ? {} : { onCitation })}
         {...(copyAdapter === undefined ? {} : { copyAdapter })}
+        {...(isLastAssistant && lastUserMessage && onRetryMessage
+          ? { onRegenerate: () => onRetryMessage(lastUserMessage) }
+          : {})}
         locale={locale}
         isLast={isLastAssistant}
       />
@@ -385,14 +386,25 @@ export function Transcript({
       >
         <div
           className="mx-auto grid max-w-[52rem] gap-7 pb-6"
-          style={{ paddingTop: topSpacer, paddingBottom: bottomSpacer }}
+          style={{ height: layout.total, position: "relative" }}
           data-virtual-range={`${range.start}:${range.end}`}
         >
-          {visibleItems.map((message, offset) => (
-            <div key={message.id} ref={(node) => measure(message.id, node)} className="min-w-0">
-              {renderItem(message, range.start + offset)}
-            </div>
-          ))}
+          {visibleItems.map((message, offset) => {
+            const index = range.start + offset;
+            const item = layout.rows[index];
+            if (!item) return null;
+            return (
+              <div
+                key={message.id}
+                data-index={index}
+                ref={(node) => measure(message.id, node)}
+                className="vrow absolute left-0 w-full"
+                style={{ transform: `translateY(${item.top}px)` }}
+              >
+                {renderItem(message, index)}
+              </div>
+            );
+          })}
           {children}
         </div>
       </div>
@@ -400,8 +412,11 @@ export function Transcript({
         <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2">
           <Button
             variant="secondary"
-            size={unread > 0 ? "md" : "icon"}
-            className="pointer-events-auto rounded-full bg-surface"
+            size="icon"
+            className={cn(
+              "pointer-events-auto animate-enter rounded-full bg-surface hover:bg-paper",
+              unread > 0 && "w-auto gap-1 px-2",
+            )}
             onClick={() => {
               const element = viewport.current;
               if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
@@ -411,7 +426,11 @@ export function Transcript({
             aria-label={uiMessage(locale, "ui.jumpToLatest")}
           >
             <ArrowDown className="size-3" aria-hidden="true" />
-            {unread > 0 && <span className="font-mono text-[10px]">{unread}</span>}
+            {unread > 0 && (
+              <span aria-hidden="true" className="text-[10px] font-mono">
+                {unread}
+              </span>
+            )}
           </Button>
         </div>
       )}

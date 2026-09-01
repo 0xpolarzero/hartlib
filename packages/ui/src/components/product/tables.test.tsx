@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,10 @@ import {
   type PublisherSourceRow,
   type PublisherSubscriberRow,
 } from "./tables";
+import { TooltipProvider } from "../ui/overlays";
+
+const renderWithProviders = (node: ReactNode): string =>
+  renderToStaticMarkup(<TooltipProvider>{node}</TooltipProvider>);
 
 const source: PublisherSourceRow = {
   id: "source-1",
@@ -39,7 +44,7 @@ const subscriber: PublisherSubscriberRow = {
 
 describe("publisher tables", () => {
   it("keeps subscriber add and validation actions prop-driven", () => {
-    const html = renderToStaticMarkup(
+    const html = renderWithProviders(
       <SubscribersTable
         rows={[{ id: "s1", email: "bad", company: "Example", status: "invalid" }]}
         onAdd={() => undefined}
@@ -102,18 +107,18 @@ describe("publisher tables", () => {
 
     for (const entry of cases) {
       const retry = () => undefined;
-      const loading = renderToStaticMarkup(entry.render("loading", retry));
+      const loading = renderWithProviders(entry.render("loading", retry));
       expect(loading, `${entry.label} loading`).toContain('aria-label="');
       expect(loading, `${entry.label} loading`).toContain("animate-pulse");
 
-      const empty = renderToStaticMarkup(entry.render("empty", retry));
+      const empty = renderWithProviders(entry.render("empty", retry));
       expect(empty, `${entry.label} empty`).toContain("No ");
 
-      const error = renderToStaticMarkup(entry.render("error", retry));
+      const error = renderWithProviders(entry.render("error", retry));
       expect(error, `${entry.label} error`).toContain('role="alert"');
       expect(error, `${entry.label} error`).toMatch(/<button[^>]*>Retry<\/button>/u);
 
-      const filled = renderToStaticMarkup(entry.render("data", retry));
+      const filled = renderWithProviders(entry.render("data", retry));
       expect(filled, `${entry.label} filled`).toContain(entry.filled);
     }
   });

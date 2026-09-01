@@ -24,7 +24,7 @@ evidence workflow accepts them.
 
 ## Product boundary
 
-The reachable demo has no publisher write workflow, billing workflow, account
-admin, export, or notification route. Dormant publisher and visualization
-presentations exist for direct fixture tests only. They have no product URL,
-command, link, navigation item, fetch, write callback, or production import.
+The reachable demo includes the client workspace plus publisher, issue,
+notification, visualization, and component-gallery UI from the canonical
+playground frontend. Client chat uses the real API. Publisher and gallery
+surfaces use local controlled state and make no server-backed publishing claim.
