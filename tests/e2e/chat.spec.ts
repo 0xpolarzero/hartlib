@@ -33,7 +33,7 @@ const openChat = async (page: Page): Promise<void> => {
 };
 
 const disableWebSearch = async (page: Page): Promise<void> => {
-  const toggle = page.getByRole("switch", { name: /Activer la recherche web|Enable web search/u });
+  const toggle = page.getByRole("switch", { name: /Recherche web|Web search/u });
   if (await toggle.isChecked()) await toggle.click();
   await expect(toggle).not.toBeChecked();
 };
