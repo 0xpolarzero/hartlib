@@ -1,9 +1,9 @@
-/** @jsxImportSource smithers-orchestrator */
+/** @jsxImportSource smthrs */
 // smithers-metadata-version: 1
 // smithers-display-name: Temporary Demo Terminal Error Fix
 // smithers-description: Delegate the focused demo terminal-error fix to the repository Luna write agent.
 // smithers-tags: temporary, implementation, demo, chat
-import { createSmithers } from "smithers-orchestrator";
+import { createSmithers } from "smthrs";
 import { z } from "zod/v4";
 import { agents } from "../agents";
 

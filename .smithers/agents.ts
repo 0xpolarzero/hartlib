@@ -1,5 +1,5 @@
-import { type AgentLike } from "smithers-orchestrator";
-import { CodexAgent as SmithersCodexAgent } from "smithers-orchestrator";
+import { type AgentLike } from "smthrs";
+import { CodexAgent as SmithersCodexAgent } from "smthrs";
 
 const providers = {
   read: new SmithersCodexAgent({

@@ -3,12 +3,12 @@
 // smithers-display-name: Implement AI Retrieval Compaction
 // smithers-description: Repair the approved retrieval and compaction cutover with fixed validation loops, one migration approval, and fail-closed evidence.
 // smithers-tags: implementation, ai, retrieval, compaction, migration
-/** @jsxImportSource smithers-orchestrator */
+/** @jsxImportSource smthrs */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createSmithers } from "smithers-orchestrator";
+import { createSmithers } from "smthrs";
 import { z } from "zod/v4";
 import { agents } from "../agents";
 import InitializePrompt from "../prompts/implement-ai-retrieval-compaction-initialize.mdx";

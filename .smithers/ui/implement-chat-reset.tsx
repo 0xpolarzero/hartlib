@@ -9,7 +9,7 @@ import {
   useGatewayRunEvents,
   useGatewayRunTree,
   useGatewayRuns,
-} from "smithers-orchestrator/gateway-react";
+} from "smthrs/gateway-react";
 import {
   ApprovalPanel,
   ConnectionBadge,
@@ -18,7 +18,7 @@ import {
   RunTree,
   StatusPill as GatewayStatusPill,
   WorkflowUiShell,
-} from "smithers-orchestrator/gateway-ui";
+} from "smthrs/gateway-ui";
 import {
   Badge,
   Button,
@@ -39,7 +39,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
-} from "smithers-orchestrator/ui";
+} from "smthrs/ui";
 
 const WORKFLOW_KEY = "implement-chat-reset";
 const COMMANDS = ["bun run check", "bun run lint", "bun run test", "bun run e2e"];

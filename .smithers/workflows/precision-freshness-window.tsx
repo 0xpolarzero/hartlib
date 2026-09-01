@@ -1,9 +1,9 @@
-/** @jsxImportSource smithers-orchestrator */
+/** @jsxImportSource smthrs */
 // smithers-metadata-version: 1
 // smithers-display-name: Precision Freshness Window
 // smithers-description: Fix date-only internal retrieval filters so freshness windows use stable UTC instants.
 // smithers-tags: implementation, retrieval, timestamps, review
-import { createSmithers } from "smithers-orchestrator";
+import { createSmithers } from "smthrs";
 import { z } from "zod/v4";
 import { agents } from "../agents";
 

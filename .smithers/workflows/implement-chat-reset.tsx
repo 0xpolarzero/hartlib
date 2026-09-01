@@ -3,9 +3,9 @@
 // smithers-display-name: Implement Chat Reset
 // smithers-description: Complete and verify the chat reset, archive, copy, documentation, and race-test work without disturbing protected changes.
 // smithers-tags: implementation, chat, reset, review
-/** @jsxImportSource smithers-orchestrator */
-import { UI } from "smithers-orchestrator";
-import { createSmithers, HumanTask, Parallel } from "smithers-orchestrator";
+/** @jsxImportSource smthrs */
+import { UI } from "smthrs";
+import { createSmithers, HumanTask, Parallel } from "smthrs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
