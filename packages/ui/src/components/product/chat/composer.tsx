@@ -175,7 +175,7 @@ export function Composer({
   const [waveform, setWaveform] = useState(INITIAL_WAVEFORM);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const textRef = useRef("");
+  const textRef = useRef(controlled ?? defaultValue);
   const mountedRef = useRef(true);
   const sessionRef = useRef(0);
   const dictationStateRef = useRef<DictationState>("idle");
@@ -194,11 +194,17 @@ export function Composer({
 
   const streaming = runActive;
   useEffect(() => {
-    if (controlled !== undefined && controlled !== text) setText(controlled);
+    if (controlled !== undefined && controlled !== text) {
+      textRef.current = controlled;
+      setText(controlled);
+    }
   }, [controlled, text]);
-  useEffect(() => {
-    onChange?.(text);
-  }, [onChange, text]);
+
+  const updateText = (next: string) => {
+    textRef.current = next;
+    setText(next);
+    onChange?.(next);
+  };
 
   const setDictationState = (next: DictationState) => {
     dictationStateRef.current = next;
@@ -294,8 +300,7 @@ export function Composer({
       return;
     }
     const nextText = appendTranscript(textRef.current, transcript);
-    textRef.current = nextText;
-    setText(nextText);
+    updateText(nextText);
     finalTranscriptRef.current = "";
     interimTranscriptRef.current = "";
     stopReasonRef.current = null;
@@ -487,8 +492,7 @@ export function Composer({
     if (streaming || text.trim() === "") return;
     if (dictationStateRef.current !== "idle") cancelDictation();
     void onSend(text.trim());
-    textRef.current = "";
-    setText("");
+    updateText("");
     taRef.current?.focus();
   };
 
@@ -533,10 +537,7 @@ export function Composer({
               aria-label={t("composer.label")}
               placeholder={t("composer.placeholder")}
               disabled={disabled}
-              onChange={(e) => {
-                textRef.current = e.target.value;
-                setText(e.target.value);
-              }}
+              onChange={(e) => updateText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
