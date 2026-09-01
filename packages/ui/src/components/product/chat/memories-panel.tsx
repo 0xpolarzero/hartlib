@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { History, RotateCcw } from "lucide-react";
 import { Button } from "../../ui/button";
 import { ConfirmingDeleteButton } from "../../ui/confirming-delete-button";
 import { EmptyState, ErrorState } from "../../ui/states";
 import { cn } from "../../../lib/utils";
-import { uiMessage } from "../../../lib/format";
+import { formatDateTime, uiMessage } from "../../../lib/format";
 import type { MemoryRecord, MemoryRevision } from "@hartlib/shared";
 
 export interface MemoriesPanelProps {
@@ -20,6 +21,11 @@ export interface MemoriesPanelProps {
   className?: string;
   locale?: string;
 }
+
+const emptyMemoriesDescription = (locale: string): string =>
+  locale === "fr" || locale === "fr-FR"
+    ? "Les préférences et échéances que vous confierez à l’assistant apparaîtront ici, avec leur historique réversible."
+    : "Preferences and deadlines you entrust to the assistant will appear here, with their reversible history.";
 
 export function MemoriesPanel({
   memories = [],
@@ -71,14 +77,18 @@ export function MemoriesPanel({
       />
     );
   return (
-    <section className={className} aria-labelledby="memories-heading">
-      <div className="flex items-baseline justify-between">
-        <h2 id="memories-heading" className="caps-label text-ink-2">
+    <section
+      className={cn("min-h-full", className)}
+      aria-labelledby="memories-heading"
+      aria-describedby="memories-retention-notice"
+    >
+      <header className="-mx-3 -mt-3 flex min-h-10 items-center justify-between border-b border-line px-3">
+        <h2 id="memories-heading" className="font-display text-[15px] font-medium text-ink">
           {uiMessage(locale, "section.memories")}
         </h2>
-        <span className="font-mono text-[11px] text-ink-2">{memories.length}</span>
-      </div>
-      <p className="mt-1 font-mono text-[11px] text-ink-2">
+        <span className="sr-only font-mono text-[11px] text-ink-2">{memories.length}</span>
+      </header>
+      <p id="memories-retention-notice" className="sr-only">
         {uiMessage(locale, "chat.memoryDeletionNotice")}
       </p>
       {error !== null && (
@@ -103,75 +113,114 @@ export function MemoriesPanel({
         </article>
       )}
       {memories.length === 0 ? (
-        <EmptyState title={uiMessage(locale, "ui.noMemories")} className="px-0 py-8" />
+        <EmptyState
+          title={uiMessage(locale, "ui.noMemories")}
+          description={emptyMemoriesDescription(locale)}
+          className="px-0 py-16"
+        />
       ) : (
-        <ul className="mt-2 divide-y divide-line" data-testid="memory-list">
+        <ul
+          className="divide-y divide-line"
+          data-testid="memory-list"
+          aria-label={uiMessage(locale, "section.memories")}
+        >
           {memories.map((memory) => {
+            const deleted = memory.current.deleted;
             const open = expanded === memory.id;
+            const historyLabel = uiMessage(
+              locale,
+              open ? "action.hideRevisions" : "action.viewRevisions",
+            );
             return (
-              <li key={memory.id} className="py-2">
-                <div className="grid gap-2 sm:grid-cols-[7rem_1fr_auto] sm:items-start">
-                  <span className="caps-label text-ink-2">
-                    {memory.current.kind}
-                    {memory.current.deleted && (
-                      <span className="mt-1 block text-danger">
-                        {uiMessage(locale, "memory.deleted")}
-                      </span>
-                    )}
-                  </span>
-                  <div>
-                    <p className="font-read text-[15px] leading-5">{memory.current.content}</p>
-                    <p className="mt-1 font-mono text-[11px] text-ink-2">
-                      {memory.updatedAt.slice(0, 10)}
+              <li key={memory.id} className={cn("py-3", deleted && "opacity-75")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p
+                      className={cn(
+                        "flex flex-wrap items-center gap-1.5 text-[13px] font-medium text-ink",
+                        deleted && "line-through decoration-danger/60",
+                      )}
+                    >
+                      {memory.current.kind}
+                      {deleted && (
+                        <span className="rounded-tiny border border-danger/40 px-1 py-0.5 font-sans text-[10px] font-normal text-danger">
+                          {uiMessage(locale, "memory.deleted")}
+                        </span>
+                      )}
                     </p>
+                    <p
+                      className={cn(
+                        "font-read text-[13.5px] leading-relaxed text-ink-2",
+                        deleted && "line-through",
+                      )}
+                    >
+                      {memory.current.content}
+                    </p>
+                    <p className="mt-1 font-mono text-[10.5px] text-ink-2">
+                      {formatDateTime(locale, memory.createdAt)} · {formatDateTime(locale, memory.updatedAt)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
                     {memory.revisions.length > 0 && (
-                      <button
-                        type="button"
-                        className="mt-1 text-[11px] text-ink-2 underline"
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-expanded={open}
+                        aria-label={historyLabel}
+                        title={historyLabel}
                         onClick={() => setExpanded(open ? null : memory.id)}
                       >
-                        {open
-                          ? uiMessage(locale, "action.hideRevisions")
-                          : uiMessage(locale, "action.viewRevisions")}
-                      </button>
+                        <History className="size-3.5" aria-hidden="true" />
+                        <span className="sr-only">{historyLabel}</span>
+                      </Button>
+                    )}
+                    {!deleted && onDelete && (
+                      <ConfirmingDeleteButton
+                        onConfirm={() => void onDelete(memory.id)}
+                        label={uiMessage(locale, "action.delete")}
+                        locale={locale}
+                      />
                     )}
                   </div>
-                  {!memory.current.deleted && onDelete && (
-                    <ConfirmingDeleteButton
-                      onConfirm={() => void onDelete(memory.id)}
-                      label={uiMessage(locale, "action.delete")}
-                      locale={locale}
-                    />
-                  )}
                 </div>
                 {open && (
-                  <ul className="mt-2 space-y-1 border-l border-line pl-3">
-                    {memory.revisions.map((revision) => (
-                      <li
-                        key={revision.id}
-                        className="flex items-center justify-between gap-2 font-mono text-[11px] text-ink-2"
-                      >
-                        <button
-                          type="button"
-                          className="underline"
-                          onClick={() => onOpenRevision?.(memory.id, revision.id)}
+                  <div className="mt-2.5 border-l border-line-2 pl-3">
+                    <p className="caps-label mb-1.5 text-ink-2">{historyLabel}</p>
+                    <ol className="grid gap-1">
+                      {memory.revisions.map((revision) => (
+                        <li
+                          key={revision.id}
+                          className="flex items-start gap-2.5 rounded-tiny px-1 py-1.5"
                         >
-                          {revision.action} · {revision.createdAt.slice(0, 10)}
-                        </button>
-                        {!revision.after.deleted &&
-                          revision.id !== memory.headRevisionId &&
-                          onRevert && (
-                            <Button
-                              variant="link"
-                              size="sm"
-                              onClick={() => void onRevert(memory.id, revision.id)}
-                            >
-                              {uiMessage(locale, "action.revertMemory")}
-                            </Button>
-                          )}
-                      </li>
-                    ))}
-                  </ul>
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => onOpenRevision?.(memory.id, revision.id)}
+                          >
+                            <span className="block font-mono text-[11px] text-ink-2">
+                              {revision.action} · {formatDateTime(locale, revision.createdAt)}
+                            </span>
+                            <span className="mt-0.5 block font-read text-[13px] leading-snug text-ink">
+                              {revision.after.content}
+                            </span>
+                          </button>
+                          {!revision.after.deleted &&
+                            revision.id !== memory.headRevisionId &&
+                            onRevert && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="shrink-0"
+                                onClick={() => void onRevert(memory.id, revision.id)}
+                              >
+                                <RotateCcw className="size-3" aria-hidden="true" />
+                                {uiMessage(locale, "action.revertMemory")}
+                              </Button>
+                            )}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
                 )}
                 {onOpenProvenance && (
                   <Button

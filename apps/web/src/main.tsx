@@ -220,17 +220,36 @@ function documentStateFields(
 function NotFound() {
   const locale = useLocale();
   return (
-    <section className="grid min-h-[60vh] place-content-center gap-2 text-center">
-      <p className="caps-label text-accent">404</p>
-      <h1 className="font-display text-3xl">{uiMessage(locale, "ui.notFound")}</h1>
-      <p className="text-[13px] text-ink-2">{uiMessage(locale, "ui.notFoundDescription")}</p>
-      <a
-        href={buildDemoPath({ locale, role: "client", sourceId: null, issueId: null })}
-        className="mx-auto mt-2 text-[13px] text-accent underline"
+    <main
+      id="content"
+      className="mx-auto flex min-h-dvh max-w-xl flex-col items-start justify-center px-6"
+    >
+      <p className="caps-label text-accent">Erreur 404 · Error 404</p>
+      <h1
+        aria-label={uiMessage(locale, "ui.notFound")}
+        className="mt-2 font-display text-[28px] font-medium leading-tight text-ink"
       >
-        {uiMessage(locale, "ui.backToChat")}
-      </a>
-    </section>
+        Cette page n’existe pas. <span className="text-ink-2">This page doesn’t exist.</span>
+      </h1>
+      <p className="mt-3 max-w-md text-[13.5px] leading-relaxed text-ink-2">
+        Vérifiez l’adresse ou repartez de l’accueil. Check the address, or start again from the home
+        view.
+      </p>
+      <div className="mt-5 flex gap-3 font-mono text-[12px]">
+        <a
+          href={buildDemoPath({ locale: "fr-FR", role: "client", sourceId: null, issueId: null })}
+          className="text-accent underline underline-offset-4 hover:text-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          fr → Consultation
+        </a>
+        <a
+          href={buildDemoPath({ locale: "en-US", role: "client", sourceId: null, issueId: null })}
+          className="text-accent underline underline-offset-4 hover:text-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          en → Consultation
+        </a>
+      </div>
+    </main>
   );
 }
 
@@ -1079,21 +1098,7 @@ function App({
     setResetError(null);
     void resetController.retry();
   }, [resetController]);
-  if (routeState.notFound)
-    return (
-      <AppShell
-        locale={locale}
-        clientSubnav={[{ id: "chat", label: uiMessage(locale, "ui.chat"), active: true }]}
-        onLocaleChange={(next) =>
-          changeLocale({
-            locale: next as Locale,
-            market: DEFAULT_MARKET_FOR_LOCALE[next as Locale],
-          })
-        }
-      >
-        <NotFound />
-      </AppShell>
-    );
+  if (routeState.notFound) return <NotFound />;
   if (chat === null)
     return (
       <AppShell
@@ -1217,8 +1222,10 @@ function App({
             suggestions={
               messages.length === 0
                 ? [
-                    uiMessage(locale, "ui.suggestionSummarize"),
-                    uiMessage(locale, "ui.suggestionCompare"),
+                    "Compare la croissance des abonnés de nos trois lettres sur le troisième trimestre.",
+                    "Que concluait le dossier de septembre sur l’arbitrage des litiges de télétravail ?",
+                    "Montre-moi la cohorte à risque du point de renouvellement.",
+                    "Lance l’analyse confidentielle du churn.",
                   ]
                 : []
             }
@@ -1231,6 +1238,12 @@ function App({
             onCitation={handleCitation}
             copyAdapter={copyAdapter}
             focusMessageId={focusMessageId}
+            emptyTitle={locale === "fr-FR" ? "Interrogez votre archive" : "Query your archive"}
+            emptyDescription={
+              locale === "fr-FR"
+                ? "Les réponses citent les documents lus, conservent vos mémoires et alimentent le panneau de visualisation."
+                : "Answers cite the documents they read, keep your memories, and feed the visualization pane."
+            }
           >
             {chatActionError && (
               <p role="alert" className="mt-2 text-[12px] text-danger">

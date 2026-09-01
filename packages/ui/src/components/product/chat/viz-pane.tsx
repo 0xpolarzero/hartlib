@@ -35,9 +35,16 @@ export function VizPane({
   className,
   locale = "en-US",
 }: VizPaneProps) {
-  const resolvedEmptyTitle = emptyTitle ?? uiMessage(locale, "ui.noVisualization");
+  const resolvedEmptyTitle =
+    emptyTitle ??
+    (locale === "fr" || locale === "fr-FR"
+      ? "Le panneau attend sa première réponse"
+      : uiMessage(locale, "ui.noVisualization"));
   const resolvedEmptyDescription =
-    emptyDescription ?? uiMessage(locale, "ui.visualizationDescription");
+    emptyDescription ??
+    (locale === "fr" || locale === "fr-FR"
+      ? "Chaque réponse visuelle — comparaison, tendance, tableau ou indicateurs — s’affichera ici, avec son historique de versions."
+      : uiMessage(locale, "ui.visualizationDescription"));
   const resolvedTitle = title === "Visualization" ? uiMessage(locale, "ui.visualization") : title;
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const highlight = useRef<HTMLDivElement>(null);
@@ -73,16 +80,7 @@ export function VizPane({
     return (
       <div
         ref={highlight}
-        className={cn(
-          "flex h-full min-h-48 items-center justify-center border border-line bg-paper",
-          className,
-        )}
-        style={{
-          outlineColor: "transparent",
-          outlineStyle: "solid",
-          outlineWidth: 2,
-          outlineOffset: 2,
-        }}
+        className={cn("flex h-full items-center justify-center p-6", className)}
         data-testid="viz-empty"
       >
         {state === "loading" || state === "regenerating" ? (
@@ -101,7 +99,11 @@ export function VizPane({
             <Skeleton className="h-3 w-2/3" />
           </div>
         ) : (
-          <EmptyState title={resolvedEmptyTitle} description={resolvedEmptyDescription} />
+          <EmptyState
+            className="animate-enter-fade"
+            title={resolvedEmptyTitle}
+            description={resolvedEmptyDescription}
+          />
         )}
       </div>
     );
@@ -121,13 +123,10 @@ export function VizPane({
   return (
     <div
       ref={highlight}
-      className={cn("flex h-full min-h-0 flex-col border border-line bg-paper", className)}
-      style={{
-        outlineColor: "transparent",
-        outlineStyle: "solid",
-        outlineWidth: 2,
-        outlineOffset: 2,
-      }}
+      className={cn(
+        "flex h-full min-h-0 flex-col outline outline-1 outline-transparent",
+        className,
+      )}
       data-testid="viz-pane"
     >
       <div className="flex min-h-10 shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
@@ -186,9 +185,10 @@ export function VizPane({
             title={`${version.label} · ${version.createdAt}`}
             className={cn(
               "shrink-0 rounded-tiny border px-1.5 py-0.5 font-mono text-[10.5px]",
+              "transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
               version.id === current.id
                 ? "border-accent bg-accent/10 text-accent"
-                : "border-line-2 text-ink-2 hover:border-ink-3",
+                : "border-line-2 text-ink-2 hover:border-ink-3 hover:text-ink",
             )}
             onClick={() => onSelectVersion?.(version.id)}
           >
@@ -196,7 +196,12 @@ export function VizPane({
           </button>
         ))}
         {index >= 0 && index < versions.length - 1 && onRestoreVersion && (
-          <Button variant="secondary" size="sm" onClick={() => onRestoreVersion(current.id)}>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="ml-1 animate-enter"
+            onClick={() => onRestoreVersion(current.id)}
+          >
             {uiMessage(locale, "ui.restoreVisualization")} v{index + 1}
           </Button>
         )}
@@ -224,7 +229,10 @@ export function VizPane({
           title={current.label}
           srcDoc={current.html}
           sandbox=""
-          className={cn("h-full min-h-48 w-full border-0 bg-paper", fullscreen && "min-h-[60vh]")}
+          className={cn(
+            "h-full w-full border-0 bg-paper",
+            fullscreen ? "min-h-[60vh]" : "min-h-0 flex-1",
+          )}
         />
       </div>
       {association && (

@@ -6,6 +6,31 @@ export type Locale = "en-US" | "fr-FR";
 const asIntlLocale = (locale: Locale | string): string =>
   locale === "fr" || locale === "fr-FR" ? "fr-FR" : "en-US";
 
+const dateFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const numberFormatterCache = new Map<string, Intl.NumberFormat>();
+
+function dateFormatter(locale: Locale | string, options: Intl.DateTimeFormatOptions) {
+  const intlLocale = asIntlLocale(locale);
+  const key = `${intlLocale}:${JSON.stringify(options)}`;
+  let formatter = dateFormatterCache.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(intlLocale, options);
+    dateFormatterCache.set(key, formatter);
+  }
+  return formatter;
+}
+
+function numberFormatter(locale: Locale | string, options: Intl.NumberFormatOptions = {}) {
+  const intlLocale = asIntlLocale(locale);
+  const key = `${intlLocale}:${JSON.stringify(options)}`;
+  let formatter = numberFormatterCache.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(intlLocale, options);
+    numberFormatterCache.set(key, formatter);
+  }
+  return formatter;
+}
+
 /** Resolve chrome copy from the canonical catalogs without requiring a React provider. */
 export function uiMessage(locale: Locale | string | undefined, id: keyof Messages): string {
   const resolvedLocale = asIntlLocale(locale ?? "en-US") as Locale;
@@ -16,7 +41,7 @@ export function uiMessage(locale: Locale | string | undefined, id: keyof Message
 }
 
 export function formatNumber(locale: Locale | string, value: number): string {
-  return new Intl.NumberFormat(asIntlLocale(locale)).format(value);
+  return numberFormatter(locale).format(value);
 }
 
 export function formatDate(
@@ -26,7 +51,7 @@ export function formatDate(
   if (value === null || value === undefined || value === "") return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(asIntlLocale(locale), { dateStyle: "medium" }).format(date);
+  return dateFormatter(locale, { dateStyle: "medium" }).format(date);
 }
 
 export function formatDateShort(
@@ -36,28 +61,26 @@ export function formatDateShort(
   if (value === null || value === undefined || value === "") return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(asIntlLocale(locale), { dateStyle: "short" }).format(date);
+  return dateFormatter(locale, { day: "2-digit", month: "2-digit", year: "2-digit" }).format(date);
 }
 
 export function formatTime(locale: Locale | string, value: string | Date): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(asIntlLocale(locale), { timeStyle: "short" }).format(date);
+  return dateFormatter(locale, { timeStyle: "short" }).format(date);
 }
 
 export function formatDateTime(locale: Locale | string, value: string | Date): string {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(asIntlLocale(locale), {
+  return dateFormatter(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
 }
 
 export function formatMonthYear(locale: Locale | string, value: Date): string {
-  return new Intl.DateTimeFormat(asIntlLocale(locale), { month: "long", year: "numeric" }).format(
-    value,
-  );
+  return dateFormatter(locale, { month: "long", year: "numeric" }).format(value);
 }
 
 export function formatBytes(locale: Locale | string, value: number): string {

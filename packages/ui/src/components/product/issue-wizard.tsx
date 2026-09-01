@@ -33,6 +33,7 @@ export interface IssueWizardProps {
   locale?: string;
 }
 const steps: readonly IssueWizardStep[] = ["metadata", "documents", "summary", "preview"];
+const MIN_TITLE_LENGTH = 3;
 const stepMessageIds: Record<
   IssueWizardStep,
   "ui.metadata" | "ui.documents" | "ui.summary" | "ui.preview"
@@ -73,7 +74,7 @@ export function IssueWizard({
   };
   const validation = useMemo(
     () => ({
-      title: draft.title.trim().length > 0,
+      title: draft.title.trim().length >= MIN_TITLE_LENGTH,
       source: draft.sourceId.length > 0,
       summary: draft.summary.trim().length >= 20,
     }),
@@ -96,7 +97,10 @@ export function IssueWizard({
     : { message: uiMessage(locale, "ui.chooseSourceError") };
   const summaryField = validation.summary ? {} : { message: uiMessage(locale, "ui.writeSummary") };
   return (
-    <Card className={cn("mx-auto w-full max-w-3xl", className)}>
+    <Card
+      className={cn("mx-auto w-full max-w-3xl", className)}
+      aria-busy={status === "saving" || undefined}
+    >
       <CardHeader>
         <div>
           <p className="caps-label text-accent">{uiMessage(locale, "ui.publisher")}</p>
@@ -249,6 +253,11 @@ export function IssueWizard({
               <p role="status" className="flex items-center gap-1.5 text-[12px] text-ok">
                 <Check className="size-3" />
                 {uiMessage(locale, "ui.published")}
+              </p>
+            )}
+            {status === "saving" && (
+              <p role="status" aria-live="polite" className="text-[12px] text-ink-2">
+                {uiMessage(locale, "ui.saving")}
               </p>
             )}
           </div>

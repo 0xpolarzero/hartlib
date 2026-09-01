@@ -5,7 +5,7 @@ export const Label = forwardRef<HTMLLabelElement, LabelHTMLAttributes<HTMLLabelE
   ({ className, ...props }, ref) => (
     <label
       ref={ref}
-      className={cn("select-none font-sans text-[12px] font-medium text-ink", className)}
+      className={cn("font-sans text-[12px] font-medium text-ink select-none", className)}
       {...props}
     />
   ),
@@ -43,7 +43,7 @@ export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
     outline: "border-line-2 bg-transparent text-ink-2",
     success: "border-ok/30 bg-ok/10 text-ok",
     warning: "border-warn/30 bg-warn/10 text-warn",
-    danger: "border-danger/30 bg-danger/5 text-danger",
+    danger: "border-danger/30 bg-danger/10 text-danger",
     accent: "border-accent/30 bg-accent/10 text-accent",
   };
   return (
@@ -145,7 +145,7 @@ export function SectionHeader({
     >
       <div className="min-w-0">
         {kicker && <p className="caps-label text-accent">{kicker}</p>}
-        <h2 className="mt-1 font-display text-[22px] font-medium leading-tight">
+        <h2 className="mt-1 font-display text-[22px] font-medium leading-tight text-ink">
           {title}
           {count !== undefined && (
             <span className="ml-2 font-mono text-[11px] text-ink-2">{count}</span>
@@ -155,7 +155,7 @@ export function SectionHeader({
           <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-ink-2">{description}</p>
         )}
       </div>
-      {aside && <div>{aside}</div>}
+      {aside && <div className="flex shrink-0 items-center gap-2">{aside}</div>}
     </div>
   );
 }

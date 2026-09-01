@@ -19,6 +19,12 @@ copied, built, or used as a dependency.
   full-stack tests.
 - Playwright owns deterministic, live-provider, visual, and accessibility
   checks.
+- Exact cross-surface parity checks use `bun scripts/ui-parity/capture.ts` with
+  two explicit HTTP origins or argv commands. The runner captures 1440×900 and
+  390×844 at both surfaces, waits for stable rendering, compares decoded RGBA
+  pixels, and requires the repository state-control matrix unless a route smoke
+  opts into partial coverage. It never resolves or imports a source-tree path
+  for the reference surface.
 
 ## Local development startup
 
@@ -174,6 +180,7 @@ controllers, and storage. Integration tests use real PostgreSQL. Deterministic
 Playwright uses the API, worker, and provider boundary together. Live
 Playwright uses real credentials for retrieval, Stop, and reset-during-run;
 skips are failures. Visual checks cover 320, 390, 1024, 1535, 1536, and 1920
-pixels. Accessibility checks cover keyboard, focus, overlays, announcements,
-and Axe. Builds and scans prove that dormant fixtures have no product
-reachability and that no protected reference or deleted dependency ships.
+pixels; the parity runner adds exact paired 1440×900 and 390×844 captures.
+Accessibility checks cover keyboard, focus, overlays, announcements, and Axe.
+Builds and scans prove that dormant fixtures have no product reachability and
+that no protected reference or deleted dependency ships.

@@ -29,6 +29,12 @@ test.beforeAll(async () => {
           DatePicker,
           FileUpload,
           InlineEditableField,
+          AlertDialog,
+          AlertDialogAction,
+          AlertDialogCancel,
+          AlertDialogContent,
+          AlertDialogDescription,
+          AlertDialogTitle,
           Dialog,
           DialogContent,
           DialogDescription,
@@ -295,6 +301,15 @@ test.beforeAll(async () => {
                   <DialogFooter><button type="button">Footer action</button></DialogFooter>
                 </DialogContent>
               </Dialog>
+              <AlertDialog>
+                <DialogTrigger asChild><button data-testid="alert-trigger" type="button">Open alert</button></DialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogTitle>Alert title</AlertDialogTitle>
+                  <AlertDialogDescription>Alert description</AlertDialogDescription>
+                  <AlertDialogCancel>Cancel alert</AlertDialogCancel>
+                  <AlertDialogAction>Confirm alert</AlertDialogAction>
+                </AlertDialogContent>
+              </AlertDialog>
               <Sheet>
                 <SheetTrigger asChild><button data-testid="sheet-trigger" type="button">Open sheet</button></SheetTrigger>
                 <SheetContent side="left"><SheetTitle>Sheet title</SheetTitle><button type="button">Sheet action</button></SheetContent>
@@ -648,6 +663,16 @@ test("hydrated overlays prove focus, keyboard loops, outside dismissal, select a
   await expect(dialog).toHaveCount(0);
   await expect(dialogTrigger).toBeFocused();
   await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+
+  const alertTrigger = page.getByTestId("alert-trigger");
+  await alertTrigger.click();
+  const alertDialog = page.getByRole("alertdialog");
+  await expect(alertDialog).toBeVisible();
+  await expect(alertDialog).toContainText("Alert title");
+  await expect(alertDialog.getByRole("button", { name: "Cancel alert" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(alertDialog).toHaveCount(0);
+  await expect(alertTrigger).toBeFocused();
 
   const sheetTrigger = page.getByTestId("sheet-trigger");
   await sheetTrigger.click();

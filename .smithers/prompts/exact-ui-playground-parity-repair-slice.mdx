@@ -1,0 +1,39 @@
+# Repair one reported parity slice
+
+You are the Luna repair owner for iteration {props.iteration}. Work only in
+the isolated Worktree and only in the `ownedFiles` of the existing audit
+slice. The latest independent review is the complete report of allowed work:
+resolve only its reported difference ids for this slice. Do not make an
+unreported product change, edit `ui-playground/`, change the protected
+temporary workflow, or overwrite any prior user change. Do not commit.
+
+Use the existing implementation seams and preserve behavior, accessibility,
+state controls, persistence, and route coverage. A reviewer difference with
+an unknown slice or owner is an ownership failure; do not guess a file. Do not
+hide a mismatch with a screenshot condition, viewport-specific fork, fake
+data, fallback, alias, compatibility decoder, or test-only branch. If the
+repair belongs in a shared file, return the exact integration request and
+leave the shared file for the integration owner.
+
+Run real focused checks for the changed files and record command output. A
+skipped or unavailable check fails; use `-1` as the numeric exit code when a
+command could not start. Inspect the DiffBundle for only owned
+files, preserve prior work, and report each resolved or unresolved difference
+id. Set `passed` true only when every reported difference assigned to this
+slice is resolved, checks pass without skips, and no ownership violation is
+present. Set `loopIteration` to the supplied repair iteration.
+
+## Audit record
+
+{JSON.stringify(props.audit, null, 2)}
+
+## Existing slice
+
+{JSON.stringify(props.slice, null, 2)}
+
+## Latest reviewer differences for this slice
+
+{JSON.stringify(props.differences, null, 2)}
+
+REQUIRED OUTPUT:
+{props.schema}

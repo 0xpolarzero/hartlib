@@ -105,7 +105,10 @@ export function TabsTrigger({
       tabIndex={active ? 0 : -1}
       disabled={disabled}
       className={cn(
-        "relative -mb-px min-h-8 px-2.5 pb-2 pt-1.5 font-sans text-[13px] text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-45",
+        "relative -mb-px min-h-8 px-2.5 pb-2 pt-1.5 font-sans text-[13px] text-ink-2",
+        "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:text-ink",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "disabled:cursor-not-allowed disabled:text-ink-3 disabled:hover:text-ink-3",
         active &&
           "font-medium text-ink after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent",
         className,
@@ -140,7 +143,7 @@ export function TabsContent({
       id={`${ctx?.id ?? "tabs"}-panel-${suffix}`}
       aria-labelledby={`${ctx?.id ?? "tabs"}-tab-${suffix}`}
       tabIndex={0}
-      className={cn("pt-3", className)}
+      className={cn(className)}
       {...props}
     >
       {children}
@@ -172,7 +175,10 @@ export function Segmented<T extends string>({
     <div
       role="radiogroup"
       aria-label={ariaLabel}
-      className={cn("inline-flex rounded-tiny border border-line-2 bg-paper", className)}
+      className={cn(
+        "inline-flex select-none rounded-tiny border border-line-2 bg-paper",
+        className,
+      )}
       onKeyDown={(e) => {
         const idx = refs.current.indexOf(document.activeElement as HTMLButtonElement);
         if (idx < 0) return;
@@ -204,9 +210,12 @@ export function Segmented<T extends string>({
             tabIndex={selected ? 0 : -1}
             aria-label={option["aria-label"]}
             className={cn(
-              "border-r border-line-2 px-2.5 font-sans font-medium text-ink-2 last:border-r-0 first:rounded-l-tiny last:rounded-r-tiny hover:bg-paper-deep hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
+              "min-w-0 whitespace-nowrap border-r border-line-2 px-2.5 font-sans font-medium text-ink-2 first:rounded-l-tiny last:rounded-r-tiny",
+              "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
               size === "sm" ? "h-6 text-[11.5px]" : "h-7 text-[12.5px]",
-              selected && "bg-ink text-paper hover:bg-ink",
+              "last:border-r-0",
+              selected ? "bg-ink text-paper" : "hover:bg-paper-deep hover:text-ink",
+              "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
             )}
             onClick={() => onChange(option.value)}
           >

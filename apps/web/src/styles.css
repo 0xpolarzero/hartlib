@@ -35,3 +35,8 @@ select {
 ::selection {
   background: var(--color-accent-soft);
 }
+
+/* The client workspace owns its compact selector and starts below the shell. */
+[data-app-shell][data-shell-view="client"] > main > div:first-child:has(> div > h2) {
+  display: none;
+}

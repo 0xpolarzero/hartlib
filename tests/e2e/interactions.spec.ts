@@ -49,9 +49,9 @@ test.describe("reachable client interactions", () => {
     await visualization.click();
     await expect(visualization).toHaveAttribute("aria-checked", "true");
     await expect(
-      page
-        .locator("p:visible")
-        .filter({ hasText: /Aucune visualisation pour le moment|No visualization yet/u }),
+      page.locator("p:visible").filter({
+        hasText: /Le panneau attend sa première réponse|The pane awaits its first answer/u,
+      }),
     ).toBeVisible();
 
     const conversation = page.getByRole("radio", { name: /Conversation/u }).last();

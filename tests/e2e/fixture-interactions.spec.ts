@@ -15,17 +15,24 @@ test.beforeAll(async () => {
     stdin: {
       contents: `
         import { createRoot } from "react-dom/client";
-        import { PublisherFixture } from "./apps/web/src/fixtures/publisher.fixture.tsx";
+        import {
+          PublisherFixture,
+          PublisherStateFixture,
+        } from "./apps/web/src/fixtures/publisher.fixture.tsx";
         import { VisualizationFixture } from "./apps/web/src/fixtures/visualization.fixture.tsx";
         const events = [];
         window.__hartlibFixtureEvents = events;
         const record = (event) => events.push(event);
-        createRoot(document.getElementById("root")).render(
+        const fixtureRoot = createRoot(document.getElementById("root"));
+        fixtureRoot.render(
           <>
             <PublisherFixture onEvent={record} />
             <VisualizationFixture onEvent={record} />
           </>,
         );
+        window.__mountPublisherStateFixture = () => {
+          fixtureRoot.render(<PublisherStateFixture onEvent={record} />);
+        };
       `,
       loader: "tsx",
       resolveDir: process.cwd(),
@@ -39,6 +46,7 @@ test.beforeAll(async () => {
 declare global {
   interface Window {
     __hartlibFixtureEvents?: string[];
+    __mountPublisherStateFixture?: () => void;
   }
 }
 
@@ -196,6 +204,190 @@ test("dormant fixture actions execute through hydrated React components", async 
       "viz.download:viz-v1",
       "viz.fullscreen",
       "viz.show:message-42",
+    ]),
+  );
+});
+
+test("dormant publisher state fixture reaches every table, wizard, settings, and gallery state", async ({
+  page,
+}) => {
+  await page.setContent('<div id="root"></div>');
+  await page.addScriptTag({ content: fixtureBundle });
+  await page.evaluate(() => window.__mountPublisherStateFixture?.());
+
+  const fixture = page.getByTestId("publisher-state-fixture");
+  await expect(fixture).toBeVisible();
+  const fixtureAxe = await new AxeBuilder({ page })
+    .include('[data-testid="publisher-state-fixture"]')
+    .analyze();
+  expect(fixtureAxe.violations).toEqual([]);
+  const tabs = fixture.getByRole("tab");
+  await expect(tabs).toHaveCount(7);
+
+  const tableCases = [
+    { tab: "Sources", label: "Sources demo state", table: "Sources", empty: "No sources" },
+    {
+      tab: "Publications",
+      label: "Publications demo state",
+      table: "Publications",
+      empty: "No publications",
+    },
+    {
+      tab: "Documents",
+      label: "Documents demo state",
+      table: "Documents",
+      empty: "No documents",
+    },
+    {
+      tab: "Subscribers",
+      label: "Subscribers demo state",
+      table: "Subscribers",
+      empty: "No subscribers",
+    },
+  ] as const;
+
+  for (const entry of tableCases) {
+    await tabs.filter({ hasText: entry.tab }).click();
+    const panel = fixture.getByRole("tabpanel");
+    const state = panel.getByRole("combobox", { name: entry.label });
+    const table = panel.getByRole("table", { name: entry.table });
+    await expect(table).toBeVisible();
+
+    await state.selectOption("loading");
+    await expect.poll(() => panel.locator(".animate-pulse-soft").count()).toBeGreaterThan(0);
+    await state.selectOption("empty");
+    await expect(panel.getByText(entry.empty, { exact: true })).toBeVisible();
+    await state.selectOption("error");
+    await expect(panel.getByRole("alert")).toBeVisible();
+    await panel.getByRole("button", { name: "Retry" }).click();
+    await expect(table).toBeVisible();
+
+    const facet = panel.locator("details").first();
+    if (await facet.count()) {
+      await facet.locator("summary").click();
+      const facetOption = facet.getByRole("checkbox").first();
+      await facetOption.click();
+      await facetOption.click();
+    }
+    await panel.getByRole("button", { name: "Columns" }).click();
+    await expect(panel.getByRole("checkbox").first()).toBeVisible();
+    await panel.getByRole("button", { name: "Columns" }).click();
+
+    if (entry.tab === "Documents") {
+      await panel.getByLabel("Drop PDF files here or choose files").setInputFiles({
+        name: "fixture-document.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from("%PDF-1.7"),
+      });
+      await expect(panel.getByText("fixture-document.pdf", { exact: true })).toBeVisible();
+    }
+    if (entry.tab === "Subscribers") {
+      await panel.getByRole("button", { name: "Add subscriber" }).click();
+      await panel.getByLabel("Email").fill("fixture@northstar.example");
+      await panel.getByLabel("Company").fill("Northstar Research");
+      await panel.getByRole("button", { name: "Add", exact: true }).click();
+    }
+
+    const search = panel.getByRole("searchbox");
+    await search.fill("does-not-exist");
+    await expect(panel.getByText("No matching rows", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Clear filters" }).click();
+    await expect(table).toBeVisible();
+  }
+
+  await tabs.filter({ hasText: "Publications" }).click();
+  const publicationPanel = fixture.getByRole("tabpanel");
+  await publicationPanel.getByRole("button", { name: "Open immutable publication dialog" }).click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.getByRole("button", { name: "Acknowledge" }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+
+  await tabs.filter({ hasText: "Issue wizard" }).click();
+  const issuePanel = fixture.getByRole("tabpanel");
+  await expect(issuePanel.getByText("Enter a title.", { exact: true })).toBeVisible();
+  await issuePanel.getByLabel("Sources").selectOption("");
+  await issuePanel.getByLabel("Sources").blur();
+  await expect(issuePanel.getByText("Choose a source.", { exact: true })).toBeVisible();
+  await issuePanel.getByLabel("Issue title").fill("A complete issue");
+  await issuePanel.getByLabel("Sources").selectOption("src-atlas-energy");
+  await issuePanel.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(issuePanel.getByText("Attach the official documents for this issue.")).toBeVisible();
+  await issuePanel.getByLabel("Drop PDF files here or choose files").setInputFiles({
+    name: "fixture-issue.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.7"),
+  });
+  await expect(
+    issuePanel.getByLabel("Uploaded files").getByText("fixture-issue.pdf", { exact: true }),
+  ).toBeVisible();
+  await issuePanel.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(issuePanel.getByText("Write a short summary.", { exact: true })).toBeVisible();
+  await issuePanel.getByLabel("Summary").fill("A summary that is long enough for the fixture.");
+  await issuePanel.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(issuePanel.getByText("Preview before publishing", { exact: true })).toBeVisible();
+  await issuePanel.getByRole("combobox", { name: "Issue status" }).selectOption("saving");
+  await expect(issuePanel.getByRole("button", { name: "Publish" })).toBeDisabled();
+  await issuePanel.getByRole("combobox", { name: "Issue status" }).selectOption("error");
+  await expect(issuePanel.getByRole("alert")).toContainText("Unable to publish this issue.");
+  await issuePanel.getByRole("combobox", { name: "Issue status" }).selectOption("published");
+  await expect(issuePanel.getByText("Published", { exact: true })).toBeVisible();
+
+  await tabs.filter({ hasText: "Settings" }).click();
+  const settingsPanel = fixture.getByRole("tabpanel");
+  const language = settingsPanel.locator('button[aria-haspopup="listbox"]').first();
+  await language.click();
+  await page.getByRole("option", { name: "French" }).click();
+  await settingsPanel.getByRole("switch").click();
+  await settingsPanel.getByRole("button", { name: "Save settings" }).click();
+  await expect(settingsPanel.getByRole("button", { name: "Save settings" })).toBeDisabled();
+  await expect(settingsPanel.getByRole("status")).toContainText("Saved");
+
+  await tabs.filter({ hasText: "Gallery" }).click();
+  const gallery = fixture.getByTestId("gallery-fixture");
+  await gallery.getByRole("combobox", { name: "Gallery commands" }).fill("open");
+  await gallery.getByRole("option", { name: "Open source" }).click();
+  const gallerySource = gallery.getByRole("combobox", { name: "Gallery source" });
+  await gallerySource.focus();
+  const gallerySourceList = gallery.getByRole("listbox", { name: "Gallery source" });
+  await expect(gallerySourceList).toBeVisible();
+  await expect(gallerySourceList.getByRole("option", { name: "Northstar Research" })).toBeVisible();
+  await gallerySourceList.getByRole("option", { name: "Northstar Research" }).click();
+  await expect(gallerySource).toHaveValue("Northstar Research");
+  await gallery.getByRole("button", { name: "Open dialog" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await gallery.getByRole("button", { name: "Open alert" }).click();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
+  await page.getByRole("button", { name: "Acknowledge" }).click();
+  await gallery.getByRole("button", { name: "Open sheet" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await gallery.getByRole("button", { name: "Open popover" }).click();
+  await expect(gallery.getByText("Popover content.")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await gallery.getByRole("button", { name: "Open menu" }).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await gallery.getByRole("button", { name: "Hover details" }).hover();
+  await expect(gallery.getByText("Citation details.")).toBeVisible();
+  await gallery.getByRole("button", { name: "Show toast" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Gallery saved" })).toBeVisible();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "Gallery saved" })
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await gallery.getByRole("button", { name: "Gallery date" }).click();
+  await expect(gallery.getByRole("gridcell")).toHaveCount(42);
+
+  expect(await events(page)).toEqual(
+    expect.arrayContaining([
+      "document.upload:fixture-document.pdf",
+      "subscriber.add:fixture@northstar.example",
+      "gallery.command:open-source",
+      "gallery.combobox:subscriber",
+      "settings.language:fr-FR",
     ]),
   );
 });

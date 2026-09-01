@@ -125,8 +125,12 @@ export function SelectTrigger({
       aria-haspopup="listbox"
       aria-expanded={ctx?.open ?? false}
       aria-controls={ctx?.contentId}
+      data-state={ctx?.open ? "open" : "closed"}
       className={cn(
-        "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left text-[13px] text-ink hover:border-ink-3 focus-visible:outline-2 focus-visible:outline-accent",
+        "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left font-sans text-[13px] text-ink",
+        "transition-colors duration-100 hover:border-ink-3 data-[state=open]:border-ink",
+        "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+        "disabled:cursor-not-allowed disabled:border-line disabled:bg-paper-deep/50 disabled:text-ink-2",
         className,
       )}
       onClick={(event) => {
@@ -197,6 +201,7 @@ export function SelectContent({
       role="listbox"
       aria-label={labelledBy === undefined ? label : undefined}
       aria-labelledby={labelledBy}
+      data-state="open"
       tabIndex={-1}
       className={cn(
         "absolute z-50 mt-1 max-h-72 min-w-full overflow-y-auto rounded-tiny border border-line-2 bg-surface p-1 shadow-none animate-enter",
@@ -266,9 +271,11 @@ export function SelectItem({
       aria-selected={selected}
       tabIndex={-1}
       data-select-value={value}
+      data-highlighted={ctx?.activeValue === value ? "" : undefined}
       disabled={disabled}
       className={cn(
-        "flex min-h-7 w-full items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] hover:bg-paper-deep disabled:pointer-events-none disabled:opacity-45",
+        "flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left font-sans text-[13px] text-ink outline-none transition-colors duration-100",
+        "hover:bg-paper-deep data-[highlighted]:bg-paper-deep disabled:cursor-not-allowed disabled:pointer-events-none disabled:text-ink-3",
         selected && "font-medium",
         className,
       )}

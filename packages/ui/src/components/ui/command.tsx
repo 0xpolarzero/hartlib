@@ -216,7 +216,7 @@ export const CommandInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTM
       }
     };
     return (
-      <div className="flex items-center border-b border-line px-3.5">
+      <div className="flex items-center gap-2 border-b border-line px-3.5">
         <input
           ref={ref}
           role="combobox"
@@ -225,7 +225,7 @@ export const CommandInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTM
           aria-autocomplete="list"
           aria-activedescendant={context?.activeId ?? undefined}
           className={cn(
-            "h-11 w-full bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-2",
+            "h-11 w-full bg-transparent font-sans text-[14px] text-ink outline-none placeholder:text-ink-2 disabled:cursor-not-allowed disabled:opacity-50",
             className,
           )}
           {...props}
@@ -248,7 +248,7 @@ export function CommandList({ className, id, role, ...props }: HTMLAttributes<HT
     <div
       id={id ?? context?.listId}
       role={role ?? "listbox"}
-      className={cn("max-h-[min(60vh,26rem)] overflow-y-auto p-1.5", className)}
+      className={cn("max-h-[min(60vh,26rem)] overflow-y-auto overflow-x-hidden p-1.5", className)}
       {...props}
     />
   );
@@ -271,7 +271,12 @@ export function CommandGroup({
   ...props
 }: HTMLAttributes<HTMLDivElement> & { heading?: string }) {
   return (
-    <div role="group" aria-label={heading} className={cn("overflow-hidden", className)} {...props}>
+    <div
+      role="group"
+      aria-label={heading}
+      className={cn("overflow-hidden text-ink", className)}
+      {...props}
+    >
       {heading && (
         <span aria-hidden="true" className="caps-label block px-2 py-1.5 text-ink-2">
           {heading}
@@ -333,7 +338,9 @@ export const CommandItem = forwardRef<
         disabled={disabled}
         data-command-item-id={itemId}
         className={cn(
-          "flex min-h-8 w-full cursor-pointer select-none items-center gap-2.5 rounded-tiny px-2 py-1.5 text-left text-[13px] text-ink hover:bg-paper-deep disabled:pointer-events-none disabled:text-ink-3",
+          "flex min-h-8 w-full cursor-pointer select-none items-center gap-2.5 rounded-tiny px-2 py-1.5 text-left text-[13px] text-ink transition-colors duration-100",
+          "hover:bg-paper-deep disabled:pointer-events-none disabled:text-ink-3",
+          "[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-ink-2",
           context?.isActive(itemId) && "bg-paper-deep",
           className,
         )}

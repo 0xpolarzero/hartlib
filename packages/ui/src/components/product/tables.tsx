@@ -4,6 +4,13 @@ import { formatDate, formatNumber, uiMessage } from "../../lib/format";
 import { Badge, SectionHeader } from "../ui/atoms";
 import { Button } from "../ui/button";
 import { ConfirmingDeleteButton } from "../ui/confirming-delete-button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from "../ui/dialog";
 import { DataTable, type DataTableColumn, type DemoDataState } from "./data-table";
 import { FileUpload, type UploadedFile } from "../ui/file-upload";
 import { InlineEditableField } from "../ui/inline-editable-field";
@@ -242,6 +249,9 @@ export function PublicationsTable({
   onUndo,
   locale = "en-US",
 }: PublicationsTableProps) {
+  const [immutablePublication, setImmutablePublication] = useState<PublisherPublicationRow | null>(
+    null,
+  );
   const columns: DataTableColumn<PublisherPublicationRow>[] = [
     {
       accessorKey: "title",
@@ -281,8 +291,20 @@ export function PublicationsTable({
               {publicationStatusLabel(locale, row.original.status)}
             </Badge>
             {row.original.immutable && (
-              <span title={uiMessage(locale, "ui.immutablePublication")}>
-                <Check className="size-3 text-ok" aria-label={uiMessage(locale, "ui.immutable")} />
+              <span
+                role="button"
+                tabIndex={0}
+                title={uiMessage(locale, "ui.immutablePublication")}
+                aria-label={uiMessage(locale, "ui.immutable")}
+                onClick={() => setImmutablePublication(row.original)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setImmutablePublication(row.original);
+                  }
+                }}
+              >
+                <Check className="size-3 text-ok" aria-hidden="true" />
               </span>
             )}
           </span>
@@ -320,7 +342,21 @@ export function PublicationsTable({
             {uiMessage(locale, "ui.undo")}
           </Button>
         ) : row.original.immutable ? (
-          <Badge tone="outline">{uiMessage(locale, "ui.immutable")}</Badge>
+          <Badge
+            tone="outline"
+            role="button"
+            tabIndex={0}
+            aria-label={`${uiMessage(locale, "ui.immutablePublication")}: ${row.original.title}`}
+            onClick={() => setImmutablePublication(row.original)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setImmutablePublication(row.original);
+              }
+            }}
+          >
+            {uiMessage(locale, "ui.immutable")}
+          </Badge>
         ) : (
           <span className="flex items-center gap-1">
             {onOpen && (
@@ -356,26 +392,45 @@ export function PublicationsTable({
     },
   ];
   return (
-    <section aria-label={uiMessage(locale, "ui.publisherPublications")} className="grid gap-2">
-      <SectionHeader
-        kicker={uiMessage(locale, "ui.publisher")}
-        title={uiMessage(locale, "ui.publisherPublications")}
-        description={error ?? uiMessage(locale, "ui.publisherPublicationsDescription")}
-        count={rows.length}
-      />
-      <DataTable
-        ariaLabel={uiMessage(locale, "ui.publisherPublications")}
-        columns={columns}
-        data={rows}
-        demoState={state}
+    <>
+      <section aria-label={uiMessage(locale, "ui.publisherPublications")} className="grid gap-2">
+        <SectionHeader
+          kicker={uiMessage(locale, "ui.publisher")}
+          title={uiMessage(locale, "ui.publisherPublications")}
+          description={error ?? uiMessage(locale, "ui.publisherPublicationsDescription")}
+          count={rows.length}
+        />
+        <DataTable
+          ariaLabel={uiMessage(locale, "ui.publisherPublications")}
+          columns={columns}
+          data={rows}
+          demoState={state}
+          locale={locale}
+          {...(onRetry === undefined ? {} : { onRetry })}
+          emptyTitle={uiMessage(locale, "ui.noPublisherPublications")}
+          emptyDescription={uiMessage(locale, "ui.publicationRowsEmpty")}
+          facets={["status"]}
+          stickyHeader
+        />
+      </section>
+      <AlertDialog
+        open={immutablePublication !== null}
+        onOpenChange={(open) => {
+          if (!open) setImmutablePublication(null);
+        }}
         locale={locale}
-        {...(onRetry === undefined ? {} : { onRetry })}
-        emptyTitle={uiMessage(locale, "ui.noPublisherPublications")}
-        emptyDescription={uiMessage(locale, "ui.publicationRowsEmpty")}
-        facets={["status"]}
-        stickyHeader
-      />
-    </section>
+      >
+        <AlertDialogContent hideClose>
+          <AlertDialogTitle>{uiMessage(locale, "ui.immutablePublication")}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {immutablePublication?.title ?? uiMessage(locale, "ui.immutable")}
+          </AlertDialogDescription>
+          <div className="mt-4 flex justify-end">
+            <AlertDialogAction>{uiMessage(locale, "ui.close")}</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 

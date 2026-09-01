@@ -6,7 +6,7 @@ import { useAnnounce } from "../../lib/announce";
 import { AutoTextarea } from "./controls";
 
 export const editableFieldChromeClass =
-  "rounded-tiny border border-line-2 bg-paper/35 outline-none hover:border-ink-3 focus:border-ink focus:ring-2 focus:ring-accent/20";
+  "rounded-tiny border border-line-2 bg-surface outline-none transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-ink-3 focus-visible:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
 
 export type InlineEditableFieldProps = {
   value: string;
@@ -115,7 +115,6 @@ export function InlineEditableField({
         className={cn(
           "animate-enter-fade w-full",
           large && "min-h-24 border-b-2 border-b-accent bg-surface p-2",
-          editableFieldChromeClass,
         )}
       />
       {large && (

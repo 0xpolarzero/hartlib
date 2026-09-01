@@ -123,7 +123,7 @@ export function Combobox({
             setOpen(false);
           }
         }}
-        className="h-7 w-full rounded-tiny border border-line-2 bg-surface pl-7 pr-8 text-[13px] text-ink placeholder:text-ink-2/80 focus-visible:outline-2 focus-visible:outline-accent"
+        className="h-7 w-full rounded-tiny border border-line-2 bg-surface pl-7 pr-2.5 font-sans text-[13px] text-ink placeholder:text-ink-2/80 transition-colors duration-100 hover:border-ink-3 focus-visible:border-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       />
       {loading && (
         <Loader2
@@ -136,10 +136,10 @@ export function Combobox({
           id={id}
           role="listbox"
           aria-label={ariaLabel}
-          className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-tiny border border-line-2 bg-surface p-1 animate-enter"
+          className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-tiny border border-line-2 bg-surface py-1 animate-enter"
         >
           {options.length === 0 && !loading && (
-            <li role="presentation" className="px-2 py-2 text-[12px] text-ink-2">
+            <li role="presentation" className="px-2.5 py-2 text-[12.5px] text-ink-2">
               {uiMessage(locale, "ui.noResults")}
             </li>
           )}
@@ -157,17 +157,17 @@ export function Combobox({
                 close();
               }}
               className={cn(
-                "flex min-h-7 cursor-pointer items-center justify-between gap-3 rounded-tiny px-2 py-1 text-[13px]",
-                index === active && "bg-paper-deep",
+                "flex min-h-7 cursor-pointer items-center justify-between gap-3 px-2.5 py-1 text-[13px]",
+                index === active ? "bg-paper-deep" : "bg-transparent",
               )}
             >
               {renderOption ? (
                 renderOption(option)
               ) : (
-                <span className="truncate">{option.label}</span>
+                <span className="truncate text-ink">{option.label}</span>
               )}
               {option.hint && (
-                <span className="font-mono text-[11px] text-ink-2">{option.hint}</span>
+                <span className="shrink-0 font-mono text-[11px] text-ink-2">{option.hint}</span>
               )}
             </li>
           ))}

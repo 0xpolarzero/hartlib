@@ -57,6 +57,7 @@ export function ConfirmingDeleteButton({
             ref={(node) => node?.focus()}
             variant="destructive"
             size="sm"
+            className="animate-enter-fade"
             aria-label={resolvedConfirmLabel}
             onClick={() => {
               setArmed(false);
@@ -88,7 +89,7 @@ export function ConfirmingDeleteButton({
           size={size}
           aria-label={label ?? resolvedIdleLabel}
           title={label ?? resolvedIdleLabel}
-          className="text-danger hover:text-danger"
+          className="text-danger hover:text-danger hover:decoration-danger/40"
           onClick={() => setArmed(true)}
         >
           <Trash2 className="size-3.5" />

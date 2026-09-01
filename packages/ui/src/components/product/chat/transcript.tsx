@@ -12,7 +12,7 @@ import { useAnnounce } from "../../../lib/announce";
 import { cn } from "../../../lib/utils";
 import { uiMessage } from "../../../lib/format";
 import { Button } from "../../ui/button";
-import { EmptyState, ErrorState } from "../../ui/states";
+import { ErrorState } from "../../ui/states";
 import { AssistantMessage, FailureBlock, UserMessage } from "./message";
 import { RunRail, RunStatusLine } from "./run-rail";
 import { AnswerBody, type CopyAdapter } from "./markdown";
@@ -256,31 +256,36 @@ export function Transcript({
     return (
       <div
         className={cn(
-          "flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10",
+          "flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-10",
           className,
         )}
         data-testid="chat-transcript"
       >
-        <Sparkles className="size-4 text-accent" aria-hidden="true" />
-        <EmptyState
-          title={resolvedEmptyTitle}
-          description={resolvedEmptyDescription}
-          className="pb-2 pt-3"
-        />
-        {suggestions.length > 0 && (
-          <div className="mt-2 grid w-full max-w-md gap-1.5">
-            {suggestions.map((suggestion) => (
-              <Button
-                key={suggestion}
-                variant="secondary"
-                className="justify-start text-left font-normal"
-                onClick={() => onSuggestion?.(suggestion)}
-              >
-                {suggestion}
-              </Button>
-            ))}
-          </div>
-        )}
+        <div className="w-full max-w-md animate-enter text-center">
+          <Sparkles className="mx-auto size-4 text-accent" aria-hidden="true" />
+          <h2 className="mt-3 font-display text-[22px] font-medium leading-tight text-ink">
+            {resolvedEmptyTitle}
+          </h2>
+          {resolvedEmptyDescription && (
+            <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-2">
+              {resolvedEmptyDescription}
+            </p>
+          )}
+          {suggestions.length > 0 && (
+            <div className="mt-5 grid gap-1.5 text-left">
+              {suggestions.map((suggestion) => (
+                <Button
+                  key={suggestion}
+                  variant="secondary"
+                  className="justify-start text-left font-normal"
+                  onClick={() => onSuggestion?.(suggestion)}
+                >
+                  {suggestion}
+                </Button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     );
   const renderItem = (message: ChatTranscriptMessage, index: number) => {

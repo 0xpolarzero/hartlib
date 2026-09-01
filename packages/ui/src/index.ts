@@ -63,6 +63,13 @@ export {
   type SubscribersTableProps,
 } from "./components/product/tables";
 export {
+  PublisherComposition,
+  PUBLISHER_COMPOSITION_TABS,
+  type DormantPublisherCompositionProps,
+  type PublisherCompositionProps,
+  type PublisherCompositionTab,
+} from "./components/product/publisher";
+export {
   CitationChip,
   CitationProvider,
   ClaimSpan,

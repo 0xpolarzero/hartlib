@@ -4,14 +4,17 @@ import { Badge, Card, CardBody, CardHeader, CardTitle } from "../ui/atoms";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/controls";
 import { Breadcrumbs, type BreadcrumbItem } from "../ui/breadcrumbs";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "../ui/select";
 import { DataTable, type DataTableColumn, type DemoDataState } from "./data-table";
 import { formatDate, uiMessage } from "../../lib/format";
+
+export type SubscriptionSourceKind = "public" | "invitation" | "publisher";
 
 export interface SubscriptionSource {
   id: string;
   name: string;
   description?: string;
-  kind?: "public";
+  kind?: SubscriptionSourceKind;
   country?: string;
   enabled?: boolean;
   subscribedSince?: string | null;
@@ -22,13 +25,27 @@ export interface SubscriptionSource {
 export interface SubscriptionPublication {
   id: string;
   sourceId: string;
-  sourceKind?: "public";
+  sourceKind?: SubscriptionSourceKind;
   title: string;
   publicationDate?: string | null;
   status?: "published";
   summary?: string;
   documents?: readonly SubscriptionDocument[];
 }
+
+const sourceKindLabel = (locale: string, kind: SubscriptionSource["kind"]): string =>
+  kind === "invitation"
+    ? locale.startsWith("fr")
+      ? "Sur invitation"
+      : "By invitation"
+    : kind === "publisher"
+      ? uiMessage(locale, "ui.sourceKindPublisher")
+      : uiMessage(locale, "ui.sourceKindPublic");
+
+const subscriptionsTableClassName =
+  "subscriptions-list-table [&_table]:table-fixed [&_table]:w-full [&_th:nth-child(2)]:whitespace-nowrap [&_td:nth-child(2)]:whitespace-nowrap [&_th:nth-child(3)]:w-28 [&_th:nth-child(3)]:max-w-28 [&_td:nth-child(3)]:w-28 [&_td:nth-child(3)]:max-w-28 [&_td:nth-child(3)]:pl-2 [&_th:nth-child(4)]:w-[4.75rem] [&_th:nth-child(4)]:max-w-[4.75rem] [&_td:nth-child(4)]:w-[4.75rem] [&_td:nth-child(4)]:max-w-[4.75rem] [&_td:nth-child(4)]:pr-1 [&_th:nth-child(4)_button]:underline [&_th:nth-child(4)_button]:decoration-dotted [&_th:nth-child(4)_button]:underline-offset-2";
+const subscriptionPublicationsTableClassName =
+  "subscription-publications-table [&_table]:table-fixed [&_table]:w-full [&_th:nth-child(2)]:w-28 [&_th:nth-child(2)]:max-w-28 [&_td:nth-child(2)]:w-28 [&_td:nth-child(2)]:max-w-28 [&_th:nth-child(3)]:w-20 [&_th:nth-child(3)]:max-w-20 [&_td:nth-child(3)]:w-20 [&_td:nth-child(3)]:max-w-20 [&_th:nth-child(4)]:w-[4.75rem] [&_th:nth-child(4)]:max-w-[4.75rem] [&_td:nth-child(4)]:w-[4.75rem] [&_td:nth-child(4)]:max-w-[4.75rem] [&_td:nth-child(4)]:pr-1";
 export interface SubscriptionDocument {
   id: string;
   title: string;
@@ -38,6 +55,7 @@ export interface SubscriptionDocument {
   state?: "ready" | "loading" | "missing" | "error";
   error?: string | null;
 }
+
 export interface SubscriberSubscriptionsProps {
   sources?: readonly SubscriptionSource[];
   publications?: readonly SubscriptionPublication[];
@@ -145,6 +163,7 @@ function SubscriptionsTable({
 }) {
   const pending = useRef(new Set<string>());
   const [, rerender] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
   const columns = useMemo<DataTableColumn<SubscriptionSource>[]>(
     () => [
       {
@@ -153,7 +172,9 @@ function SubscriptionsTable({
         cell: ({ row }) => (
           <button
             type="button"
-            className="truncate text-left font-medium underline-offset-2 hover:underline"
+            className="block min-w-0 max-w-full truncate text-left text-[13px] font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            title={row.original.name}
+            aria-label={row.original.name}
             onClick={() => onSelectSource?.(row.original.id)}
           >
             {row.original.name}
@@ -163,7 +184,18 @@ function SubscriptionsTable({
       {
         accessorKey: "kind",
         header: uiMessage(locale, "column.type"),
-        cell: () => <Badge tone="outline">{uiMessage(locale, "ui.sourceKindPublic")}</Badge>,
+        sortable: false,
+        cell: ({ row }) => (
+          <Badge
+            tone={
+              row.original.kind === "publisher" || row.original.kind === "invitation"
+                ? "accent"
+                : "outline"
+            }
+          >
+            {sourceKindLabel(locale, row.original.kind)}
+          </Badge>
+        ),
       },
       {
         accessorKey: "latestPublicationDate",
@@ -181,7 +213,10 @@ function SubscriptionsTable({
           const enabled = row.original.enabled ?? false;
           const busy = pending.current.has(row.original.id);
           return (
-            <span className="inline-flex items-center gap-2">
+            <span
+              className="inline-flex items-center gap-2"
+              onClick={(event) => event.stopPropagation()}
+            >
               <Switch
                 checked={enabled}
                 disabled={busy || onToggle === undefined}
@@ -221,22 +256,40 @@ function SubscriptionsTable({
     [locale, onSelectSource, onToggle],
   );
   return (
-    <section aria-label={uiMessage(locale, "ui.subscriptions")} className="grid gap-2">
-      <p className="text-[12px] leading-relaxed text-ink-2">
-        {uiMessage(locale, "ui.subscriptionsDescription")}
-      </p>
-      <DataTable
-        ariaLabel={uiMessage(locale, "ui.subscriptions")}
-        columns={columns}
-        data={sources}
-        demoState={state}
-        locale={locale}
-        {...(onRetry === undefined ? {} : { onRetry })}
-        facets={["kind", "enabled"]}
-        emptyTitle={uiMessage(locale, "ui.noSubscriptions")}
-        emptyDescription={uiMessage(locale, "ui.noAuthorizedPublicSource")}
-        stickyHeader
-      />
+    <section aria-labelledby="subscriptions-heading" className="grid gap-2">
+      <div>
+        <h2 id="subscriptions-heading" className="font-display text-[18px] font-medium">
+          {uiMessage(locale, "ui.subscriptions")}
+        </h2>
+        <p className="mt-1 text-[12px] leading-relaxed text-ink-2">
+          {uiMessage(locale, "ui.subscriptionsDescription")}
+        </p>
+      </div>
+      <div className="relative">
+        <DataTable
+          key={pageSize}
+          ariaLabel={uiMessage(locale, "ui.subscriptions")}
+          columns={columns}
+          data={sources}
+          demoState={state}
+          className={subscriptionsTableClassName}
+          locale={locale}
+          pageSize={pageSize}
+          {...(onRetry === undefined ? {} : { onRetry })}
+          facets={["kind", "enabled"]}
+          facetLabel={(columnId, value) =>
+            columnId === "kind" ? sourceKindLabel(locale, value as SubscriptionSourceKind) : value
+          }
+          emptyTitle={uiMessage(locale, "ui.noSubscriptions")}
+          emptyDescription={uiMessage(locale, "ui.noAuthorizedPublicSource")}
+          stickyHeader
+        />
+        {state === "data" && sources.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end pr-20 sm:pr-24">
+            <SubscriptionPageSizeSelect locale={locale} value={pageSize} onChange={setPageSize} />
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -256,6 +309,7 @@ function SourcePublicationsTable({
   onRetry?: () => void;
   onSelectIssue?: (id: string) => void;
 }) {
+  const [pageSize, setPageSize] = useState(10);
   const columns: DataTableColumn<SubscriptionPublication>[] = [
     {
       accessorKey: "title",
@@ -263,7 +317,9 @@ function SourcePublicationsTable({
       cell: ({ row }) => (
         <button
           type="button"
-          className="truncate text-left underline-offset-2 hover:underline"
+          className="block min-w-0 max-w-full truncate text-left text-[13px] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          title={row.original.title}
+          aria-label={row.original.title}
           onClick={() => onSelectIssue?.(row.original.id)}
         >
           {row.original.title}
@@ -308,18 +364,57 @@ function SourcePublicationsTable({
         {uiMessage(locale, "ui.publisherPublications")}
       </h2>
       <p className="text-[12px] text-ink-2">{source.name}</p>
-      <DataTable
-        ariaLabel={uiMessage(locale, "ui.publisherPublications")}
-        columns={columns}
-        data={publications}
-        demoState={state}
-        locale={locale}
-        {...(onRetry === undefined ? {} : { onRetry })}
-        emptyTitle={uiMessage(locale, "ui.noPublisherPublications")}
-        emptyDescription={uiMessage(locale, "ui.noPublicationIngested")}
-        stickyHeader
-      />
+      <div className="relative">
+        <DataTable
+          key={pageSize}
+          ariaLabel={uiMessage(locale, "ui.publisherPublications")}
+          columns={columns}
+          data={publications}
+          demoState={state}
+          className={subscriptionPublicationsTableClassName}
+          locale={locale}
+          {...(onRetry === undefined ? {} : { onRetry })}
+          pageSize={pageSize}
+          emptyTitle={uiMessage(locale, "ui.noPublisherPublications")}
+          emptyDescription={uiMessage(locale, "ui.noPublicationIngested")}
+          stickyHeader
+        />
+        {state === "data" && publications.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-end pr-20 sm:pr-24">
+            <SubscriptionPageSizeSelect locale={locale} value={pageSize} onChange={setPageSize} />
+          </div>
+        )}
+      </div>
     </section>
+  );
+}
+
+function SubscriptionPageSizeSelect({
+  locale,
+  value,
+  onChange,
+}: {
+  locale: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const label = locale.startsWith("fr") ? "Lignes par page" : "Rows per page";
+  return (
+    <Select value={String(value)} onValueChange={(next) => onChange(Number(next))}>
+      <SelectTrigger
+        className="pointer-events-auto h-6 w-24 shrink-0 whitespace-nowrap px-2"
+        aria-label={label}
+      >
+        <span>{value} / page</span>
+      </SelectTrigger>
+      <SelectContent>
+        {[10, 25, 50].map((size) => (
+          <SelectItem key={size} value={String(size)}>
+            {size} / page
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

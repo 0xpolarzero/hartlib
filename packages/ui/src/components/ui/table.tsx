@@ -20,7 +20,16 @@ export function THead({
   sticky,
   ...props
 }: HTMLAttributes<HTMLTableSectionElement> & { sticky?: boolean }) {
-  return <thead className={cn("bg-paper", sticky && "sticky top-0 z-10", className)} {...props} />;
+  return (
+    <thead
+      className={cn(
+        "bg-paper",
+        sticky && "sticky top-0 z-10 [&_th]:shadow-[inset_0_-1px_0_0_var(--color-line-2)]",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 export const TBody = forwardRef<HTMLTableSectionElement, HTMLAttributes<HTMLTableSectionElement>>(
   ({ className, ...props }, ref) => <tbody ref={ref} className={className} {...props} />,
@@ -37,7 +46,8 @@ export const Tr = forwardRef<HTMLTableRowElement, HTMLAttributes<HTMLTableRowEle
     <tr
       ref={ref}
       className={cn(
-        "transition-colors duration-100 hover:bg-paper-deep/50 data-[selected=true]:bg-accent/5",
+        "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)]",
+        "hover:bg-paper-deep/50 data-[selected=true]:bg-accent/6",
         className,
       )}
       {...props}
@@ -94,16 +104,19 @@ export function SortableTh({
     >
       <button
         type="button"
-        className="caps-label flex h-8 w-full items-center gap-1 pr-3 text-left text-ink-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-3px] focus-visible:outline-accent"
+        className="caps-label flex h-8 w-full items-center gap-1 pl-0 pr-3 text-left text-ink-2 transition-colors duration-100 hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-accent"
         onClick={(event) => (event.shiftKey && onSortShift ? onSortShift() : onSort())}
       >
         {children}
         {direction === "asc" ? (
-          <ArrowUp className="size-3 text-accent" aria-hidden="true" />
+          <ArrowUp className="size-3 shrink-0 text-accent" aria-hidden="true" />
         ) : direction === "desc" ? (
-          <ArrowDown className="size-3 text-accent" aria-hidden="true" />
+          <ArrowDown className="size-3 shrink-0 text-accent" aria-hidden="true" />
         ) : (
-          <ArrowUpDown className="size-3 opacity-40" aria-hidden="true" />
+          <ArrowUpDown
+            className="size-3 shrink-0 opacity-0 transition-opacity duration-100 group-hover:opacity-60"
+            aria-hidden="true"
+          />
         )}
         {sortRank && sortRank > 1 ? (
           <span className="font-mono text-[9px] text-accent">{sortRank}</span>

@@ -24,12 +24,12 @@ export function SheetContent({
     <DialogContent
       hideClose
       className={cn(
-        "inset-y-0 top-0 h-full max-h-none w-[min(92vw,26rem)] translate-x-0 rounded-none",
+        "inset-y-0 top-0 z-50 flex h-full max-h-none translate-x-0 rounded-none border-line-2 bg-surface shadow-none",
         side === "left"
-          ? "left-0 border-r"
+          ? "left-0 w-[min(92vw,24rem)] border-r"
           : side === "bottom"
-            ? "bottom-0 left-0 top-auto h-auto w-full"
-            : "right-0 left-auto",
+            ? "inset-x-0 bottom-0 top-auto max-h-[85vh] h-auto w-full rounded-t-0 border-t"
+            : "right-0 left-auto w-[min(92vw,26rem)] border-l",
         className,
       )}
       {...props}
@@ -37,7 +37,7 @@ export function SheetContent({
       {children}
       <DialogClose
         aria-label={uiMessage(locale, "ui.close")}
-        className="absolute right-2.5 top-2.5 flex size-6 items-center justify-center rounded-tiny text-ink-2 hover:bg-paper-deep"
+        className="absolute right-2.5 top-2.5 flex size-6 items-center justify-center rounded-tiny text-ink-2 transition-colors duration-100 hover:bg-paper-deep hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <X className="size-3.5" />
       </DialogClose>

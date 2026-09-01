@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Check, TriangleAlert, X } from "lucide-react";
+import { Check, RotateCcw, TriangleAlert, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { uiMessage } from "../../lib/format";
 export interface ToastSpec {
@@ -53,14 +53,15 @@ export function ToastProvider({
       <div
         role="region"
         aria-label={uiMessage(locale, "ui.notifications")}
-        className="fixed bottom-4 right-4 z-[70] flex max-w-[min(92vw,22rem)] flex-col gap-2"
+        className="fixed bottom-4 right-4 z-[70] flex flex-col gap-2 outline-none"
       >
         {toasts.map((item) => (
           <div
             key={item.id}
             role={item.tone === "error" ? "alert" : "status"}
             className={cn(
-              "grid grid-cols-[auto_1fr_auto] items-start gap-2.5 rounded-tiny border bg-surface px-3 py-2.5",
+              "pointer-events-auto grid w-[min(92vw,22rem)] grid-cols-[auto_1fr_auto] items-start gap-2.5 rounded-tiny border bg-surface px-3 py-2.5",
+              "animate-enter",
               item.tone === "error" ? "border-danger/40" : "border-line-2",
             )}
           >
@@ -74,17 +75,20 @@ export function ToastProvider({
               )}
             </span>
             <div>
-              <p className="text-[13px] font-medium">{item.title}</p>
-              {item.description && <p className="text-[12px] text-ink-2">{item.description}</p>}
+              <p className="text-[13px] font-medium text-ink">{item.title}</p>
+              {item.description && (
+                <p className="mt-0.5 text-[12px] leading-snug text-ink-2">{item.description}</p>
+              )}
               {item.undo && (
                 <button
                   type="button"
-                  className="mt-1 text-[12px] underline"
+                  className="mt-1.5 inline-flex h-6 items-center gap-1 rounded-tiny border border-line-2 bg-transparent px-2 text-[12px] font-medium text-ink transition-colors duration-100 hover:border-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                   onClick={() => {
                     item.undo?.onUndo();
                     dismiss(item.id);
                   }}
                 >
+                  <RotateCcw className="size-3" aria-hidden="true" />
                   {item.undo.label}
                 </button>
               )}
@@ -93,6 +97,7 @@ export function ToastProvider({
               type="button"
               aria-label={uiMessage(locale, "ui.close")}
               onClick={() => dismiss(item.id)}
+              className="flex size-5 items-center justify-center rounded-tiny text-ink-2 transition-colors duration-100 hover:bg-paper-deep hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               <X className="size-3" />
             </button>

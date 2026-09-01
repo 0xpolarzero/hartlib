@@ -184,48 +184,11 @@ export function DataTable<T extends { id: string }>({
       return next;
     });
 
-  if (demoState === "loading")
-    return (
-      <div className={cn("grid gap-2", className)}>
-        <TableScroll className="max-h-[540px] overflow-y-auto">
-          <Table aria-label={ariaLabel}>
-            <THead {...sticky}>
-              <tr>
-                {columns.map((column) => (
-                  <Th key={columnId(column)}>{column.header}</Th>
-                ))}
-              </tr>
-            </THead>
-            <TBody>
-              <TableSkeleton cols={columns.length} />
-            </TBody>
-          </Table>
-        </TableScroll>
-      </div>
-    );
-  if (demoState === "error")
-    return (
-      <div className={cn("rounded-tiny border border-line", className)}>
-        <ErrorState
-          title={uiMessage(locale, "ui.error")}
-          description={uiMessage(locale, "ui.tryAgain")}
-          retryLabel={uiMessage(locale, "ui.retry")}
-          {...(onRetry === undefined ? {} : { onRetry })}
-        />
-      </div>
-    );
-  if (
-    demoState === "empty" ||
-    (filtered.length === 0 && !query && facets.every((id) => (filters[id] ?? []).length === 0))
-  )
-    return (
-      <div className={cn("rounded-tiny border border-line", className)}>
-        <EmptyState
-          title={emptyTitle}
-          {...(emptyDescription === undefined ? {} : { description: emptyDescription })}
-        />
-      </div>
-    );
+  const hasActiveFilters =
+    query.trim().length > 0 || facets.some((id) => (filters[id] ?? []).length > 0);
+  const isNoMatch = demoState === "data" && filtered.length === 0 && hasActiveFilters;
+  const isEmpty =
+    demoState === "empty" || (demoState === "data" && filtered.length === 0 && !hasActiveFilters);
 
   return (
     <div className={cn("grid gap-2", className)}>
@@ -342,7 +305,38 @@ export function DataTable<T extends { id: string }>({
           </Button>
         </div>
       )}
-      {filtered.length === 0 ? (
+      {demoState === "loading" ? (
+        <TableScroll className="max-h-[540px] overflow-y-auto">
+          <Table aria-label={ariaLabel}>
+            <THead {...sticky}>
+              <tr>
+                {columns.map((column) => (
+                  <Th key={columnId(column)}>{column.header}</Th>
+                ))}
+              </tr>
+            </THead>
+            <TBody>
+              <TableSkeleton cols={columns.length} />
+            </TBody>
+          </Table>
+        </TableScroll>
+      ) : demoState === "error" ? (
+        <div className="rounded-tiny border border-line">
+          <ErrorState
+            title={uiMessage(locale, "ui.error")}
+            description={uiMessage(locale, "ui.tryAgain")}
+            retryLabel={uiMessage(locale, "ui.retry")}
+            {...(onRetry === undefined ? {} : { onRetry })}
+          />
+        </div>
+      ) : isEmpty ? (
+        <div className="rounded-tiny border border-line">
+          <EmptyState
+            title={emptyTitle}
+            {...(emptyDescription === undefined ? {} : { description: emptyDescription })}
+          />
+        </div>
+      ) : isNoMatch ? (
         <div className="rounded-tiny border border-line">
           <EmptyState
             title={uiMessage(locale, "ui.noMatchingRows")}
@@ -428,36 +422,41 @@ export function DataTable<T extends { id: string }>({
           </Table>
         </TableScroll>
       )}
-      <div className="flex items-center justify-between gap-3 pt-0.5">
-        <p aria-live="polite" className="font-mono text-[11px] text-ink-2">
-          {formatNumber(locale, filtered.length === 0 ? 0 : currentPage * normalizedPageSize + 1)}–
-          {formatNumber(locale, Math.min((currentPage + 1) * normalizedPageSize, filtered.length))}{" "}
-          / {formatNumber(locale, filtered.length)}
-        </p>
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="secondary"
-            size="icon-sm"
-            aria-label={uiMessage(locale, "ui.previousPage")}
-            disabled={currentPage === 0}
-            onClick={() => setPage((value) => Math.max(0, value - 1))}
-          >
-            <ChevronLeft className="size-3.5" aria-hidden="true" />
-          </Button>
-          <span className="font-mono text-[11px]">
-            {currentPage + 1}/{pageCount}
-          </span>
-          <Button
-            variant="secondary"
-            size="icon-sm"
-            aria-label={uiMessage(locale, "ui.nextPage")}
-            disabled={currentPage >= pageCount - 1}
-            onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))}
-          >
-            <ChevronRight className="size-3.5" aria-hidden="true" />
-          </Button>
+      {demoState === "data" && filtered.length > 0 && (
+        <div className="flex items-center justify-between gap-3 pt-0.5">
+          <p aria-live="polite" className="font-mono text-[11px] text-ink-2">
+            {formatNumber(locale, currentPage * normalizedPageSize + 1)}–
+            {formatNumber(
+              locale,
+              Math.min((currentPage + 1) * normalizedPageSize, filtered.length),
+            )}{" "}
+            / {formatNumber(locale, filtered.length)}
+          </p>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              aria-label={uiMessage(locale, "ui.previousPage")}
+              disabled={currentPage === 0}
+              onClick={() => setPage((value) => Math.max(0, value - 1))}
+            >
+              <ChevronLeft className="size-3.5" aria-hidden="true" />
+            </Button>
+            <span className="font-mono text-[11px]">
+              {currentPage + 1}/{pageCount}
+            </span>
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              aria-label={uiMessage(locale, "ui.nextPage")}
+              disabled={currentPage >= pageCount - 1}
+              onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))}
+            >
+              <ChevronRight className="size-3.5" aria-hidden="true" />
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -54,7 +54,10 @@ export function FormField({
   return (
     <FieldContext.Provider value={field}>
       <div className={cn("grid gap-1", className)} data-field-state={state}>
-        <label htmlFor={id} className="flex items-baseline gap-1 text-[12px] font-medium">
+        <label
+          htmlFor={id}
+          className="flex items-baseline gap-1 font-sans text-[12px] font-medium text-ink"
+        >
           {label}
           {required && (
             <>
@@ -67,7 +70,7 @@ export function FormField({
         </label>
         {description && (
           <p id={descId} className="flex items-start gap-1 text-[12px] leading-snug text-ink-2">
-            <Info aria-hidden="true" className="mt-0.5 size-3" />
+            <Info aria-hidden="true" className="mt-0.5 size-3 shrink-0 text-ink-3" />
             {description}
           </p>
         )}
@@ -77,14 +80,14 @@ export function FormField({
             id={messageId}
             role={state === "error" ? "alert" : "status"}
             className={cn(
-              "flex items-center gap-1.5 text-[12px]",
+              "flex items-center gap-1.5 text-[12px] leading-snug",
               state === "error" && "text-danger",
               state === "success" && "text-ok",
               state === "default" && "text-ink-2",
             )}
           >
-            {state === "error" && <TriangleAlert className="size-3" aria-hidden="true" />}
-            {state === "success" && <Check className="size-3" aria-hidden="true" />}
+            {state === "error" && <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />}
+            {state === "success" && <Check className="size-3 shrink-0" aria-hidden="true" />}
             {message}
           </p>
         )}

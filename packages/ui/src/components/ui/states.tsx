@@ -15,12 +15,12 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("px-6 py-10 text-center", className)}>
+    <div className={cn("animate-enter-fade px-6 py-10 text-center", className)}>
       <div className="mx-auto w-fit">
-        <div className="animate-enter-fade mx-auto mb-3 h-px w-10 bg-line-2" aria-hidden="true" />
+        <div className="mx-auto mb-3 h-px w-10 bg-line-2" aria-hidden="true" />
         <p className="font-display text-[17px] leading-snug text-ink">{title}</p>
         {description && (
-          <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-2">
+          <p className="mx-auto mt-1.5 max-w-sm font-sans text-[13px] leading-relaxed text-ink-2">
             {description}
           </p>
         )}
@@ -52,11 +52,11 @@ export function ErrorState({
         <div className="mx-auto mb-3 h-px w-10 bg-danger/40" aria-hidden="true" />
         <p className="font-display text-[17px] leading-snug text-ink">{title}</p>
         {description && (
-          <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-2">
+          <p className="mx-auto mt-1.5 max-w-sm font-sans text-[13px] leading-relaxed text-ink-2">
             {description}
           </p>
         )}
-        {code && <p className="mt-2 font-mono text-[11px] text-danger">{code}</p>}
+        {code && <p className="mt-2 font-mono text-[11px] tracking-wide text-danger">{code}</p>}
         {onRetry && (
           <div className="mt-4 flex justify-center">
             <Button variant="secondary" size="sm" onClick={onRetry}>

@@ -184,7 +184,7 @@ export function DialogContent({
       <button
         type="button"
         aria-label={uiMessage(ctx.locale, "ui.close")}
-        className="absolute inset-0 bg-ink/25"
+        className="absolute inset-0 bg-ink/25 animate-enter-fade"
         onClick={() => ctx.setOpen(false)}
       />
       <div
@@ -206,7 +206,7 @@ export function DialogContent({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="absolute right-2.5 top-2.5"
+            className="absolute right-2.5 top-2.5 flex size-6 items-center justify-center rounded-tiny text-ink-2 transition-colors duration-100 hover:bg-paper-deep hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             aria-label={uiMessage(ctx.locale, "ui.close")}
             onClick={() => ctx.setOpen(false)}
           >
@@ -271,14 +271,18 @@ export function AlertDialogAction(props: Parameters<typeof DialogClose>[0]) {
 export function AlertDialogCancel(props: Parameters<typeof DialogClose>[0]) {
   return <DialogClose {...props} />;
 }
-export function AlertDialogContent(
-  props: HTMLAttributes<HTMLDivElement> & { hideClose?: boolean },
-) {
-  return <DialogContent {...props} />;
+export function AlertDialogContent({
+  className,
+  ...props
+}: HTMLAttributes<HTMLDivElement> & { hideClose?: boolean }) {
+  return <DialogContent {...props} className={cn("top-[18vh] w-[min(92vw,30rem)]", className)} />;
 }
-export function AlertDialogTitle(props: HTMLAttributes<HTMLHeadingElement>) {
-  return <DialogTitle {...props} />;
+export function AlertDialogTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+  return <DialogTitle className={cn("text-[16px]", className)} {...props} />;
 }
-export function AlertDialogDescription(props: HTMLAttributes<HTMLParagraphElement>) {
-  return <DialogDescription {...props} />;
+export function AlertDialogDescription({
+  className,
+  ...props
+}: HTMLAttributes<HTMLParagraphElement>) {
+  return <DialogDescription className={cn("mt-1", className)} {...props} />;
 }

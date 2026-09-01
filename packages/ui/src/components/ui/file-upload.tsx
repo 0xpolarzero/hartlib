@@ -65,7 +65,8 @@ export function FileUpload({
         tabIndex={0}
         aria-describedby={`${id}-hint`}
         className={cn(
-          "flex min-h-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-tiny border border-dashed px-4 py-4 text-center hover:border-ink-3 focus-visible:outline-2 focus-visible:outline-accent",
+          "flex min-h-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-tiny border border-dashed border-line-2 px-4 py-4 text-center",
+          "transition-colors duration-100 ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-ink-3 hover:bg-paper-deep/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
           drag && "border-accent bg-accent/5",
         )}
         aria-disabled={!onUploaded}
@@ -92,8 +93,8 @@ export function FileUpload({
         }}
       >
         <Paperclip className="size-4 text-ink-2" aria-hidden="true" />
-        <p className="text-[13px]">{uiMessage(locale, "ui.dropPdf")}</p>
-        <p id={`${id}-hint`} className="text-[12px] text-ink-2">
+        <p className="font-sans text-[13px]">{uiMessage(locale, "ui.dropPdf")}</p>
+        <p id={`${id}-hint`} className="font-sans text-[12px] text-ink-2">
           {uiMessage(locale, "ui.pdfOnly")}
         </p>
       </div>
@@ -126,7 +127,7 @@ export function FileUpload({
             return (
               <li
                 key={`${file.name}-${file.sizeKb}-${file.error ?? "ok"}-${index}`}
-                className="flex min-h-9 items-center gap-2.5 px-2.5 py-1.5"
+                className="flex min-h-9 animate-enter items-center gap-2.5 px-2.5 py-1.5"
               >
                 <span>
                   {file.error ? (
@@ -136,11 +137,13 @@ export function FileUpload({
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className={cn("truncate text-[12.5px]", file.error && "text-danger")}>
+                  <p
+                    className={cn("truncate font-sans text-[12.5px]", file.error && "text-danger")}
+                  >
                     {file.name}
                   </p>
                   {file.error ? (
-                    <p role="alert" className="text-[11.5px] text-danger">
+                    <p role="alert" className="font-sans text-[11.5px] text-danger">
                       {file.error}
                     </p>
                   ) : file.progress !== undefined && file.progress < 100 ? (

@@ -1,0 +1,39 @@
+# Integrate audited parity work
+
+You are the sole Luna integration owner. Integrate the supplied slice
+DiffBundles into the current application through the Smithers MergeQueue.
+Merge only work that belongs to the audited slices. Reject an ownership
+violation, an unreported product change, a malformed DiffBundle, or any change
+to `ui-playground/`. Resolve conflicts in shared shell, token, layout, export,
+generated, shared-component, test, and documentation files while preserving
+all prior user changes. Do not touch the pre-existing untracked
+`.smithers/workflows/tmp-ui-playground-demo-implementation.tsx`.
+
+Use the audited workspace snapshot as the integration baseline. Apply each
+mergeable bundle, inspect the complete worktree diff, and verify that every
+changed path belongs to one slice or the integration owner. Run the necessary
+focused checks after conflict resolution. Update canonical `docs/` only when
+behavior, architecture, interfaces, or project expectations changed; keep a
+clear docs decision and never use docs as a changelog. Never edit
+`ui-playground/` to make a comparison pass.
+
+Recompute the byte-tree fingerprint for `ui-playground/` and the exact
+fingerprints for every protected user path. Set both guard fields false on any
+breach. `passed` is true only when all accepted bundles are integrated, every
+conflict has a recorded resolution, no ownership or guard violation remains,
+and the resulting files are ready for validation.
+
+## Audit record
+
+{JSON.stringify(props.audit, null, 2)}
+
+## Slice results for iteration {props.iteration}
+
+{JSON.stringify(props.sliceResults, null, 2)}
+
+Set `loopIteration` to `null` for the initial merge and to the supplied
+iteration number for a repair merge. Keep the iteration value separate from
+Smithers' reserved output columns.
+
+REQUIRED OUTPUT:
+{props.schema}

@@ -214,13 +214,15 @@ export function DatePicker({
         aria-haspopup="dialog"
         aria-invalid={invalid ?? ariaInvalid ?? undefined}
         className={cn(
-          "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left text-[13px] hover:border-ink-3 focus-visible:outline-2 focus-visible:outline-accent",
+          "flex h-7 w-full items-center justify-between gap-2 rounded-tiny border border-line-2 bg-surface px-2.5 text-left font-sans text-[13px] transition-colors duration-100 hover:border-ink-3",
+          "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+          "data-[state=open]:border-ink",
           invalid && "border-danger",
           className,
         )}
         onClick={openCalendar}
       >
-        <span className={cn(!selectedDate && "text-ink-2")}>{displayDate}</span>
+        <span className={cn("truncate", !selectedDate && "text-ink-2")}>{displayDate}</span>
         <CalendarDays className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" />
       </button>
       {open && (
@@ -261,21 +263,21 @@ export function DatePicker({
           <div
             role="grid"
             aria-label={formatMonthYear(locale, viewMonth)}
-            className="grid gap-y-0.5"
+            className="grid grid-cols-7 gap-y-0.5"
           >
-            <div role="row" className="grid grid-cols-7">
+            <div role="row" className="col-span-7 grid grid-cols-7">
               {weekdays.map((weekday) => (
                 <div
                   key={weekday}
                   role="columnheader"
-                  className="flex h-6 items-center justify-center text-[10.5px] font-medium text-ink-2"
+                  className="flex h-6 items-center justify-center font-sans text-[10.5px] font-medium text-ink-2"
                 >
                   {weekday}
                 </div>
               ))}
             </div>
             {Array.from({ length: 6 }, (_, row) => (
-              <div key={row} role="row" className="grid grid-cols-7">
+              <div key={row} role="row" className="col-span-7 grid grid-cols-7">
                 {days.slice(row * 7, row * 7 + 7).map((date) => {
                   const dateKey = isoDate(date);
                   const inMonth = date.getUTCMonth() === viewMonth.getUTCMonth();
@@ -298,7 +300,7 @@ export function DatePicker({
                       onClick={() => choose(date)}
                       onKeyDown={(event) => onDayKeyDown(event, date)}
                       className={cn(
-                        "relative flex size-8 items-center justify-center rounded-tiny text-[12.5px] transition-colors duration-100 hover:bg-paper-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
+                        "relative flex size-8 items-center justify-center rounded-tiny font-sans text-[12.5px] transition-colors duration-100 hover:bg-paper-deep focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent",
                         inMonth ? "text-ink" : "text-ink-3",
                         selected && "bg-ink font-semibold text-paper hover:bg-ink",
                         isToday &&

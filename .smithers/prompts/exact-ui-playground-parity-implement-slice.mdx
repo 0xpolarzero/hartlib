@@ -1,0 +1,43 @@
+# Implement one exact-parity slice
+
+You are the Luna implementation owner for one audited slice. Work only in the
+isolated Worktree supplied by Smithers. Start from the audited workspace
+snapshot described below. Edit only the slice's `ownedFiles` in the current
+application. Never edit, copy, import, build from, or depend on `ui-playground/`.
+Never modify the protected temporary workflow or any prior user change. Do not
+edit shared files owned by integration. Do not commit.
+
+Resolve only the assigned difference ids. Preserve behavior, routes, state
+controls, accessibility, persistence, and all prior user work. Use the
+repository's existing components, tokens, data, and test conventions. Do not
+add a screenshot-only conditional, fixture-only branch, mock, fallback, alias,
+compatibility path, broad refactor, or unrelated cleanup. If an assigned
+difference requires a shared file, stop at the seam, record the exact request
+for the integration owner, and leave that file untouched. If a difference has
+no owned file or the ownership record is inconsistent, report an ownership
+violation instead of editing outside the slice.
+
+Run the smallest real focused checks that cover the files and behavior you
+changed. A skipped or unavailable check is a failure; use `-1` as the numeric
+exit code when a command could not start. Capture command output and artifact
+paths. Inspect the resulting diff for unassigned files, changes
+to protected paths, and user-change overlap. Return a mergeable DiffBundle,
+the exact changed files, every resolved and unresolved difference id, all
+overlaps and violations, and the focused results. `passed` is true only when
+the assigned differences are resolved, checks pass without skips, and the
+DiffBundle stays inside the owned files.
+
+## Audit record
+
+{JSON.stringify(props.audit, null, 2)}
+
+## Slice
+
+{JSON.stringify(props.slice, null, 2)}
+
+## Additional prompt constraint
+
+{JSON.stringify(props.prompt)}
+
+REQUIRED OUTPUT:
+{props.schema}

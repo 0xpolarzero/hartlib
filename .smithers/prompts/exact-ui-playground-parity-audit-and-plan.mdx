@@ -1,0 +1,76 @@
+# Audit exact UI playground parity
+
+You are the read-only Sol audit owner. Do not edit, stage, delete, or commit
+anything. Read `AGENTS.md`, every applicable canonical file under `docs/`, the
+local Effect v4 references under `docs/references/effect-smol/` before making
+an Effect decision, the complete current git status and diff, the current app
+manifests and test configuration, the `ui-playground/` manifest and source,
+and the pre-existing untracked
+`.smithers/workflows/tmp-ui-playground-demo-implementation.tsx`. Preserve that
+untracked file byte-for-byte.
+
+This is an exhaustive audit, not a sampling exercise. Validate the supplied
+prompt, the two viewports, the local E2E state profile, and the repair bound.
+Use the default values only when the input is null. Reject duplicate or
+missing viewport names and record the effective values in `validatedInputs`.
+The prompt can add constraints but cannot lower route, state, viewport,
+capture, guard, or exactness coverage. The effective state profile must name
+the repository-local E2E profile when `stateProfile` is null.
+
+Discover and prove the repository's real commands before planning work. Read
+package scripts, Playwright configuration, environment loading, and the
+ui-playground lockfile. Find commands for app launch, playground launch, seed
+and reset, authentication, every state control, deterministic focused checks,
+browser smoke, and screenshot or pixel capture. Run safe probes where needed
+to prove each command, port, fixture, credential profile, and capture path.
+Do not invent a command, silently replace a missing command, or treat a skipped
+check as proof. A missing counterpart, state control, route, launch path,
+credential, test, or capture is a failed audit and must stay visible in the
+returned records.
+
+Launch both surfaces with the same environment and map every reachable app
+route. For every route enumerate default, loading, empty, error, overlay,
+menu, responsive, and composition states that the app can actually reach.
+Pair each current-app entry with the matching ui-playground entry and record
+one `coverageMatrix` row for each route-state-viewport combination. Capture
+after fonts, data, and animations settle at the exact supplied desktop and
+narrow sizes. Store real paired artifacts. Compare stable regions exactly and
+record all visible presentation differences with evidence, category, region,
+expected value, actual value, one existing implementation slice, and one
+owner. Differences may share a slice only when their owned files are the same.
+
+Make slices non-overlapping. Assign every changed file, shared shell or token
+file, generated file, export, test, and documentation file to one slice or to
+the named integration owner. Leave no unowned or overlapping file. Define
+normalization rules only for proven nondeterministic regions. Every rule must
+name its entries, region, reason, method, and proof artifacts; never normalize
+an ordinary visual difference.
+
+Record immutable guards before any implementation starts. For every dirty or
+untracked user path, use this exact fingerprint shape:
+`{"status":<git status --short -- PATH>,"worktree":<git hash-object -- PATH>,"index":<git ls-files --stage -- PATH>,"diffSha256":<sha256 of git diff --no-ext-diff -- PATH>}`.
+Record the repository HEAD, complete status, every user-change fingerprint,
+the byte-tree SHA-256 for `ui-playground/`, and protected paths. Include the
+pre-existing untracked temporary workflow in the protected paths. No later
+task may modify `ui-playground/` or those user paths.
+
+Set `approval.required` to true only when parity execution truly needs a named
+destructive change outside parity work. List exact targets, reason, and
+consequence. Normal parity edits require no approval. Set `auditPassed` to
+true only when all commands, counterparts, coverage rows, captures,
+ownership, normalization proofs, and guards are present and usable. If any
+part is missing, return a complete failed audit with the gap recorded; do not
+exclude the entry.
+
+## Inputs
+
+Prompt: {JSON.stringify(props.prompt)}
+
+Viewports: {JSON.stringify(props.viewports)}
+
+State profile: {props.stateProfile}
+
+Maximum repair iterations: {props.maxRepairIterations}
+
+REQUIRED OUTPUT:
+{props.schema}

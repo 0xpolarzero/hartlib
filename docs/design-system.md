@@ -70,6 +70,9 @@ renders complete source, publication, document, subscriber, notification,
 settings, and issue-wizard states. Production passes empty arrays, zero counts,
 idle state, and no write callbacks. Direct fixtures test populated states;
 production has no route, command, link, navigation item, fetch, or import path.
+Subscription rows accept `public`, `invitation`, and `publisher` source kinds
+for prop-only fixture states; the reachable demo still passes authorized public
+sources only.
 
 ## Content and safety
 

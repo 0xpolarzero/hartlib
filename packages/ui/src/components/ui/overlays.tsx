@@ -117,6 +117,7 @@ export function PopoverTriggerButton({
       "aria-haspopup": popupRole,
       "aria-expanded": ctx?.open ?? false,
       "aria-controls": ctx?.contentId,
+      "data-state": ctx?.open ? "open" : "closed",
       onClick: (event: React.MouseEvent) => {
         ctx?.setTrigger(event.currentTarget as HTMLElement);
         childProps.onClick?.(event);
@@ -138,6 +139,7 @@ export function PopoverTriggerButton({
       aria-haspopup={popupRole}
       aria-expanded={ctx?.open ?? false}
       aria-controls={ctx?.contentId}
+      data-state={ctx?.open ? "open" : "closed"}
       onClick={(event) => {
         ctx?.setTrigger(event.currentTarget);
         ctx?.setOpen(!ctx.open);
@@ -166,6 +168,7 @@ function LayerContent({
 }: HTMLAttributes<HTMLDivElement> & { align?: "start" | "end" | "center" }) {
   const ctx = useContext(OpenContext);
   const ref = useRef<HTMLDivElement>(null);
+  const isMenu = props.role === "menu";
   useEffect(() => {
     if (!ctx?.open) return;
     const menu = ref.current?.getAttribute("role") === "menu" ? ref.current : null;
@@ -209,8 +212,10 @@ function LayerContent({
     <div
       ref={ref}
       id={props.id ?? ctx.contentId}
+      data-state="open"
       className={cn(
-        "absolute z-50 mt-1 min-w-44 rounded-tiny border border-line-2 bg-surface p-1 shadow-none animate-enter",
+        "absolute z-50 mt-1 rounded-tiny border border-line-2 bg-surface p-1 shadow-none animate-enter",
+        isMenu && "min-w-44",
         align === "end" && "right-0",
         className,
       )}
@@ -250,8 +255,10 @@ export function DropdownMenuItem({
       type="button"
       role="menuitem"
       className={cn(
-        "flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none hover:bg-paper-deep",
-        destructive && "text-danger",
+        "flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none transition-colors duration-100",
+        "hover:bg-paper-deep focus:bg-paper-deep disabled:cursor-not-allowed disabled:pointer-events-none disabled:text-ink-3",
+        "[&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-ink-2",
+        destructive && "text-danger [&_svg]:text-danger hover:bg-danger/10 focus:bg-danger/10",
         className,
       )}
       onClick={(event) => {
@@ -277,8 +284,11 @@ export function DropdownMenuCheckboxItem({
       role="menuitemcheckbox"
       aria-checked={checked}
       onSelect={() => onCheckedChange?.(!checked)}
+      className="relative py-1 pr-2 pl-6"
     >
-      <span className="w-4">{checked ? <Check className="size-3 text-accent" /> : null}</span>
+      <span className="absolute left-1.5">
+        {checked ? <Check className="size-3 text-accent" /> : null}
+      </span>
       {children}
     </DropdownMenuItem>
   );
@@ -300,11 +310,12 @@ export function DropdownMenuSubTrigger({ children, ...props }: MenuItemProps) {
         role="menuitem"
         aria-haspopup="menu"
         aria-expanded={ctx?.open ?? false}
-        className="flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none hover:bg-paper-deep"
+        data-state={ctx?.open ? "open" : "closed"}
+        className="flex min-h-7 w-full cursor-pointer select-none items-center gap-2 rounded-tiny px-1.5 py-1 text-left text-[13px] text-ink outline-none transition-colors duration-100 hover:bg-paper-deep focus:bg-paper-deep data-[state=open]:bg-paper-deep"
         {...props}
       >
         {children}
-        <ChevronRight className="ml-auto size-3" />
+        <ChevronRight className="ml-auto size-3 text-ink-2" />
       </button>
     </PopoverTriggerButton>
   );
@@ -353,7 +364,7 @@ export function Tooltip({
           id={tooltipId}
           role="tooltip"
           className={cn(
-            "absolute z-50 whitespace-nowrap rounded-tiny border border-line-2 bg-ink px-2 py-1 text-[11.5px] text-paper animate-enter-fade",
+            "absolute z-50 flex items-center gap-1.5 whitespace-nowrap rounded-tiny border border-line-2 bg-ink px-2 py-1 font-sans text-[11.5px] leading-none text-paper animate-enter-fade",
             side === "bottom"
               ? "left-1/2 top-full mt-1 -translate-x-1/2"
               : side === "left"
@@ -443,7 +454,7 @@ export const HoverCardContent = ({
   return ctx?.open ? (
     <div
       className={cn(
-        "absolute z-50 mt-1 rounded-tiny border border-line-2 bg-surface p-3 animate-enter",
+        "absolute z-50 mt-1 w-80 rounded-tiny border border-line-2 bg-surface p-3 animate-enter",
         className,
       )}
       {...props}

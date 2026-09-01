@@ -160,7 +160,7 @@ export function Composer({
                   submit();
                 }
               }}
-              className="min-w-0 flex-1 border-0 bg-transparent"
+              className="min-h-9 min-w-0 flex-1 overscroll-contain border-0 bg-transparent px-3 py-2 leading-5 focus-visible:outline-2 focus-visible:-outline-offset-1 focus-visible:outline-accent"
               data-testid="chat-composer-input"
             />
           ) : (
@@ -213,34 +213,8 @@ export function Composer({
               )}
             </div>
           )}
-          {runActive ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              aria-label={resolvedStopLabel}
-              title={resolvedStopLabel}
-              onClick={() => void onStop?.()}
-              data-testid="chat-stop-button"
-            >
-              <Square className="size-3 fill-current" />
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              variant="primary"
-              size="icon"
-              aria-label={resolvedSendLabel}
-              title={resolvedSendLabel}
-              disabled={disabled || text.trim() === "" || !["idle", "error"].includes(dictation)}
-              onClick={submit}
-              data-testid="chat-send-button"
-            >
-              <ArrowUp className="size-3.5" />
-            </Button>
-          )}
         </div>
-        <div className="mt-2 flex items-center gap-3">
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <span className="flex items-center gap-2">
             <Switch
               checked={webSearchEnabled}
@@ -255,17 +229,46 @@ export function Composer({
               <span className="text-[11px] text-ink-3">{webSearchDisabledReason}</span>
             )}
           </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={resolvedDictationLabel}
-            title={resolvedDictationLabel}
-            disabled={disabled || runActive || !["idle", "error"].includes(dictation)}
-            onClick={startDictation}
-          >
-            <Mic className="size-3.5" />
-          </Button>
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="text-ink-2"
+              aria-label={resolvedDictationLabel}
+              title={resolvedDictationLabel}
+              disabled={disabled || runActive || !["idle", "error"].includes(dictation)}
+              onClick={startDictation}
+            >
+              <Mic className="size-3.5" />
+            </Button>
+            {runActive ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                aria-label={resolvedStopLabel}
+                title={resolvedStopLabel}
+                onClick={() => void onStop?.()}
+                data-testid="chat-stop-button"
+              >
+                <Square className="size-3 fill-current" />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                size="icon"
+                aria-label={resolvedSendLabel}
+                title={resolvedSendLabel}
+                disabled={disabled || text.trim() === "" || !["idle", "error"].includes(dictation)}
+                onClick={submit}
+                data-testid="chat-send-button"
+              >
+                <ArrowUp className="size-3.5" />
+              </Button>
+            )}
+          </div>
           {dictation === "error" && (
             <p role="alert" className="text-[12px] text-danger">
               {dictationError}
