@@ -1228,12 +1228,17 @@ function App({
             onRetryLoad={retryChat}
             suggestions={
               messages.length === 0
-                ? [
-                    "Compare la croissance des abonnés de nos trois lettres sur le troisième trimestre.",
-                    "Que concluait le dossier de septembre sur l’arbitrage des litiges de télétravail ?",
-                    "Montre-moi la cohorte à risque du point de renouvellement.",
-                    "Lance l’analyse confidentielle du churn.",
-                  ]
+                ? locale === "fr-FR"
+                  ? [
+                      "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
+                      "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
+                      "Quels sujets sont couverts par plusieurs de mes sources actives ? Compare leurs points de vue.",
+                    ]
+                  : [
+                      "What happened in the last 24 hours across my active sources?",
+                      "What are the three most important recent developments, and why do they matter?",
+                      "Which topics are being covered by several of my active sources? Compare their views.",
+                    ]
                 : []
             }
             onSuggestion={(suggestion) => void startRun(suggestion)}
