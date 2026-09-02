@@ -1,45 +1,24 @@
 import { useState } from "react";
 import type { Locale } from "@hartlib/i18n";
-import { AppShell, RunActivity, type RunActivityEvent, type RunActivityProps } from "@hartlib/ui";
+import {
+  AppShell,
+  RunActivity,
+  type AiRunActivityEvent,
+  type PublicSourceRecord,
+  type RunActivityProps,
+} from "@hartlib/ui";
 
 const stateIds = [
   "started",
+  "planning",
   "searching",
   "reading",
-  "preparing",
   "writing",
   "retrying",
   "complete",
 ] as const;
-
 type StateId = (typeof stateIds)[number];
-type ShowcaseState = RunActivityProps & {
-  selector: string;
-  answer?: string;
-};
-
-const queries = [
-  '"EU AI Act" general-purpose AI transparency duties 2026',
-  "site:digital-strategy.ec.europa.eu AI Act GPAI code of practice timeline",
-] as const;
-
-const sources = [
-  {
-    title: "European Commission · General-purpose AI models",
-    meta: "Official guidance · updated 1 Aug 2025",
-    status: "Read",
-  },
-  {
-    title: "Regulation (EU) 2024/1689 · Article 53",
-    meta: "EUR-Lex · primary law",
-    status: "Reading",
-  },
-  {
-    title: "GPAI Code of Practice",
-    meta: "European Commission · July 2025",
-    status: "Queued",
-  },
-] as const;
+type ShowcaseState = RunActivityProps & { selector: string };
 
 const waitingStages = {
   understanding: "waiting",
@@ -49,114 +28,187 @@ const waitingStages = {
   finishing: "waiting",
 } as const;
 
-const planDone: RunActivityEvent = {
+const questionRunning: AiRunActivityEvent = {
+  type: "activity",
   stage: "understanding",
-  label: "Plan ready",
-  detail: "Check the law, the Commission timeline, and the voluntary code.",
-  tone: "done",
+  code: "request_understanding",
+  status: "running",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:00.000Z",
 };
-const searchDone: RunActivityEvent = {
+const questionComplete: AiRunActivityEvent = {
+  ...questionRunning,
+  status: "complete",
+  durationMs: 184,
+};
+const internalSearch: AiRunActivityEvent = {
+  type: "activity",
   stage: "evidence",
-  label: "Queries",
-  detail: "The exact searches sent to the provider.",
-  tone: "done",
-  queries,
+  code: "internal_sources",
+  status: "complete",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:00.184Z",
+  resultCount: 2,
+  detail: {
+    kind: "internal_queries",
+    ordinal: 1,
+    plan: "final",
+    action: "search",
+    queries: [
+      {
+        purpose: "Find current obligations and their start dates",
+        targets: [
+          {
+            kind: "documents",
+            filters: {
+              sourceNames: ["European Commission", "EUR-Lex"],
+              languages: ["en"],
+            },
+          },
+        ],
+        all: [{ text: "general-purpose AI", mode: "phrase" }],
+        anyOf: [
+          [
+            { text: "obligations", mode: "term" },
+            { text: "duties", mode: "term" },
+          ],
+        ],
+        not: [],
+        order: "relevance",
+      },
+    ],
+  },
 };
-const sourcesDone: RunActivityEvent = {
+const webSearchRunning: AiRunActivityEvent = {
+  type: "activity",
   stage: "evidence",
-  label: "Sources",
-  detail: "All three official sources were read.",
-  tone: "done",
-  sources: sources.map((source) => ({ ...source, status: "Read" })),
+  code: "web_research",
+  status: "running",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:00.420Z",
+  detail: {
+    kind: "web_search",
+    ordinal: 1,
+    query: "site:digital-strategy.ec.europa.eu AI Act GPAI obligations timeline",
+  },
 };
-const prepareDone: RunActivityEvent = {
+const webSearchComplete: AiRunActivityEvent = {
+  ...webSearchRunning,
+  status: "complete",
+  resultCount: 5,
+  detail: {
+    kind: "web_search",
+    ordinal: 1,
+    query: "site:digital-strategy.ec.europa.eu AI Act GPAI obligations timeline",
+    resultCount: 5,
+  },
+};
+const webFetchComplete: AiRunActivityEvent = {
+  type: "activity",
+  stage: "evidence",
+  code: "web_research",
+  status: "complete",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:01.082Z",
+  detail: {
+    kind: "web_fetch",
+    ordinal: 1,
+    url: "https://digital-strategy.ec.europa.eu/en/policies/rules-general-purpose-ai-models-gpai",
+    title: "Rules for general-purpose AI models",
+    domain: "digital-strategy.ec.europa.eu",
+    capturedAt: "2026-05-12T10:00:01.082Z",
+  },
+};
+const contextComplete: AiRunActivityEvent = {
+  type: "activity",
   stage: "preparing",
-  label: "Evidence checked",
-  detail: "Separated duties already in force from later enforcement dates.",
-  tone: "done",
+  code: "context_preparation",
+  status: "complete",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:01.291Z",
+  durationMs: 209,
+  sourceCount: 1,
 };
-const writingDone: RunActivityEvent = {
+const answerRunning: AiRunActivityEvent = {
+  type: "activity",
   stage: "writing",
-  label: "Answer written",
-  detail: "Led with current duties, then stated the dates and exceptions.",
-  tone: "done",
+  code: "answer_generation",
+  status: "running",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:01.302Z",
+};
+const retryingSearch: AiRunActivityEvent = {
+  ...webSearchRunning,
+  status: "retrying",
+  attempt: 2,
+  errorCategory: "provider_transport",
+  errorCode: "provider_timeout",
+  errorMessage: "The web search provider timed out.",
+};
+const answerComplete: AiRunActivityEvent = {
+  ...answerRunning,
+  status: "complete",
+  durationMs: 1_438,
+};
+const finalComplete: AiRunActivityEvent = {
+  type: "activity",
+  stage: "finishing",
+  code: "finalization",
+  status: "complete",
+  runId: "showcase",
+  attempt: 1,
+  occurredAt: "2026-05-12T10:00:02.740Z",
+  durationMs: 94,
+};
+const source: PublicSourceRecord = {
+  kind: "web",
+  sourceKey: "web:commission-gpai",
+  label: "European Commission",
+  tokenCount: 812,
+  topicIds: ["t1"],
+  title: "Rules for general-purpose AI models",
+  domain: "digital-strategy.ec.europa.eu",
+  url: "https://digital-strategy.ec.europa.eu/en/policies/rules-general-purpose-ai-models-gpai",
+  capturedAt: "2026-05-12T10:00:01.082Z",
+  quote: "General-purpose AI model obligations apply according to the dates set by the AI Act.",
+  ranges: [],
 };
 
 const states: Record<StateId, ShowcaseState> = {
   started: {
-    selector: "Start",
+    selector: "Started",
     status: "running",
-    title: "Planning",
-    meta: "Just started",
-    current: "Breaking the question into facts to check",
     stages: { ...waitingStages, understanding: "running" },
-    events: [
-      {
-        stage: "understanding",
-        label: "Question received",
-        detail: "Find the current EU AI Act duties for general-purpose AI providers.",
-        tone: "active",
-      },
-    ],
+    activities: [questionRunning],
+  },
+  planning: {
+    selector: "Plan",
+    status: "running",
+    stages: { ...waitingStages, understanding: "complete", evidence: "running" },
+    activities: [questionComplete, internalSearch],
   },
   searching: {
     selector: "Search",
     status: "running",
-    title: "Searching",
-    meta: "2 queries",
-    current: `Searching ${queries[0]}`,
     stages: { ...waitingStages, understanding: "complete", evidence: "running" },
-    events: [planDone, { ...searchDone, tone: "active" }],
+    activities: [questionComplete, internalSearch, webSearchRunning],
   },
   reading: {
-    selector: "Read",
+    selector: "Sources",
     status: "running",
-    title: "Reading",
-    meta: "1 of 3 sources",
-    current: "Reading Article 53 duties and effective dates",
     stages: { ...waitingStages, understanding: "complete", evidence: "running" },
-    events: [
-      planDone,
-      searchDone,
-      {
-        stage: "evidence",
-        label: "Sources",
-        detail: "Opened in this order.",
-        tone: "active",
-        sources,
-      },
-    ],
-  },
-  preparing: {
-    selector: "Prepare",
-    status: "running",
-    title: "Preparing",
-    meta: "3 sources checked",
-    current: "Comparing the legal text with the Commission timeline",
-    stages: {
-      ...waitingStages,
-      understanding: "complete",
-      evidence: "complete",
-      preparing: "running",
-    },
-    events: [
-      planDone,
-      searchDone,
-      sourcesDone,
-      {
-        stage: "preparing",
-        label: "Cross-checking",
-        detail: "Separating duties already in force from later enforcement dates.",
-        tone: "active",
-      },
-    ],
+    activities: [questionComplete, internalSearch, webSearchComplete, webFetchComplete],
+    sourcesRead: [source],
   },
   writing: {
     selector: "Write",
-    status: "streaming",
-    title: "Writing",
-    meta: "Answer started",
-    current: "Writing the short answer and placing citations",
+    status: "running",
     stages: {
       ...waitingStages,
       understanding: "complete",
@@ -164,59 +216,26 @@ const states: Record<StateId, ShowcaseState> = {
       preparing: "complete",
       writing: "running",
     },
-    events: [
-      planDone,
-      searchDone,
-      sourcesDone,
-      prepareDone,
-      {
-        stage: "writing",
-        label: "Drafting",
-        detail: "Lead with the current duties, then state the dates and exceptions.",
-        tone: "active",
-      },
+    activities: [
+      questionComplete,
+      internalSearch,
+      webSearchComplete,
+      webFetchComplete,
+      contextComplete,
+      answerRunning,
     ],
-    answer:
-      "Providers of general-purpose AI models must keep technical documentation, give downstream providers enough information to use the model safely, and maintain a copyright policy…",
+    sourcesRead: [source],
   },
   retrying: {
     selector: "Retry",
-    status: "error",
-    title: "Search paused",
-    meta: "Retry 2 of 3",
+    status: "running",
     attempt: 2,
-    current: "The Commission search timed out. Retrying with a narrower query",
     stages: { ...waitingStages, understanding: "complete", evidence: "retrying" },
-    events: [
-      planDone,
-      {
-        stage: "evidence",
-        label: "First query complete",
-        detail: "The legal text is available.",
-        tone: "done",
-        queries: [queries[0]],
-      },
-      {
-        stage: "evidence",
-        label: "Search timed out",
-        detail: "No result was lost. The next try uses the official Commission domain.",
-        tone: "warning",
-        queries: [queries[1]],
-      },
-      {
-        stage: "evidence",
-        label: "Retrying now",
-        detail: "Attempt 2 of 3.",
-        tone: "active",
-      },
-    ],
+    activities: [questionComplete, internalSearch, retryingSearch],
   },
   complete: {
-    selector: "Done",
+    selector: "Complete",
     status: "succeeded",
-    title: "Done",
-    meta: "3 sources · 2 queries · 18s",
-    current: "Answer complete",
     stages: {
       understanding: "complete",
       evidence: "complete",
@@ -224,19 +243,16 @@ const states: Record<StateId, ShowcaseState> = {
       writing: "complete",
       finishing: "complete",
     },
-    events: [
-      planDone,
-      searchDone,
-      sourcesDone,
-      prepareDone,
-      writingDone,
-      {
-        stage: "finishing",
-        label: "Checks complete",
-        detail: "Citations placed and dates checked.",
-        tone: "done",
-      },
+    activities: [
+      questionComplete,
+      internalSearch,
+      webSearchComplete,
+      webFetchComplete,
+      contextComplete,
+      answerComplete,
+      finalComplete,
     ],
+    sourcesRead: [source],
   },
 };
 
@@ -249,19 +265,19 @@ function StateSelector({
 }) {
   return (
     <div
-      className="flex gap-1 overflow-x-auto border-b border-line pb-2"
-      aria-label="Preview state"
+      className="flex min-w-0 gap-1 overflow-x-auto border-b border-line"
+      role="tablist"
+      aria-label="Activity state"
     >
       {stateIds.map((id) => (
         <button
           key={id}
           type="button"
-          aria-pressed={value === id}
+          role="tab"
+          aria-selected={id === value}
           onClick={() => onChange(id)}
-          className={`shrink-0 rounded-tiny border px-2.5 py-1.5 font-mono text-[10px] uppercase transition-colors duration-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-            value === id
-              ? "border-ink bg-ink text-paper"
-              : "border-line bg-paper text-ink-2 hover:border-ink"
+          className={`min-h-9 shrink-0 border-b-2 px-3 font-mono text-[10px] tracking-wide uppercase ${
+            id === value ? "border-accent text-ink" : "border-transparent text-ink-3 hover:text-ink"
           }`}
         >
           {states[id].selector}
@@ -273,9 +289,7 @@ function StateSelector({
 
 export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
   const [selected, setSelected] = useState<StateId>("searching");
-  const state = states[selected];
   const prefix = `/${locale}`;
-
   return (
     <AppShell
       locale={locale}
@@ -292,54 +306,27 @@ export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
             Temporary review page
           </p>
           <h1 className="font-display text-3xl leading-tight text-ink sm:text-4xl">
-            Show the work, not just the stage
+            Recorded run activity
           </h1>
           <p className="max-w-2xl font-reading text-[16px] leading-relaxed text-ink-2">
-            Keep progress quiet and compact. Show the current action at once. Keep queries, sources,
-            and retries one click away.
+            The component renders strict worker events: actions, exact queries, source identities,
+            counts, times, and errors.
           </p>
         </header>
 
         <section className="grid min-w-0 gap-4" aria-labelledby="conversation-preview-title">
           <div>
             <p className="font-mono text-[10px] tracking-[0.12em] text-ink-3 uppercase">
-              In context
+              Selected state
             </p>
             <h2 id="conversation-preview-title" className="mt-1 font-display text-2xl text-ink">
-              One answer, every state
+              Run detail
             </h2>
           </div>
           <StateSelector value={selected} onChange={setSelected} />
           <div className="min-w-0 rounded-tiny border border-line bg-surface p-3 sm:p-6">
-            <div className="ml-auto max-w-[42ch] rounded-tiny border border-line bg-paper-deep px-3 py-2">
-              <p className="font-sans text-[13px] leading-relaxed text-ink">
-                What duties apply to general-purpose AI providers under the EU AI Act now?
-              </p>
-            </div>
-            <article className="mt-6 grid max-w-2xl gap-3" aria-label="Assistant answer preview">
-              <header className="flex items-center gap-2">
-                <p className="font-mono text-[10px] tracking-[0.12em] text-ink-2 uppercase">
-                  Hartlib · now
-                </p>
-                <span aria-hidden="true" className="h-px flex-1 bg-line" />
-              </header>
-              <RunActivity key={selected} {...state} />
-              {state.answer && (
-                <p className="font-reading text-[15px] leading-7 text-ink">
-                  {state.answer}
-                  <span
-                    aria-hidden="true"
-                    className="ml-0.5 inline-block h-4 w-px animate-pulse-soft bg-accent"
-                  />
-                </p>
-              )}
-              {selected === "complete" && (
-                <p className="font-reading text-[15px] leading-7 text-ink">
-                  Providers must keep technical documentation, share enough information with
-                  downstream providers, maintain a copyright policy, and publish a training-content
-                  summary. The first GPAI duties have applied since 2 August 2025.
-                </p>
-              )}
+            <article className="grid max-w-2xl gap-3" aria-label="Activity preview">
+              <RunActivity key={selected} {...states[selected]} />
             </article>
           </div>
         </section>

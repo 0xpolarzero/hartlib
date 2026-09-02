@@ -89,6 +89,40 @@ describe("demo storage registry", () => {
     expect(local.length).toBe(0);
     expect(session.length).toBe(0);
   });
+  it("accepts strict activity details and removes caption fields", () => {
+    const session = new MemoryStorage();
+    const key = `${DEMO_STORAGE_KEYS.streamPrefix}activity`;
+    const activity = {
+      type: "activity",
+      stage: "evidence",
+      code: "web_research",
+      status: "complete",
+      occurredAt: "2026-05-12T10:00:00.000Z",
+      detail: {
+        kind: "web_search",
+        ordinal: 1,
+        query: "site:example.com exact query",
+        resultCount: 3,
+      },
+    } as const;
+    const encoded = serializeChatStreamState({
+      ...initialChatStreamState,
+      activities: [activity],
+      activityHistory: [activity],
+    });
+    expect(writeDemoStorage("session", key, encoded, session)).toBe(true);
+    expect(readDemoStorage("session", key, session)).toBe(encoded);
+
+    const withCaption = JSON.parse(encoded) as {
+      state: {
+        activityHistory: Array<{ detail: Record<string, unknown> }>;
+      };
+    };
+    withCaption.state.activityHistory[0]!.detail.caption = "Cross-checking";
+    session.setItem(key, JSON.stringify(withCaption));
+    expect(readDemoStorage("session", key, session)).toBeNull();
+    expect(session.getItem(key)).toBeNull();
+  });
   it("removes stream state with ranges on non-document source locators", () => {
     const session = new MemoryStorage();
     const sourceByKind = {

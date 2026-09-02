@@ -575,10 +575,7 @@ function App({
               status,
               streamedText: current.assistantText,
               stages: stagesForActivities(current.activities),
-              activities: current.activities.map((activity) => ({
-                stage: activity.stage,
-                status: activity.status,
-              })),
+              activities: current.activityHistory,
               sourcesRead: current.sourcesRead,
             };
           });

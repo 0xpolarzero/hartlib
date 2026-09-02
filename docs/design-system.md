@@ -57,9 +57,12 @@ calendar grid with localized weekday order and keyboard navigation.
 ## Product presentation
 
 The chat message component renders user and assistant anatomy, five ordered run
-stages, and six stage states. The current stage opens by default. Completed
-stages stay clickable, retain prior queries, source reads, and retries, and
-show one stage at a time. Future stages stay disabled until they have activity.
+stages, and six stage states. The current stage opens by default. Stages with
+recorded activity stay clickable and show one stage at a time. Future stages
+stay disabled until they have activity. Activity rows derive fixed labels from
+strict worker events and render only recorded queries, source identities,
+counts, times, attempts, and errors. Callers cannot supply narrative activity
+captions.
 The component also renders citations, failures, stopped answers, delete,
 last-question edit, debug, optional visualization Show, and the reference
 composer controls. Branch and collection views stay absent.

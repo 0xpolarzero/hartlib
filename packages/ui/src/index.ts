@@ -99,13 +99,7 @@ export {
 } from "./components/product/chat/debug-drawer";
 export { MemoriesPanel, type MemoriesPanelProps } from "./components/product/chat/memories-panel";
 export { RunRail, RunStatusLine } from "./components/product/chat/run-rail";
-export {
-  RunActivity,
-  type RunActivityEvent,
-  type RunActivityProps,
-  type RunActivitySource,
-  type RunActivityTone,
-} from "./components/product/chat/run-activity";
+export { RunActivity, type RunActivityProps } from "./components/product/chat/run-activity";
 export {
   SourcesDisclosure,
   type SourcesDisclosureProps,
@@ -140,10 +134,12 @@ export {
   type MemoryRevisionFragment,
 } from "./components/product/chat/memory-provenance";
 export type {
+  AiRunActivityEvent,
   ChatRunProjection,
   ChatTranscriptMessage,
   RunDiagnostics,
   RunFailure,
+  PublicSourceRecord,
   RunStageId,
   RunStages,
   StageStatus,

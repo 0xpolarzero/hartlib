@@ -33,14 +33,9 @@ export function buildTranscriptMessages(
     // never reconstruct citations in the client.
     citations: [],
     sourcesRead: stream.sourcesRead,
-    ...(stream.activities.length === 0
+    ...((stream.activityHistory ?? stream.activities).length === 0
       ? {}
-      : {
-          activities: stream.activities.map((activity) => ({
-            stage: activity.stage,
-            status: activity.status,
-          })),
-        }),
+      : { activities: stream.activityHistory ?? stream.activities }),
     diagnostics: {
       activityHistory: stream.activityHistory ?? stream.activities,
       context: stream.context ?? null,

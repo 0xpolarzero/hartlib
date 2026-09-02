@@ -1,9 +1,11 @@
 import type {
+  AiRunActivityEvent as SharedAiRunActivityEvent,
   PublicCitationRecord as SharedPublicCitationRecord,
   PublicSourceRecord as SharedPublicSourceRecord,
 } from "@hartlib/shared";
 export type PublicCitationRecord = SharedPublicCitationRecord;
 export type PublicSourceRecord = SharedPublicSourceRecord;
+export type AiRunActivityEvent = SharedAiRunActivityEvent;
 export type CitationKind = PublicCitationRecord["kind"];
 export type RunStageId = "understanding" | "evidence" | "preparing" | "writing" | "finishing";
 export type StageStatus = "waiting" | "running" | "complete" | "retrying" | "failed" | "skipped";
@@ -19,7 +21,7 @@ export interface RunFailure {
 export interface RunDiagnostics {
   sequence?: number;
   attempt?: number;
-  activityHistory?: readonly unknown[];
+  activityHistory?: readonly AiRunActivityEvent[];
   context?: unknown;
   memoryUpdated?: unknown;
   terminalFailure?: RunFailure | null;
@@ -37,12 +39,7 @@ export interface ChatTranscriptMessage {
   stoppedAt?: string;
   failure?: RunFailure | null;
   diagnostics?: RunDiagnostics;
-  activities?: readonly {
-    stage: RunStageId;
-    status: StageStatus;
-    code?: string;
-    attempt?: number;
-  }[];
+  activities?: readonly AiRunActivityEvent[];
   referencesVisualization?: boolean;
 }
 export interface ChatRunProjection {
@@ -53,12 +50,7 @@ export interface ChatRunProjection {
   attempt?: number;
   error?: RunFailure | null;
   sourcesRead?: readonly PublicSourceRecord[];
-  activities?: readonly {
-    stage: RunStageId;
-    status: StageStatus;
-    code?: string;
-    attempt?: number;
-  }[];
+  activities?: readonly AiRunActivityEvent[];
 }
 export interface VisualizationVersion {
   id: string;

@@ -315,6 +315,8 @@ export function Transcript({
             locale={locale}
             {...(run.stages === undefined ? {} : { stages: run.stages })}
             {...(run.attempt === undefined ? {} : { attempt: run.attempt })}
+            {...(run.activities === undefined ? {} : { activities: run.activities })}
+            {...(run.sourcesRead === undefined ? {} : { sourcesRead: run.sourcesRead })}
           />
           {(run.streamedText ?? message.content) && (
             <div className="min-h-24">

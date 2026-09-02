@@ -275,6 +275,129 @@ function isLayoutEnvelope(value: string): boolean {
     return false;
   }
 }
+const isActivityDetail = (value: unknown): boolean => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const detail = value as Record<string, unknown>;
+  if (!safeAttempt(detail.ordinal) || detail.ordinal === 0 || typeof detail.kind !== "string") {
+    return false;
+  }
+  if (detail.kind === "web_search") {
+    return (
+      shaped(detail, ["kind", "ordinal", "query"], ["cursor", "resultCount"]) &&
+      boundedText(detail.query, 4_096) &&
+      (detail.cursor === undefined || boundedText(detail.cursor, 4_096)) &&
+      (detail.resultCount === undefined || nonNegativeCount(detail.resultCount))
+    );
+  }
+  if (detail.kind === "web_fetch") {
+    return (
+      shaped(detail, ["kind", "ordinal", "url"], ["title", "domain", "capturedAt"]) &&
+      boundedText(detail.url, 8_192) &&
+      (detail.title === undefined || boundedText(detail.title, 1_024)) &&
+      (detail.domain === undefined || boundedText(detail.domain, 1_024)) &&
+      (detail.capturedAt === undefined || activityTimestamp(detail.capturedAt))
+    );
+  }
+  if (detail.kind === "source_search") {
+    return (
+      shaped(detail, ["kind", "ordinal", "candidateId"], ["query", "cursor", "resultCount"]) &&
+      safeRunId(detail.candidateId) &&
+      (detail.query === undefined || boundedText(detail.query, 4_096)) &&
+      (detail.cursor === undefined || boundedText(detail.cursor, 4_096)) &&
+      (detail.resultCount === undefined || nonNegativeCount(detail.resultCount))
+    );
+  }
+  if (detail.kind === "source_read") {
+    return (
+      exactKeys(detail, ["candidateId", "kind", "ordinal", "passageCount"]) &&
+      safeRunId(detail.candidateId) &&
+      nonNegativeCount(detail.passageCount)
+    );
+  }
+  if (detail.kind !== "internal_queries") return false;
+  if (
+    !exactKeys(detail, ["action", "kind", "ordinal", "plan", "queries"]) ||
+    (detail.plan !== "initial" && detail.plan !== "final") ||
+    (detail.action !== "search" && detail.action !== "skip") ||
+    !Array.isArray(detail.queries) ||
+    detail.queries.length > 64
+  ) {
+    return false;
+  }
+  const validAtom = (value_: unknown): boolean => {
+    if (value_ === null || typeof value_ !== "object" || Array.isArray(value_)) return false;
+    const atom = value_ as Record<string, unknown>;
+    return (
+      exactKeys(atom, ["mode", "text"]) &&
+      boundedText(atom.text, 512) &&
+      (atom.mode === "term" || atom.mode === "phrase")
+    );
+  };
+  const validAtomList = (value_: unknown): boolean =>
+    Array.isArray(value_) && value_.length <= 64 && value_.every(validAtom);
+  const validInterval = (value_: unknown): boolean => {
+    if (value_ === null || typeof value_ !== "object" || Array.isArray(value_)) return false;
+    const interval = value_ as Record<string, unknown>;
+    return (
+      shaped(interval, [], ["after", "before"]) &&
+      (interval.after === undefined || activityTimestamp(interval.after)) &&
+      (interval.before === undefined || activityTimestamp(interval.before))
+    );
+  };
+  const validTextList = (value_: unknown): boolean =>
+    Array.isArray(value_) && value_.length <= 64 && value_.every((item) => boundedText(item, 512));
+  const validTarget = (value_: unknown): boolean => {
+    if (value_ === null || typeof value_ !== "object" || Array.isArray(value_)) return false;
+    const target = value_ as Record<string, unknown>;
+    if (!exactKeys(target, ["filters", "kind"])) return false;
+    if (
+      target.filters === null ||
+      typeof target.filters !== "object" ||
+      Array.isArray(target.filters)
+    ) {
+      return false;
+    }
+    const filters = target.filters as Record<string, unknown>;
+    if (target.kind === "documents") {
+      return (
+        shaped(
+          filters,
+          [],
+          ["sourceNames", "countries", "languages", "documentTypes", "publishedAt"],
+        ) &&
+        (filters.sourceNames === undefined || validTextList(filters.sourceNames)) &&
+        (filters.countries === undefined || validTextList(filters.countries)) &&
+        (filters.languages === undefined || validTextList(filters.languages)) &&
+        (filters.documentTypes === undefined || validTextList(filters.documentTypes)) &&
+        (filters.publishedAt === undefined || validInterval(filters.publishedAt))
+      );
+    }
+    return (
+      target.kind === "chat_messages" &&
+      shaped(filters, [], ["authors", "sentAt"]) &&
+      (filters.authors === undefined ||
+        (Array.isArray(filters.authors) &&
+          filters.authors.every((author) => author === "user" || author === "assistant"))) &&
+      (filters.sentAt === undefined || validInterval(filters.sentAt))
+    );
+  };
+  return detail.queries.every((value_) => {
+    if (value_ === null || typeof value_ !== "object" || Array.isArray(value_)) return false;
+    const query = value_ as Record<string, unknown>;
+    return (
+      exactKeys(query, ["all", "anyOf", "not", "order", "purpose", "targets"]) &&
+      boundedText(query.purpose, 4_096) &&
+      Array.isArray(query.targets) &&
+      query.targets.every(validTarget) &&
+      validAtomList(query.all) &&
+      Array.isArray(query.anyOf) &&
+      query.anyOf.length <= 64 &&
+      query.anyOf.every(validAtomList) &&
+      validAtomList(query.not) &&
+      (query.order === "relevance" || query.order === "newest" || query.order === "oldest")
+    );
+  });
+};
 const isActivity = (value: unknown): boolean => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const activity = value as Record<string, unknown>;
@@ -294,6 +417,7 @@ const isActivity = (value: unknown): boolean => {
         "errorCode",
         "errorCategory",
         "errorMessage",
+        "detail",
       ],
     ) &&
     activity.type === "activity" &&
@@ -318,7 +442,8 @@ const isActivity = (value: unknown): boolean => {
       activityErrorCategories.includes(
         activity.errorCategory as (typeof activityErrorCategories)[number],
       )) &&
-    (activity.errorMessage === undefined || boundedText(activity.errorMessage, 512))
+    (activity.errorMessage === undefined || boundedText(activity.errorMessage, 512)) &&
+    (activity.detail === undefined || isActivityDetail(activity.detail))
   );
 };
 function isStreamEnvelope(value: string): boolean {
