@@ -1,11 +1,10 @@
 import type { Locale } from "@hartlib/i18n";
 import {
   AppShell,
-  AssistantMessage,
-  RunActivity,
-  UserMessage,
+  Transcript,
   type AiRunActivityEvent,
-  type RunStageId,
+  type ChatRunProjection,
+  type ChatTranscriptMessage,
   type RunStages,
 } from "@hartlib/ui";
 
@@ -13,14 +12,6 @@ import {
   failedChatUxRunFixture as failedFixture,
   successfulChatUxRunFixture as successfulFixture,
 } from "./fixtures/chat-ux-run.fixture";
-
-const STAGE_ORDER: readonly RunStageId[] = [
-  "understanding",
-  "evidence",
-  "preparing",
-  "writing",
-  "finishing",
-];
 
 function stagesForActivities(activities: readonly AiRunActivityEvent[]): RunStages {
   const stages: RunStages = {
@@ -30,34 +21,45 @@ function stagesForActivities(activities: readonly AiRunActivityEvent[]): RunStag
     writing: "waiting",
     finishing: "waiting",
   };
-  const latestByAction = new Map<string, AiRunActivityEvent>();
-  for (const activity of activities) {
-    const detailKey = activity.detail
-      ? `${activity.detail.kind}:${activity.detail.ordinal}`
-      : "phase";
-    latestByAction.set(
-      `${activity.stage}:${activity.topicId ?? "run"}:${activity.code}:${detailKey}`,
-      activity,
-    );
-  }
-  for (const stage of STAGE_ORDER) {
-    const events = [...latestByAction.values()].filter((activity) => activity.stage === stage);
-    if (events.length === 0) continue;
-    if (events.some((activity) => activity.status === "failed")) stages[stage] = "failed";
-    else if (events.some((activity) => activity.status === "retrying")) stages[stage] = "retrying";
-    else if (events.some((activity) => activity.status === "running")) stages[stage] = "running";
-    else if (
-      events.every((activity) => activity.status === "complete" || activity.status === "skipped")
-    ) {
-      stages[stage] = "complete";
-    }
-  }
+  for (const activity of activities) stages[activity.stage] = activity.status;
   return stages;
 }
 
+const successfulMessages: readonly ChatTranscriptMessage[] = [
+  {
+    id: "chat-ux-success-user",
+    author: "user",
+    content: successfulFixture.question,
+  },
+  {
+    id: "chat-ux-success-answer",
+    author: "assistant",
+    content: successfulFixture.answer,
+    createdAt: successfulFixture.capturedAt,
+    citations: successfulFixture.citations,
+    sourcesRead: successfulFixture.sourcesRead,
+  },
+];
+
 const failedActivities: readonly AiRunActivityEvent[] = failedFixture.run.activities;
-const failedStages = stagesForActivities(failedActivities);
-const failedAttempt = Math.max(0, ...failedActivities.map((activity) => activity.attempt ?? 0));
+const failedRunId = failedActivities.find((activity) => activity.runId !== undefined)?.runId;
+if (failedRunId === undefined)
+  throw new Error("The failed chat fixture requires a recorded run id");
+const failedMessages: readonly ChatTranscriptMessage[] = [
+  {
+    id: "chat-ux-failed-user",
+    author: "user",
+    content: failedFixture.question,
+  },
+];
+const failedRun: ChatRunProjection = {
+  id: failedRunId,
+  status: failedFixture.run.status,
+  stages: stagesForActivities(failedActivities),
+  attempt: Math.max(0, ...failedActivities.map((activity) => activity.attempt ?? 0)),
+  activities: failedActivities,
+  sourcesRead: failedFixture.sourcesRead,
+};
 
 export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
   const prefix = `/${locale}`;
@@ -73,50 +75,17 @@ export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
     >
       <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-8 pb-12">
         <section
-          className="grid min-w-0 gap-6 rounded-tiny border border-line bg-surface p-3 sm:p-6"
+          className="h-[32rem] min-h-0 overflow-hidden rounded-tiny border border-line bg-surface"
           aria-label="Completed captured chat"
         >
-          <UserMessage
-            message={{
-              id: "chat-ux-success-user",
-              author: "user",
-              content: successfulFixture.question,
-            }}
-            locale={locale}
-          />
-          <AssistantMessage
-            message={{
-              id: "chat-ux-success-answer",
-              author: "assistant",
-              content: successfulFixture.answer,
-              createdAt: successfulFixture.capturedAt,
-              citations: successfulFixture.citations,
-              sourcesRead: successfulFixture.sourcesRead,
-            }}
-            locale={locale}
-          />
+          <Transcript messages={successfulMessages} locale={locale} />
         </section>
 
         <section
-          className="grid min-w-0 gap-6 rounded-tiny border border-line bg-surface p-3 sm:p-6"
+          className="h-[40rem] min-h-0 overflow-hidden rounded-tiny border border-line bg-surface"
           aria-label="Failed captured chat"
         >
-          <UserMessage
-            message={{
-              id: "chat-ux-failed-user",
-              author: "user",
-              content: failedFixture.question,
-            }}
-            locale={locale}
-          />
-          <RunActivity
-            status={failedFixture.run.status}
-            stages={failedStages}
-            attempt={failedAttempt}
-            activities={failedFixture.run.activities}
-            sourcesRead={failedFixture.sourcesRead}
-            locale={locale}
-          />
+          <Transcript messages={failedMessages} run={failedRun} locale={locale} />
         </section>
       </div>
     </AppShell>
