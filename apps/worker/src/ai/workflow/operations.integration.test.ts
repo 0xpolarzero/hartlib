@@ -418,5 +418,46 @@ describe.skipIf(sourceDatabaseUrl === undefined)("canonical AI operations", () =
     expect(exposures).toEqual([
       { runId: fixture.runId, sourceId: `public:${fixture.publicSourceId}` },
     ]);
+    const activityDetails = await runDb(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* sql<{ readonly event: Record<string, unknown> }>`
+          select event
+          from ai_run_events
+          where run_id = ${fixture.runId}
+            and event->>'type' = 'activity'
+            and event->'detail'->>'kind' = 'internal_queries'
+          order by seq
+        `;
+      }),
+    );
+    expect(activityDetails.map(({ event }) => event)).toEqual([
+      expect.objectContaining({
+        status: "running",
+        detail: expect.objectContaining({
+          plan: "initial",
+          action: "search",
+          queries: [
+            expect.objectContaining({
+              purpose: "retrieve public liquidity evidence",
+              all: [{ text: "liquidity", mode: "term" }],
+            }),
+          ],
+        }),
+      }),
+      expect.objectContaining({
+        status: "complete",
+        detail: expect.objectContaining({
+          plan: "final",
+          action: "search",
+          queries: [
+            expect.objectContaining({
+              purpose: "retrieve public liquidity evidence",
+              all: [{ text: "liquidity", mode: "term" }],
+            }),
+          ],
+        }),
+      }),
+    ]);
   }, 120_000);
 });

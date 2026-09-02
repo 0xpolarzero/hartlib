@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AiRunActivityEvent,
   PublicCitationRecord,
   UserMessageRunOutcome,
   makeRunAcceptanceScope,
+  aiRunActivityTransitionKey,
   parseRunAcceptanceScope,
 } from "./chat";
 import { Schema } from "effect";
@@ -70,5 +72,53 @@ describe("singular chat contracts", () => {
       status: "stopped",
       stoppedAt: "2026-01-01T00:00:00.000Z",
     });
+  });
+
+  it("accepts strict recorded activity details and rejects captions", () => {
+    const decodeActivity = Schema.decodeUnknownSync(AiRunActivityEvent, {
+      onExcessProperty: "error",
+    });
+    const event = decodeActivity({
+      type: "activity",
+      stage: "evidence",
+      code: "web_research",
+      status: "complete",
+      occurredAt: "2026-05-12T10:00:00.000Z",
+      detail: {
+        kind: "web_search",
+        ordinal: 1,
+        query: "site:example.com exact query",
+        resultCount: 3,
+      },
+    });
+    expect(event.detail).toMatchObject({
+      kind: "web_search",
+      query: "site:example.com exact query",
+      resultCount: 3,
+    });
+    expect(() =>
+      decodeActivity({
+        ...event,
+        detail: { ...event.detail, label: "Cross-checking claims" },
+      }),
+    ).toThrow();
+  });
+
+  it("keeps separate recorded tool actions in activity history", () => {
+    const decodeActivity = Schema.decodeUnknownSync(AiRunActivityEvent, {
+      onExcessProperty: "error",
+    });
+    const first = decodeActivity({
+      type: "activity",
+      stage: "evidence",
+      code: "web_research",
+      status: "complete",
+      detail: { kind: "web_search", ordinal: 1, query: "first" },
+    });
+    const second = decodeActivity({
+      ...first,
+      detail: { kind: "web_search", ordinal: 2, query: "second" },
+    });
+    expect(aiRunActivityTransitionKey(first)).not.toBe(aiRunActivityTransitionKey(second));
   });
 });

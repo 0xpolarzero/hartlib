@@ -279,13 +279,25 @@ terminal event.
 The event union includes:
 
 - `run_started`;
-- typed activity transitions for exactly five ordered stages;
+- typed activity transitions for exactly five ordered stages, with optional
+  strict details for normalized internal query plans, exact web search calls,
+  canonical web fetch identities, and bounded source search and read actions;
 - `context_ready` with mode, compaction flag, sources, and consumers;
 - `answer_started` and ordered `text_delta` values;
 - `memory_updated` and usage events;
 - `done` with an assistant message ID;
 - `stopped` with an assistant message ID or `null`; and
 - `error` with a closed code, retryability, stage, attempt, and safe message.
+
+Activity details use fixed variants and positive per-action ordinals. They may
+contain query text, normalized targets and filters, result and passage counts,
+canonical URLs, verified titles and domains, capture times, event times,
+durations, attempts, and safe error fields. They never contain presentation
+captions. A replacement internal query plan is public only when each string
+already occurs in the question or initial plan; otherwise the completed
+initial plan remains public. Source search query text is public only when every
+normalized term comes from the user's question; the action, candidate ID, and
+result count remain public otherwise.
 
 The public run outcome is `queued`, `running`, `succeeded`, `failed`, or
 `stopped`. The public debug projection has the same status set, five ordered

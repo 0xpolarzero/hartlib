@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 
 import {
+  activityStageForCode,
   isCanonicalPublicDocumentSourceId,
   type AiProviderEndpointIdentity,
   type AiProviderServiceId,
+  type AiRunActivityDetail,
+  type AiRunActivityEvent,
   type PublicContextConsumer,
 } from "@hartlib/shared";
 import { PgClient } from "@effect/sql-pg";
@@ -1074,6 +1077,45 @@ export class CanonicalWorkflowOperations {
       signal === undefined ? undefined : { signal },
     );
   }
+  private emitActivityDetail(
+    load: Pick<LoadedTurn, "aiRunId">,
+    taskId: string,
+    code: AiRunActivityEvent["code"],
+    status: "running" | "complete" | "failed",
+    detail: AiRunActivityDetail,
+  ): Promise<void> {
+    const topicMatch = /^topic-(t[123])-/u.exec(taskId)?.[1];
+    const topicId =
+      topicMatch === "t1" || topicMatch === "t2" || topicMatch === "t3" ? topicMatch : undefined;
+    const attempt = currentTaskRuntime()?.attempt ?? 1;
+    const event: AiRunActivityEvent = {
+      type: "activity",
+      stage: activityStageForCode(code),
+      code,
+      status,
+      runId: load.aiRunId,
+      occurredAt: this.now().toISOString(),
+      attempt,
+      ...(topicId === undefined ? {} : { topicId }),
+      detail,
+    };
+    return this.db(
+      appendAiRunEvent({
+        runId: load.aiRunId,
+        emissionKey: [
+          "activity-detail",
+          code,
+          taskId,
+          detail.kind,
+          detail.ordinal,
+          status,
+          attempt,
+        ].join(":"),
+        event,
+        emittedByTask: taskId,
+      }),
+    ).then(() => undefined);
+  }
 
   private observe(
     load: Pick<LoadedTurn, "aiRunId" | "chatId">,
@@ -1483,6 +1525,19 @@ export class CanonicalWorkflowOperations {
         };
       },
     })) as InternalQueryPlanValue;
+    await this.emitActivityDetail(
+      load,
+      taskId,
+      "internal_sources",
+      plan.action === "search" ? "running" : "complete",
+      {
+        kind: "internal_queries",
+        ordinal: 1,
+        plan: "initial",
+        action: plan.action,
+        queries: plan.action === "search" ? plan.queries : [],
+      },
+    );
 
     const excludedMessageIds = selectedConversation.flatMap((entry) => [
       entry.userMessageId,
@@ -1629,6 +1684,38 @@ export class CanonicalWorkflowOperations {
       await this.taskExecutionCoordinates(load.aiRunId, taskId),
     );
 
+    const replacementPlan = structuredRetrievalTrace.replacementPlan;
+    let replacementIsPublic = replacementPlan === null;
+    if (replacementPlan !== null) {
+      replacementIsPublic = true;
+      const publicBasis = normalizeAndCaseFold(
+        JSON.stringify({ question, initialPlan: structuredRetrievalTrace.initialPlan }),
+      );
+      const pending: unknown[] = [replacementPlan];
+      while (pending.length > 0) {
+        const value = pending.pop();
+        if (typeof value === "string") {
+          if (!publicBasis.includes(normalizeAndCaseFold(value))) {
+            replacementIsPublic = false;
+            break;
+          }
+        } else if (Array.isArray(value)) {
+          pending.push(...value);
+        } else if (value !== null && typeof value === "object") {
+          pending.push(...Object.values(value));
+        }
+      }
+    }
+    const publicPlan = replacementIsPublic
+      ? (replacementPlan ?? structuredRetrievalTrace.initialPlan)
+      : structuredRetrievalTrace.initialPlan;
+    await this.emitActivityDetail(load, taskId, "internal_sources", "complete", {
+      kind: "internal_queries",
+      ordinal: 1,
+      plan: replacementIsPublic ? "final" : "initial",
+      action: publicPlan.action,
+      queries: publicPlan.action === "search" ? publicPlan.queries : [],
+    });
     const references =
       reviewedResult?.previewExposures.map((exposure, index) => {
         const identity = exposure.identity;
@@ -3253,6 +3340,12 @@ export class CanonicalWorkflowOperations {
               };
             }
             await this.validateSavedScope(load);
+            await this.emitActivityDetail(load, taskId, "web_research", "running", {
+              kind: "web_search",
+              ordinal: searches,
+              query: parsed.query,
+              ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+            });
             const result = await this.web!.search(
               parsed.query,
               load.locale,
@@ -3263,6 +3356,13 @@ export class CanonicalWorkflowOperations {
               signal,
             );
             throwIfAborted(signal);
+            await this.emitActivityDetail(load, taskId, "web_research", "complete", {
+              kind: "web_search",
+              ordinal: searches,
+              query: parsed.query,
+              ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+              resultCount: result.results.length,
+            });
             if (result.complete !== true || result.truncated === true) {
               // Preserve the boundary's hard-cap/incomplete result. The
               // canonical client will require its cursor obligation when one
@@ -3338,6 +3438,11 @@ export class CanonicalWorkflowOperations {
                 "web fetch requires a canonical URL discovered by an earlier complete search turn",
               );
             }
+            await this.emitActivityDetail(load, taskId, "web_research", "running", {
+              kind: "web_fetch",
+              ordinal: fetches,
+              url: normalizedRequestedUrl,
+            });
             const fetchedPage = await this.web!.fetch(url, webPolicy, coordinates, signal);
             throwIfAborted(signal);
             const page = {
@@ -3348,6 +3453,14 @@ export class CanonicalWorkflowOperations {
                 (value) => this.visibleTokenCount(value, load.acceptanceScope.fastModelId),
               ),
             } satisfies WebFetchedPage;
+            await this.emitActivityDetail(load, taskId, "web_research", "complete", {
+              kind: "web_fetch",
+              ordinal: fetches,
+              url: canonicalizeWebUrl(page.url),
+              title: page.title,
+              domain: page.domain,
+              capturedAt: page.capturedAt,
+            });
             fetched.set(canonicalizeWebUrl(page.url), page);
             const logicalSourceIdentity = canonicalizeWebUrl(page.url);
             const contentItemIdentity = `${logicalSourceIdentity}:${sha256Base64Url(page.text)}`;
@@ -5713,6 +5826,8 @@ export class CanonicalWorkflowOperations {
       .filter((passage) => priorResult === undefined || priorPassageIdSet.has(passage.passageId))
       .map(toProviderPassageView);
     const discovered = new Set<string>();
+    let sourceSearchOrdinal = 0;
+    let sourceReadOrdinal = 0;
     let terminalReady = false;
     const exposedSourcePassages = new Map<string, string>();
     let exposedSourceResultCount = 0;
@@ -5845,6 +5960,20 @@ export class CanonicalWorkflowOperations {
           };
           if (!truncated && page.length === 0) terminalReady = true;
           assertSourceToolResultBound(page, result);
+          sourceSearchOrdinal += 1;
+          const normalizedQuestion = normalizeAndCaseFold(state.question);
+          const queryIsQuestionDerived = normalizedTerms
+            .split(/\s+/u)
+            .filter(Boolean)
+            .every((term) => normalizedQuestion.includes(term));
+          await this.emitActivityDetail(load, taskId, "context_preparation", "complete", {
+            kind: "source_search",
+            ordinal: sourceSearchOrdinal,
+            candidateId: candidate.candidateId,
+            ...(queryIsQuestionDerived ? { query: parsed.query } : {}),
+            ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+            resultCount: page.length,
+          });
           for (const passage of page) discovered.add(passage.passageId);
           return result;
         },
@@ -5894,6 +6023,13 @@ export class CanonicalWorkflowOperations {
             __hartlibSourceIdentity: selected.map(privateIdentityForPassage),
           };
           assertSourceToolResultBound(selected, result);
+          sourceReadOrdinal += 1;
+          await this.emitActivityDetail(load, taskId, "context_preparation", "complete", {
+            kind: "source_read",
+            ordinal: sourceReadOrdinal,
+            candidateId: candidate.candidateId,
+            passageCount: selected.length,
+          });
           if (selected.length > 0) terminalReady = true;
           for (const passage of selected) discovered.add(passage.passageId);
           return result;

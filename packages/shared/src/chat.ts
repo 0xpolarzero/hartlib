@@ -597,6 +597,131 @@ const SafeDebugCount = Schema.Number.pipe(
   Schema.check(Schema.isLessThanOrEqualTo(1_000_000_000)),
 );
 
+const SafeActivityDetailText = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(4_096)),
+);
+const SafeActivityUrl = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(8_192)),
+);
+const SafeActivityTitle = Schema.String.pipe(
+  Schema.check(Schema.isNonEmpty()),
+  Schema.check(Schema.isMaxLength(1_024)),
+);
+const SafeActivityOrdinal = Schema.Number.pipe(
+  Schema.check(Schema.isInt()),
+  Schema.check(Schema.isGreaterThanOrEqualTo(1)),
+  Schema.check(Schema.isLessThanOrEqualTo(1_000_000)),
+);
+const PublicActivityQueryAtom = Schema.Struct({
+  text: Schema.String.pipe(
+    Schema.check(Schema.isNonEmpty()),
+    Schema.check(Schema.isMaxLength(512)),
+  ),
+  mode: Schema.Literals(["term", "phrase"]),
+});
+const PublicActivityQueryAtoms = Schema.Array(PublicActivityQueryAtom).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly Schema.Schema.Type<typeof PublicActivityQueryAtom>[]>((atoms) =>
+      atoms.length <= 64 ? undefined : "activity query has more than 64 atoms",
+    ),
+  ),
+);
+const PublicActivityAnyOf = Schema.Array(PublicActivityQueryAtoms).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly (readonly Schema.Schema.Type<typeof PublicActivityQueryAtom>[])[]>(
+      (groups) => (groups.length <= 64 ? undefined : "activity query has more than 64 groups"),
+    ),
+  ),
+);
+const PublicActivityTextList = Schema.Array(
+  Schema.String.pipe(Schema.check(Schema.isNonEmpty()), Schema.check(Schema.isMaxLength(512))),
+).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly string[]>((values) =>
+      values.length <= 64 ? undefined : "activity filter has more than 64 values",
+    ),
+  ),
+);
+const PublicActivityTimestampInterval = Schema.Struct({
+  after: Schema.optional(SafeActivityTimestamp),
+  before: Schema.optional(SafeActivityTimestamp),
+});
+const PublicActivityQueryTarget = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("documents"),
+    filters: Schema.Struct({
+      sourceNames: Schema.optional(PublicActivityTextList),
+      countries: Schema.optional(PublicActivityTextList),
+      languages: Schema.optional(PublicActivityTextList),
+      documentTypes: Schema.optional(PublicActivityTextList),
+      publishedAt: Schema.optional(PublicActivityTimestampInterval),
+    }),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("chat_messages"),
+    filters: Schema.Struct({
+      authors: Schema.optional(Schema.Array(Schema.Literals(["user", "assistant"]))),
+      sentAt: Schema.optional(PublicActivityTimestampInterval),
+    }),
+  }),
+]);
+const PublicActivityInternalQuery = Schema.Struct({
+  purpose: SafeActivityDetailText,
+  targets: Schema.Array(PublicActivityQueryTarget),
+  all: PublicActivityQueryAtoms,
+  anyOf: PublicActivityAnyOf,
+  not: PublicActivityQueryAtoms,
+  order: Schema.Literals(["relevance", "newest", "oldest"]),
+});
+const PublicActivityInternalQueries = Schema.Array(PublicActivityInternalQuery).pipe(
+  Schema.check(
+    Schema.makeFilter<readonly Schema.Schema.Type<typeof PublicActivityInternalQuery>[]>(
+      (queries) =>
+        queries.length <= 64 ? undefined : "activity has more than 64 internal queries",
+    ),
+  ),
+);
+export const AiRunActivityDetail = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("internal_queries"),
+    ordinal: SafeActivityOrdinal,
+    plan: Schema.Literals(["initial", "final"]),
+    action: Schema.Literals(["search", "skip"]),
+    queries: PublicActivityInternalQueries,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("web_search"),
+    ordinal: SafeActivityOrdinal,
+    query: SafeActivityDetailText,
+    cursor: Schema.optional(SafeActivityDetailText),
+    resultCount: Schema.optional(SafeDebugCount),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("web_fetch"),
+    ordinal: SafeActivityOrdinal,
+    url: SafeActivityUrl,
+    title: Schema.optional(SafeActivityTitle),
+    domain: Schema.optional(SafeActivityTitle),
+    capturedAt: Schema.optional(SafeActivityTimestamp),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("source_search"),
+    ordinal: SafeActivityOrdinal,
+    candidateId: SafeRunIdentity,
+    query: Schema.optional(SafeActivityDetailText),
+    cursor: Schema.optional(SafeActivityDetailText),
+    resultCount: Schema.optional(SafeDebugCount),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("source_read"),
+    ordinal: SafeActivityOrdinal,
+    candidateId: SafeRunIdentity,
+    passageCount: SafeDebugCount,
+  }),
+]);
+export type AiRunActivityDetail = Schema.Schema.Type<typeof AiRunActivityDetail>;
 const publicDebugStageOrder = [
   "understanding",
   "evidence",
@@ -625,6 +750,7 @@ export const AiRunActivityEvent = Schema.Struct({
   errorCategory: Schema.optional(AiRunActivityErrorCategory),
   /** Bounded, content-free explanation. Never a provider body or stack trace. */
   errorMessage: Schema.optional(SafeActivityMessage),
+  detail: Schema.optional(AiRunActivityDetail),
 });
 export type AiRunActivityEvent = Schema.Schema.Type<typeof AiRunActivityEvent>;
 
@@ -758,6 +884,7 @@ export const aiRunActivityTransitionKey = (event: AiRunActivityEvent): string =>
     event.errorCode ?? "",
     event.errorCategory ?? "",
     event.errorMessage ?? "",
+    event.detail === undefined ? "" : JSON.stringify(event.detail),
   ].join("|");
 
 /** Apply one ordered SSE activity transition without duplicating replayed data. */
