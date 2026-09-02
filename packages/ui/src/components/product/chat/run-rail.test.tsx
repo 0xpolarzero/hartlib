@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { RunRail } from "./run-rail";
+import { RunRail, RunStatusLine } from "./run-rail";
 
 describe("run rail", () => {
   it("shows exactly five stable decorative stages", () => {
@@ -28,5 +28,12 @@ describe("run rail", () => {
     const html = renderToStaticMarkup(<RunRail />);
 
     expect(html).not.toContain("opacity-50");
+  });
+  it("shows a non-animated completed status", () => {
+    const html = renderToStaticMarkup(<RunStatusLine status="succeeded" />);
+
+    expect(html).toContain("Complete");
+    expect(html).not.toContain("Working");
+    expect(html).not.toContain("animate-pulse-soft");
   });
 });

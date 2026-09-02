@@ -101,6 +101,12 @@ export { MemoriesPanel, type MemoriesPanelProps } from "./components/product/cha
 export { RunRail, RunStatusLine } from "./components/product/chat/run-rail";
 export { RunActivity, type RunActivityProps } from "./components/product/chat/run-activity";
 export {
+  RunHistoryDisclosure,
+  runHistorySnapshotFromDebug,
+  type RunHistoryDisclosureProps,
+  type RunHistoryLoader,
+} from "./components/product/chat/run-history-disclosure";
+export {
   SourcesDisclosure,
   type SourcesDisclosureProps,
 } from "./components/product/chat/sources-disclosure";
@@ -142,7 +148,9 @@ export type {
   PublicSourceRecord,
   RunStageId,
   RunStages,
+  RunHistorySnapshot,
   StageStatus,
+  TerminalRunStatus,
   VisualizationAssociation,
   VisualizationPresentationState,
   VisualizationState,

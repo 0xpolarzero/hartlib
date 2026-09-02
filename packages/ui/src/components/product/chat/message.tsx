@@ -19,6 +19,7 @@ import {
 } from "../../ui/overlays";
 import { Tooltip } from "../../ui/overlays";
 import { AnswerBody, type CopyAdapter } from "./markdown";
+import { RunHistoryDisclosure, type RunHistoryLoader } from "./run-history-disclosure";
 import { SourcesDisclosure } from "./sources-disclosure";
 import type { ChatTranscriptMessage, PublicCitationRecord, RunFailure } from "./types";
 export const FailureBlock = memo(function FailureBlock({
@@ -127,6 +128,7 @@ export const UserMessage = memo(function UserMessage({
   onDelete,
   onEdit,
   onRetry,
+  loadRunHistory,
   canEdit = false,
   locale = "en-US",
 }: {
@@ -134,6 +136,7 @@ export const UserMessage = memo(function UserMessage({
   onDelete?: (message: ChatTranscriptMessage) => void;
   onEdit?: (message: ChatTranscriptMessage) => void;
   onRetry?: (message: ChatTranscriptMessage) => void;
+  loadRunHistory?: RunHistoryLoader;
   canEdit?: boolean;
   locale?: string;
 }) {
@@ -222,6 +225,19 @@ export const UserMessage = memo(function UserMessage({
           />
         )}
       </div>
+      {message.runId &&
+        message.runStatus &&
+        (message.runHistory !== undefined || loadRunHistory !== undefined) && (
+          <div className="mt-2 w-full">
+            <RunHistoryDisclosure
+              runId={message.runId}
+              status={message.runStatus}
+              {...(message.runHistory === undefined ? {} : { snapshot: message.runHistory })}
+              {...(loadRunHistory === undefined ? {} : { load: loadRunHistory })}
+              locale={locale}
+            />
+          </div>
+        )}
       {message.failure && (
         <FailureBlock
           failure={message.failure}
@@ -236,6 +252,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   message,
   onDelete,
   onDebug,
+  loadRunHistory,
   onShowVisualization,
   isLast = false,
   locale = "en-US",
@@ -247,6 +264,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   onDelete?: (message: ChatTranscriptMessage) => void;
   onDebug?: (runId: string) => void;
   onShowVisualization?: (message: ChatTranscriptMessage) => void;
+  loadRunHistory?: RunHistoryLoader;
   onRegenerate?: () => void;
   isLast?: boolean;
   locale?: string;
@@ -298,6 +316,18 @@ export const AssistantMessage = memo(function AssistantMessage({
           {...(onDelete === undefined ? {} : { onDelete })}
         />
       </header>
+      {!message.streaming &&
+        message.runId &&
+        message.runStatus &&
+        (message.runHistory !== undefined || loadRunHistory !== undefined) && (
+          <RunHistoryDisclosure
+            runId={message.runId}
+            status={message.runStatus}
+            {...(message.runHistory === undefined ? {} : { snapshot: message.runHistory })}
+            {...(loadRunHistory === undefined ? {} : { load: loadRunHistory })}
+            locale={locale}
+          />
+        )}
       <AnswerBody
         content={message.content}
         sources={message.citations ?? []}

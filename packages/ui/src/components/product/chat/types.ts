@@ -26,6 +26,12 @@ export interface RunDiagnostics {
   memoryUpdated?: unknown;
   terminalFailure?: RunFailure | null;
 }
+export type TerminalRunStatus = "succeeded" | "failed" | "stopped";
+export interface RunHistorySnapshot {
+  readonly status: TerminalRunStatus;
+  readonly stages: RunStages;
+  readonly activities: readonly AiRunActivityEvent[];
+}
 export interface ChatTranscriptMessage {
   id: string;
   author: "user" | "assistant";
@@ -40,6 +46,8 @@ export interface ChatTranscriptMessage {
   failure?: RunFailure | null;
   diagnostics?: RunDiagnostics;
   activities?: readonly AiRunActivityEvent[];
+  runStatus?: TerminalRunStatus;
+  runHistory?: RunHistorySnapshot;
   referencesVisualization?: boolean;
 }
 export interface ChatRunProjection {

@@ -15,6 +15,7 @@ import { Button } from "../../ui/button";
 import { ErrorState } from "../../ui/states";
 import { AssistantMessage, FailureBlock, UserMessage } from "./message";
 import { RunActivity } from "./run-activity";
+import type { RunHistoryLoader } from "./run-history-disclosure";
 import { AnswerBody, type CopyAdapter } from "./markdown";
 import type { ChatRunProjection, ChatTranscriptMessage, PublicCitationRecord } from "./types";
 
@@ -30,6 +31,7 @@ export interface TranscriptProps {
   onRetryMessage?: (message: ChatTranscriptMessage) => void;
   canEditLastUser?: boolean;
   onDebug?: (runId: string) => void;
+  loadRunHistory?: RunHistoryLoader;
   onShowVisualization?: (message: ChatTranscriptMessage) => void;
   onCitation?: (citation: PublicCitationRecord) => void | Promise<void>;
   copyAdapter?: CopyAdapter;
@@ -61,6 +63,7 @@ export function Transcript({
   onRetryMessage,
   canEditLastUser = false,
   onDebug,
+  loadRunHistory,
   onShowVisualization,
   onCitation,
   copyAdapter,
@@ -350,6 +353,7 @@ export function Transcript({
             ? { onEdit: onEditMessage }
             : {})}
           locale={locale}
+          {...(loadRunHistory === undefined ? {} : { loadRunHistory })}
           canEdit={message.id === lastUserId && canEditLastUser}
         />
       );
@@ -358,6 +362,7 @@ export function Transcript({
         message={message}
         {...(onDeleteMessage === undefined ? {} : { onDelete: onDeleteMessage })}
         {...(onDebug === undefined ? {} : { onDebug })}
+        {...(loadRunHistory === undefined ? {} : { loadRunHistory })}
         {...(onShowVisualization === undefined ? {} : { onShowVisualization })}
         {...(onCitation === undefined ? {} : { onCitation })}
         {...(copyAdapter === undefined ? {} : { copyAdapter })}

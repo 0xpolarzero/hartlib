@@ -99,6 +99,10 @@ const demoApi = createProductApiClient({
   fetch: demoFetch,
   ...(publicApiBaseUrl === "" ? {} : { baseUrl: publicApiBaseUrl }),
 });
+const loadRunDebug = async (runId: string) => {
+  const response = await demoApi.fetchAiRunDebug(runId);
+  return response.available ? response.debug : null;
+};
 const documentBrowser: AuthenticatedDocumentBrowser = {
   openPendingWindow: () => {
     const opened = window.open("about:blank", "_blank");
@@ -1243,6 +1247,7 @@ function App({
             onRetryMessage={(message) => void startRun(message.content, message.id)}
             canEditLastUser={!resetPending}
             onDebug={setDebugRunId}
+            loadRunHistory={loadRunDebug}
             onCitation={handleCitation}
             copyAdapter={copyAdapter}
             focusMessageId={focusMessageId}
@@ -1367,10 +1372,7 @@ function App({
         {...(debugRunId === null
           ? {}
           : {
-              load: async (runId: string) => {
-                const response = await demoApi.fetchAiRunDebug(runId);
-                return response.available ? response.debug : null;
-              },
+              load: loadRunDebug,
             })}
       />
     </AppShell>

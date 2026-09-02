@@ -15,11 +15,12 @@ gallery, the temporary locale chat UX review page at `/[locale]/chat-ux`, and
 `/docs`. Unknown paths show a branded localized 404.
 
 The chat UX review page renders two boxed instances of the production
-`Transcript` component. The successful fixture shows the persisted terminal
-state: user question, completed live-model answer, citations, and sources. The
-failed fixture shows the terminal stream frame with exact full-stack activity
-and retry records. The page adds no showcase headings, metrics, or explanatory
-copy.
+`Transcript` component. Terminal user and assistant messages retain a compact
+run disclosure, collapsed by default. Opening it loads the owner-authorized
+safe run projection and shows its stage and retry history inline. The
+successful fixture includes its live-model answer, citations, and sources; the
+failed fixture includes exact full-stack activity and retry records. The page
+adds no showcase headings, metrics, or explanatory copy.
 
 ## Demo
 

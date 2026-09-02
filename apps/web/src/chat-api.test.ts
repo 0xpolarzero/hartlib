@@ -17,6 +17,7 @@ describe("mapApiMessagesToTranscript", () => {
         author: "assistant",
         content: "Answer",
         createdAt: "2026-07-09T05:01:00.000Z",
+        runId: "r1",
         citations: [
           {
             sourceKey: "k1",
@@ -49,11 +50,37 @@ describe("mapApiMessagesToTranscript", () => {
     ] as unknown as readonly ChatMessage[];
     expect(mapApiMessagesToTranscript(messages)).toMatchObject([
       { id: "m1", stopped: true, author: "user" },
-      { id: "m2", author: "assistant", content: "Answer" },
+      { id: "m2", author: "assistant", content: "Answer", runStatus: "stopped" },
     ]);
+    expect(mapApiMessagesToTranscript(messages)[0]?.runStatus).toBeUndefined();
     const assistant = mapApiMessagesToTranscript(messages)[1];
     expect(assistant?.author === "assistant" ? assistant.citations?.[0]?.quote : null).toEqual({
       text: "Evidence",
+    });
+  });
+
+  it("keeps a terminal failed run on the user message when no answer exists", () => {
+    const [message] = mapApiMessagesToTranscript([
+      {
+        id: "m1",
+        author: "user",
+        content: "Question",
+        createdAt: "2026-07-09T05:00:00.000Z",
+        run: {
+          id: "r1",
+          status: "failed",
+          errorCode: "web_research_failed",
+          retryable: false,
+          failedAt: "2026-07-09T05:00:01.000Z",
+        },
+      },
+    ]);
+
+    expect(message).toMatchObject({
+      author: "user",
+      runId: "r1",
+      runStatus: "failed",
+      failure: { code: "web_research_failed", retryable: false },
     });
   });
 });

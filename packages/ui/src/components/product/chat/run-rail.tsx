@@ -144,18 +144,24 @@ export function RunStatusLine({
     label ??
     (status === "queued"
       ? t(locale, "run.queued")
-      : status === "streaming"
-        ? t(locale, "run.streaming")
-        : status === "error"
-          ? t(locale, "run.failedShort", { attempt })
-          : t(locale, "run.working"));
+      : status === "succeeded" || status === "complete"
+        ? t(locale, "run.complete")
+        : status === "streaming"
+          ? t(locale, "run.streaming")
+          : status === "error" || status === "failed"
+            ? t(locale, "run.failedShort", { attempt })
+            : t(locale, "run.working"));
   return (
     <p className="font-mono text-[11px] tracking-wide text-ink-2">
       <span
         aria-hidden="true"
         className={cn(
           "mr-1.5 inline-block size-1.5 rounded-full",
-          status === "error" ? "bg-danger" : "animate-pulse-soft bg-accent",
+          status === "error" || status === "failed"
+            ? "bg-danger"
+            : status === "succeeded" || status === "complete"
+              ? "bg-accent"
+              : "animate-pulse-soft bg-accent",
         )}
       />
       {text}
