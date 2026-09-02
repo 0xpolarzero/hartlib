@@ -24,4 +24,9 @@ describe("run rail", () => {
     expect(html).toContain("lucide-loader-circle");
     expect(html).toContain("animate-spin");
   });
+  it("leaves waiting step circles empty", () => {
+    const html = renderToStaticMarkup(<RunRail />);
+
+    expect(html).not.toContain("opacity-50");
+  });
 });

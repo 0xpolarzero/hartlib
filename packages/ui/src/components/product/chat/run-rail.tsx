@@ -19,12 +19,7 @@ function StageGlyph({ status }: { status: StageStatus }) {
     case "running":
       return <LoaderCircle aria-hidden="true" className="size-3 animate-spin" strokeWidth={2} />;
     default:
-      return (
-        <span
-          aria-hidden="true"
-          className="block size-2 rounded-full border border-current opacity-50"
-        />
-      );
+      return null;
   }
 }
 
