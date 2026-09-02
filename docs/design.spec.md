@@ -14,11 +14,11 @@ publisher issue creation, publisher notification settings, locale component
 gallery, the temporary locale chat UX review page at `/[locale]/chat-ux`, and
 `/docs`. Unknown paths show a branded localized 404.
 
-The chat UX review page renders a typed fixture captured from a live
-full-stack request after `context_ready`. The fixture retains worker activity,
-retries, exact internal and web queries, the fetched web identity, and the
-three selected source records. The capture stops the run before it saves an
-answer; the page states that boundary instead of inventing answer text.
+The chat UX review page renders only two boxed, typed fixtures. The successful
+fixture contains a completed live-model answer grounded in one seeded internal
+source and one web record captured through live search. The failed fixture
+contains the exact activity and retry records from a terminal full-stack live
+run. The page adds no showcase headings, metrics, or explanatory copy.
 
 ## Demo
 

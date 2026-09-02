@@ -2,47 +2,32 @@ import type { AiRunActivityEvent } from "@hartlib/ui";
 
 import { describe, expect, it } from "vitest";
 
-import { chatUxRunFixture } from "./chat-ux-run.fixture";
+import { failedChatUxRunFixture, successfulChatUxRunFixture } from "./chat-ux-run.fixture";
 
-describe("chat UX live run fixture", () => {
-  it("contains recorded internal and web retrieval activity", () => {
-    const activities: readonly AiRunActivityEvent[] = chatUxRunFixture.run.activities;
-    expect(chatUxRunFixture.captureMode).toBe("running_after_context_ready");
-    expect(
-      activities.some(
-        (activity) =>
-          activity.detail?.kind === "internal_queries" && activity.status === "complete",
-      ),
-    ).toBe(true);
-    const webSearch = activities.find(
-      (activity) => activity.detail?.kind === "web_search" && activity.status === "complete",
-    );
-    expect(webSearch?.detail).toMatchObject({
-      kind: "web_search",
-      query: "raccordement solaire France Enedis statistiques officiel",
-      resultCount: 9,
-    });
-    const webFetch = activities.find(
-      (activity) => activity.detail?.kind === "web_fetch" && activity.status === "complete",
-    );
-    expect(webFetch?.detail).toMatchObject({
-      kind: "web_fetch",
-      domain: "www.statistiques.developpement-durable.gouv.fr",
-      title: "Statinfo - solaire photovoltaique",
-    });
-    expect(activities.filter((activity) => activity.status === "retrying").length).toBeGreaterThan(
-      0,
-    );
-  });
-
-  it("contains the three source records selected for answer context", () => {
-    expect(chatUxRunFixture.sourcesRead.map((source) => source.kind)).toEqual([
-      "document",
+describe("chat UX captured run fixtures", () => {
+  it("contains a completed live answer grounded in one internal and one web source", () => {
+    expect(successfulChatUxRunFixture.captureMode).toBe("completed");
+    expect(successfulChatUxRunFixture.answer).toContain("25.3 GW");
+    expect(successfulChatUxRunFixture.answer).toContain("[1]");
+    expect(successfulChatUxRunFixture.answer).toContain("[2]");
+    expect(successfulChatUxRunFixture.citations).toHaveLength(2);
+    expect(successfulChatUxRunFixture.sourcesRead.map((source) => source.kind)).toEqual([
       "document",
       "web",
     ]);
-    expect(chatUxRunFixture.sourcesRead.map((source) => source.sourceKey)).toHaveLength(3);
-    expect(chatUxRunFixture.answer).toBeNull();
-    expect(chatUxRunFixture.answerState).toBe("not_started");
+  });
+
+  it("contains a terminal live failure with its retry history", () => {
+    const activities: readonly AiRunActivityEvent[] = failedChatUxRunFixture.run.activities;
+    expect(failedChatUxRunFixture.captureMode).toBe("failed");
+    expect(failedChatUxRunFixture.run.status).toBe("failed");
+    expect(failedChatUxRunFixture.run.errorCode).toBe("web_research_failed");
+    expect(activities.some((activity) => activity.status === "retrying")).toBe(true);
+    expect(activities.some((activity) => activity.detail?.kind === "web_search")).toBe(true);
+    expect(
+      activities.some(
+        (activity) => activity.code === "web_research" && activity.status === "failed",
+      ),
+    ).toBe(true);
   });
 });

@@ -1,14 +1,19 @@
 import type { Locale } from "@hartlib/i18n";
 import {
   AppShell,
+  AssistantMessage,
   RunActivity,
-  SourcesDisclosure,
+  UserMessage,
   type AiRunActivityEvent,
   type RunStageId,
   type RunStages,
 } from "@hartlib/ui";
 
-import { chatUxRunFixture as fixture } from "./fixtures/chat-ux-run.fixture";
+import {
+  failedChatUxRunFixture as failedFixture,
+  successfulChatUxRunFixture as successfulFixture,
+} from "./fixtures/chat-ux-run.fixture";
+
 const STAGE_ORDER: readonly RunStageId[] = [
   "understanding",
   "evidence",
@@ -50,8 +55,9 @@ function stagesForActivities(activities: readonly AiRunActivityEvent[]): RunStag
   return stages;
 }
 
-const capturedStages = stagesForActivities(fixture.run.activities);
-const providerCallCount = fixture.providerServices.length;
+const failedActivities: readonly AiRunActivityEvent[] = failedFixture.run.activities;
+const failedStages = stagesForActivities(failedActivities);
+const failedAttempt = Math.max(0, ...failedActivities.map((activity) => activity.attempt ?? 0));
 
 export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
   const prefix = `/${locale}`;
@@ -65,70 +71,52 @@ export function ChatUxShowcasePage({ locale }: { locale: Locale }) {
       ]}
       onLocaleChange={(next) => window.location.assign(`/${next}/chat-ux`)}
     >
-      <div className="mx-auto grid w-full min-w-0 max-w-5xl gap-8 pb-12">
-        <header className="grid gap-2 border-b border-line pb-5">
-          <p className="font-mono text-[10px] tracking-[0.14em] text-accent uppercase">
-            Live provider fixture
-          </p>
-          <h1 className="font-display text-3xl leading-tight text-ink sm:text-4xl">
-            Recorded run activity
-          </h1>
-          <p className="max-w-2xl font-reading text-[16px] leading-relaxed text-ink-2">
-            This snapshot came from the full chat stack after internal retrieval and live web
-            research selected the answer context.
-          </p>
-          <p className="font-mono text-[10px] text-ink-3">
-            {fixture.capturedAt} · {providerCallCount} model calls · {fixture.sourcesRead.length}{" "}
-            sources
-          </p>
-        </header>
+      <div className="mx-auto grid w-full min-w-0 max-w-3xl gap-8 pb-12">
+        <section
+          className="grid min-w-0 gap-6 rounded-tiny border border-line bg-surface p-3 sm:p-6"
+          aria-label="Completed captured chat"
+        >
+          <UserMessage
+            message={{
+              id: "chat-ux-success-user",
+              author: "user",
+              content: successfulFixture.question,
+            }}
+            locale={locale}
+          />
+          <AssistantMessage
+            message={{
+              id: "chat-ux-success-answer",
+              author: "assistant",
+              content: successfulFixture.answer,
+              createdAt: successfulFixture.capturedAt,
+              citations: successfulFixture.citations,
+              sourcesRead: successfulFixture.sourcesRead,
+            }}
+            locale={locale}
+          />
+        </section>
 
-        <section className="grid min-w-0 gap-4" aria-labelledby="fixture-title">
-          <div>
-            <p className="font-mono text-[10px] tracking-[0.12em] text-ink-3 uppercase">
-              Captured request
-            </p>
-            <h2 id="fixture-title" className="mt-1 font-display text-2xl text-ink">
-              Internal and web evidence
-            </h2>
-          </div>
-
-          <div className="min-w-0 rounded-tiny border border-line bg-surface p-3 sm:p-6">
-            <div className="ml-auto max-w-[52ch] rounded-tiny border border-line bg-paper-deep px-3 py-2">
-              <p className="font-sans text-[13px] leading-relaxed text-ink">{fixture.question}</p>
-            </div>
-
-            <article className="mt-6 grid max-w-2xl gap-3" aria-label="Captured assistant run">
-              <header className="flex items-center gap-2">
-                <p className="font-mono text-[10px] tracking-[0.12em] text-ink-2 uppercase">
-                  Hartlib · recorded run
-                </p>
-                <span aria-hidden="true" className="h-px flex-1 bg-line" />
-              </header>
-              <RunActivity
-                status={fixture.run.status}
-                stages={capturedStages}
-                attempt={Math.max(
-                  0,
-                  ...fixture.run.activities.map((activity) => activity.attempt ?? 0),
-                )}
-                activities={fixture.run.activities}
-                sourcesRead={fixture.sourcesRead}
-                locale={locale}
-              />
-              <p className="text-[12px] leading-relaxed text-ink-2">
-                Captured after context preparation. Answer generation had started; the capture then
-                stopped the run without saving an answer.
-              </p>
-              <SourcesDisclosure
-                sources={fixture.sourcesRead}
-                citations={fixture.citations}
-                answerId="chat-ux-live-fixture"
-                defaultOpen
-                locale={locale}
-              />
-            </article>
-          </div>
+        <section
+          className="grid min-w-0 gap-6 rounded-tiny border border-line bg-surface p-3 sm:p-6"
+          aria-label="Failed captured chat"
+        >
+          <UserMessage
+            message={{
+              id: "chat-ux-failed-user",
+              author: "user",
+              content: failedFixture.question,
+            }}
+            locale={locale}
+          />
+          <RunActivity
+            status={failedFixture.run.status}
+            stages={failedStages}
+            attempt={failedAttempt}
+            activities={failedFixture.run.activities}
+            sourcesRead={failedFixture.sourcesRead}
+            locale={locale}
+          />
         </section>
       </div>
     </AppShell>
