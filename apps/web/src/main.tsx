@@ -81,6 +81,7 @@ import {
 import { loadDemoBrowserConfig } from "./config";
 import { DocsDocument } from "./docs-document";
 import { isDocsPath } from "./docs-path";
+import { ChatUxShowcasePage } from "./chat-ux-showcase";
 import {
   GalleryReferencePage,
   PublisherIssueReferencePage,
@@ -1229,14 +1230,14 @@ function App({
             suggestions={
               messages.length === 0
                 ? locale === "fr-FR"
-                ? [
-                    "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
-                    "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
-                  ]
-                : [
-                    "What happened in the last 24 hours across my active sources?",
-                    "What are the three most important recent developments, and why do they matter?",
-                  ]
+                  ? [
+                      "Que s’est-il passé au cours des dernières 24 heures dans mes sources actives ?",
+                      "Quelles sont les trois évolutions récentes les plus importantes, et pourquoi sont-elles importantes ?",
+                    ]
+                  : [
+                      "What happened in the last 24 hours across my active sources?",
+                      "What are the three most important recent developments, and why do they matter?",
+                    ]
                 : []
             }
             onSuggestion={(suggestion) => void startRun(suggestion)}
@@ -1392,7 +1393,11 @@ function DemoRoot() {
       <ToastProvider locale={pair.locale}>
         <TooltipProvider>
           <I18nProvider locale={pair.locale} market={pair.market} onChangeLocaleMarket={setPair}>
-            <App onLocaleMarketChange={setPair} />
+            {initial.role === "chat-ux" ? (
+              <ChatUxShowcasePage locale={pair.locale} />
+            ) : (
+              <App onLocaleMarketChange={setPair} />
+            )}
           </I18nProvider>
         </TooltipProvider>
       </ToastProvider>

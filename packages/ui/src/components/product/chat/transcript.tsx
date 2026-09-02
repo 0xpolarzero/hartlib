@@ -14,7 +14,7 @@ import { uiMessage } from "../../../lib/format";
 import { Button } from "../../ui/button";
 import { ErrorState } from "../../ui/states";
 import { AssistantMessage, FailureBlock, UserMessage } from "./message";
-import { RunRail, RunStatusLine } from "./run-rail";
+import { RunActivity } from "./run-activity";
 import { AnswerBody, type CopyAdapter } from "./markdown";
 import type { ChatRunProjection, ChatTranscriptMessage, PublicCitationRecord } from "./types";
 
@@ -310,10 +310,10 @@ export function Transcript({
               </Button>
             )}
           </header>
-          <RunRail locale={locale} {...(run.stages === undefined ? {} : { stages: run.stages })} />
-          <RunStatusLine
+          <RunActivity
             status={run.status}
             locale={locale}
+            {...(run.stages === undefined ? {} : { stages: run.stages })}
             {...(run.attempt === undefined ? {} : { attempt: run.attempt })}
           />
           {(run.streamedText ?? message.content) && (

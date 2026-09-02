@@ -25,6 +25,10 @@ describe("demo routing", () => {
       "publisher-notifications",
     );
     expect(getDemoRouteFromPath("/fr-FR/components").role).toBe("gallery");
+    expect(getDemoRouteFromPath("/fr-FR/chat-ux").role).toBe("chat-ux");
+    expect(buildDemoPath({ locale: "en-US", role: "chat-ux", sourceId: null, issueId: null })).toBe(
+      "/en-US/chat-ux",
+    );
     expect(getDemoRouteFromPath("/gallery").notFound).toBe(true);
   });
   it("maps locale aliases to locale and market", () => {

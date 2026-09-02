@@ -69,8 +69,8 @@ export function RunRail({
         const warn = status === "retrying";
         return (
           <Fragment key={id}>
-            {i > 0 && <span aria-hidden="true" className="w-4 shrink-0" />}
-            <li className="relative flex w-[68px] shrink-0 flex-col items-center gap-1.5">
+            {i > 0 && <span aria-hidden="true" className="w-1 shrink-0 sm:w-4" />}
+            <li className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 sm:w-[68px]">
               <span
                 className={cn(
                   "relative z-10 flex size-6 items-center justify-center rounded-full border bg-paper",

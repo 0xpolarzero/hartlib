@@ -57,9 +57,11 @@ calendar grid with localized weekday order and keyboard navigation.
 ## Product presentation
 
 The chat message component renders user and assistant anatomy, five ordered run
-stages, six stage states, citations, source disclosure, failures, stopped
-answers, delete, last-question edit, debug, optional visualization Show, and
-the reference composer controls. Branch and collection views stay absent.
+stages, six stage states, and one production activity disclosure for concrete
+work such as queries, source reads, and retries. It also renders citations,
+failures, stopped answers, delete, last-question edit, debug, optional
+visualization Show, and the reference composer controls. Branch and collection
+views stay absent.
 Attachment and regenerate controls are active only when production supplies
 their callbacks.
 

@@ -5,7 +5,8 @@ export type DemoRole =
   | "publisher"
   | "publisher-issue"
   | "publisher-notifications"
-  | "gallery";
+  | "gallery"
+  | "chat-ux";
 export type DemoRoute = {
   locale: Locale | null;
   role: DemoRole;
@@ -62,6 +63,7 @@ export function getDemoRouteFromPath(pathname: string): DemoRoute {
   const rest = locale === null ? segments : segments.slice(1);
   if (rest.length === 0) return clientRoute(locale);
   if (rest[0] === "components" && rest.length === 1) return pageRoute(locale, "gallery");
+  if (rest[0] === "chat-ux" && rest.length === 1) return pageRoute(locale, "chat-ux");
   if (rest[0] === "publisher") {
     if (rest.length === 1) return pageRoute(locale, "publisher");
     if (rest.length === 3 && rest[1] === "issues" && rest[2] === "new")
@@ -89,6 +91,7 @@ function buildRolePath(route: Omit<DemoRoute, "locale">): string {
   if (route.role === "publisher-issue") return "/publisher/issues/new";
   if (route.role === "publisher-notifications") return "/publisher/settings/notifications";
   if (route.role === "gallery") return "/components";
+  if (route.role === "chat-ux") return "/chat-ux";
   if (!route.sourceId) return "/client/chat";
   const sourcePath = `/client/sources/${encodeURIComponent(route.sourceId)}`;
   return route.issueId

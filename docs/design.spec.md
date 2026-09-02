@@ -8,11 +8,11 @@ publisher workspace, issue flow, notification settings, component gallery, and
 visualization presentation. Client chat uses real API data and worker results.
 Publisher and gallery routes use local demo adapters for UI-only state and do
 not invent backend records.
-
 Reachable paths are `/`, canonical and alias locale roots, locale client chat,
 nested client source and publication paths, locale publisher workspace,
 publisher issue creation, publisher notification settings, locale component
-gallery, and `/docs`. Unknown paths show a branded localized 404.
+gallery, the temporary locale chat UX review page at `/[locale]/chat-ux`, and
+`/docs`. Unknown paths show a branded localized 404.
 
 ## Demo
 
