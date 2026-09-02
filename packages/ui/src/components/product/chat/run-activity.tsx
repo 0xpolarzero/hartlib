@@ -1,7 +1,8 @@
+import { useEffect, useId, useState } from "react";
 import { cn } from "../../../lib/utils";
 import { RunRail, RunStatusLine } from "./run-rail";
 import { t } from "./localize";
-import type { RunStages } from "./types";
+import type { RunStageId, RunStages } from "./types";
 
 export type RunActivityTone = "done" | "active" | "waiting" | "warning";
 
@@ -12,6 +13,7 @@ export interface RunActivitySource {
 }
 
 export interface RunActivityEvent {
+  stage: RunStageId;
   label: string;
   detail?: string;
   tone: RunActivityTone;
@@ -27,7 +29,6 @@ export interface RunActivityProps {
   meta?: string;
   current?: string;
   events?: readonly RunActivityEvent[];
-  defaultExpanded?: boolean;
   locale?: string;
   className?: string;
   compact?: boolean;
@@ -39,6 +40,31 @@ const toneClass: Record<RunActivityTone, string> = {
   waiting: "border-line-2 bg-paper",
   warning: "border-warn bg-warn",
 };
+const STAGE_ORDER: readonly RunStageId[] = [
+  "understanding",
+  "evidence",
+  "preparing",
+  "writing",
+  "finishing",
+];
+
+function activeStageFor(
+  stages: Partial<RunStages> | undefined,
+  status: string,
+  events: readonly RunActivityEvent[],
+): RunStageId {
+  const active = STAGE_ORDER.find((stage) => {
+    const stageStatus = stages?.[stage];
+    return stageStatus === "running" || stageStatus === "retrying" || stageStatus === "failed";
+  });
+  if (active) return active;
+  if (status === "succeeded" || status === "complete") return "finishing";
+  for (let index = STAGE_ORDER.length - 1; index >= 0; index -= 1) {
+    const stage = STAGE_ORDER[index]!;
+    if (events.some((event) => event.stage === stage)) return stage;
+  }
+  return "understanding";
+}
 
 function QueryList({ items }: { items: readonly string[] }) {
   return (
@@ -94,12 +120,14 @@ export function RunActivity({
   meta,
   current,
   events = [],
-  defaultExpanded = false,
   locale = "en-US",
   className,
   compact = false,
 }: RunActivityProps) {
   const failed = status === "failed" || status === "error";
+  const activeStage = activeStageFor(stages, status, events);
+  const [selectedStage, setSelectedStage] = useState<RunStageId>(activeStage);
+  const activityId = useId();
   const shortLabels = {
     understanding: t(locale, "run.stageShort_understanding"),
     evidence: t(locale, "run.stageShort_evidence"),
@@ -107,6 +135,14 @@ export function RunActivity({
     writing: t(locale, "run.stageShort_writing"),
     finishing: t(locale, "run.stageShort_finishing"),
   };
+  const selectableStages = STAGE_ORDER.filter((stage) =>
+    events.some((event) => event.stage === stage),
+  );
+  const selectedEvents = events.filter((event) => event.stage === selectedStage);
+
+  useEffect(() => {
+    setSelectedStage(activeStage);
+  }, [activeStage]);
 
   return (
     <section
@@ -134,19 +170,28 @@ export function RunActivity({
           locale={locale}
           labels={shortLabels}
           {...(stages === undefined ? {} : { stages })}
+          {...(events.length === 0
+            ? {}
+            : {
+                selectedStage,
+                selectableStages,
+                onSelectStage: setSelectedStage,
+                controlsId: activityId,
+              })}
         />
       </div>
 
       {current && <p className="mt-3 text-[12px] leading-relaxed text-ink-2">{current}</p>}
 
-      {events.length > 0 && (
-        <details className="group mt-3" open={defaultExpanded || undefined}>
-          <summary className="w-fit cursor-pointer list-none rounded-tiny font-mono text-[10px] text-accent underline decoration-dotted underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
-            <span className="group-open:hidden">Show work</span>
-            <span className="hidden group-open:inline">Hide work</span>
-          </summary>
-          <ol className="mt-3 grid gap-3 border-l border-line pl-3">
-            {events.map((event, index) => (
+      {selectedEvents.length > 0 && (
+        <div
+          id={`${activityId}-${selectedStage}`}
+          role="region"
+          aria-label={shortLabels[selectedStage]}
+          className="mt-3 border-t border-line pt-3"
+        >
+          <ol className="grid gap-3 border-l border-line pl-3">
+            {selectedEvents.map((event, index) => (
               <li key={`${event.label}-${index}`} className="relative">
                 <span
                   aria-hidden="true"
@@ -166,7 +211,7 @@ export function RunActivity({
               </li>
             ))}
           </ol>
-        </details>
+        </div>
       )}
     </section>
   );

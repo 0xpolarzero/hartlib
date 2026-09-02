@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Locale } from "@hartlib/i18n";
-import { AppShell, RunActivity, type RunActivityProps } from "@hartlib/ui";
+import { AppShell, RunActivity, type RunActivityEvent, type RunActivityProps } from "@hartlib/ui";
 
 const stateIds = [
   "started",
@@ -49,6 +49,39 @@ const waitingStages = {
   finishing: "waiting",
 } as const;
 
+const planDone: RunActivityEvent = {
+  stage: "understanding",
+  label: "Plan ready",
+  detail: "Check the law, the Commission timeline, and the voluntary code.",
+  tone: "done",
+};
+const searchDone: RunActivityEvent = {
+  stage: "evidence",
+  label: "Queries",
+  detail: "The exact searches sent to the provider.",
+  tone: "done",
+  queries,
+};
+const sourcesDone: RunActivityEvent = {
+  stage: "evidence",
+  label: "Sources",
+  detail: "All three official sources were read.",
+  tone: "done",
+  sources: sources.map((source) => ({ ...source, status: "Read" })),
+};
+const prepareDone: RunActivityEvent = {
+  stage: "preparing",
+  label: "Evidence checked",
+  detail: "Separated duties already in force from later enforcement dates.",
+  tone: "done",
+};
+const writingDone: RunActivityEvent = {
+  stage: "writing",
+  label: "Answer written",
+  detail: "Led with current duties, then stated the dates and exceptions.",
+  tone: "done",
+};
+
 const states: Record<StateId, ShowcaseState> = {
   started: {
     selector: "Start",
@@ -59,6 +92,7 @@ const states: Record<StateId, ShowcaseState> = {
     stages: { ...waitingStages, understanding: "running" },
     events: [
       {
+        stage: "understanding",
         label: "Question received",
         detail: "Find the current EU AI Act duties for general-purpose AI providers.",
         tone: "active",
@@ -71,21 +105,8 @@ const states: Record<StateId, ShowcaseState> = {
     title: "Searching",
     meta: "2 queries",
     current: `Searching ${queries[0]}`,
-    defaultExpanded: true,
     stages: { ...waitingStages, understanding: "complete", evidence: "running" },
-    events: [
-      {
-        label: "Plan ready",
-        detail: "Check the law, the Commission timeline, and the voluntary code.",
-        tone: "done",
-      },
-      {
-        label: "Queries",
-        detail: "The exact searches sent to the provider.",
-        tone: "active",
-        queries,
-      },
-    ],
+    events: [planDone, { ...searchDone, tone: "active" }],
   },
   reading: {
     selector: "Read",
@@ -93,16 +114,12 @@ const states: Record<StateId, ShowcaseState> = {
     title: "Reading",
     meta: "1 of 3 sources",
     current: "Reading Article 53 duties and effective dates",
-    defaultExpanded: true,
     stages: { ...waitingStages, understanding: "complete", evidence: "running" },
     events: [
+      planDone,
+      searchDone,
       {
-        label: "Search complete",
-        detail: "Found three primary or official sources.",
-        tone: "done",
-        queries,
-      },
-      {
+        stage: "evidence",
         label: "Sources",
         detail: "Opened in this order.",
         tone: "active",
@@ -116,7 +133,6 @@ const states: Record<StateId, ShowcaseState> = {
     title: "Preparing",
     meta: "3 sources checked",
     current: "Comparing the legal text with the Commission timeline",
-    defaultExpanded: true,
     stages: {
       ...waitingStages,
       understanding: "complete",
@@ -124,13 +140,11 @@ const states: Record<StateId, ShowcaseState> = {
       preparing: "running",
     },
     events: [
+      planDone,
+      searchDone,
+      sourcesDone,
       {
-        label: "Evidence collected",
-        detail: "Article 53, the implementation timeline, and the GPAI code agree on scope.",
-        tone: "done",
-        sources: sources.map((source) => ({ ...source, status: "Read" })),
-      },
-      {
+        stage: "preparing",
         label: "Cross-checking",
         detail: "Separating duties already in force from later enforcement dates.",
         tone: "active",
@@ -151,12 +165,12 @@ const states: Record<StateId, ShowcaseState> = {
       writing: "running",
     },
     events: [
+      planDone,
+      searchDone,
+      sourcesDone,
+      prepareDone,
       {
-        label: "Evidence ready",
-        detail: "Three official sources support the answer.",
-        tone: "done",
-      },
-      {
+        stage: "writing",
         label: "Drafting",
         detail: "Lead with the current duties, then state the dates and exceptions.",
         tone: "active",
@@ -172,22 +186,25 @@ const states: Record<StateId, ShowcaseState> = {
     meta: "Retry 2 of 3",
     attempt: 2,
     current: "The Commission search timed out. Retrying with a narrower query",
-    defaultExpanded: true,
     stages: { ...waitingStages, understanding: "complete", evidence: "retrying" },
     events: [
+      planDone,
       {
+        stage: "evidence",
         label: "First query complete",
         detail: "The legal text is available.",
         tone: "done",
         queries: [queries[0]],
       },
       {
+        stage: "evidence",
         label: "Search timed out",
         detail: "No result was lost. The next try uses the official Commission domain.",
         tone: "warning",
         queries: [queries[1]],
       },
       {
+        stage: "evidence",
         label: "Retrying now",
         detail: "Attempt 2 of 3.",
         tone: "active",
@@ -208,22 +225,16 @@ const states: Record<StateId, ShowcaseState> = {
       finishing: "complete",
     },
     events: [
+      planDone,
+      searchDone,
+      sourcesDone,
+      prepareDone,
+      writingDone,
       {
-        label: "Plan",
-        detail: "Checked legal duties, dates, and the code of practice.",
+        stage: "finishing",
+        label: "Checks complete",
+        detail: "Citations placed and dates checked.",
         tone: "done",
-      },
-      {
-        label: "Search",
-        detail: "Two queries returned three official sources.",
-        tone: "done",
-        queries,
-      },
-      {
-        label: "Sources",
-        detail: "All three sources were read.",
-        tone: "done",
-        sources: sources.map((source) => ({ ...source, status: "Read" })),
       },
     ],
   },

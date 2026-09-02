@@ -18,4 +18,10 @@ describe("run rail", () => {
     expect((html.match(/<li/g) ?? []).length).toBe(5);
     expect(html).toContain("gathering evidence");
   });
+  it("uses a spinning loader for the running stage", () => {
+    const html = renderToStaticMarkup(<RunRail stages={{ understanding: "running" }} />);
+
+    expect(html).toContain("lucide-loader-circle");
+    expect(html).toContain("animate-spin");
+  });
 });
