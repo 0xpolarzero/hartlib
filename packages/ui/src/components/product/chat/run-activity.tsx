@@ -43,7 +43,11 @@ function activeStageFor(
 
 function eventKey(event: AiRunActivityEvent): string {
   const detailKey = event.detail ? `${event.detail.kind}:${event.detail.ordinal}` : "phase";
-  return `${event.topicId ?? "run"}:${event.code}:${detailKey}`;
+  const historyKey =
+    event.status === "retrying" || event.status === "failed"
+      ? `${event.status}:${event.attempt ?? 0}:${event.occurredAt ?? "unknown"}`
+      : "latest";
+  return `${event.topicId ?? "run"}:${event.code}:${detailKey}:${historyKey}`;
 }
 
 function latestEvents(activities: readonly AiRunActivityEvent[]): readonly AiRunActivityEvent[] {
