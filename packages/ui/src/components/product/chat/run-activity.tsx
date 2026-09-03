@@ -269,7 +269,7 @@ export function RunActivity({
         status={status}
         attempt={attempt}
         locale={locale}
-        {...(events.length === 0 ? {} : { label: shortLabels[activeStage] })}
+        {...(events.length === 0 ? {} : { label: shortLabels[selectedStage] })}
       />
 
       <div className="min-w-0 max-w-full overflow-x-auto pb-1">

@@ -75,6 +75,57 @@ describe("run activity", () => {
     expect((html.match(/disabled=""/g) ?? []).length).toBe(3);
   });
 
+  it("keeps every recorded completed stage selectable", () => {
+    const stages = {
+      understanding: "complete",
+      evidence: "complete",
+      preparing: "complete",
+      writing: "complete",
+      finishing: "complete",
+    } as const;
+    const html = renderToStaticMarkup(
+      <RunActivity
+        status="complete"
+        stages={stages}
+        activities={[
+          {
+            type: "activity",
+            stage: "understanding",
+            code: "request_understanding",
+            status: "complete",
+          },
+          {
+            type: "activity",
+            stage: "evidence",
+            code: "internal_sources",
+            status: "complete",
+          },
+          {
+            type: "activity",
+            stage: "preparing",
+            code: "context_preparation",
+            status: "complete",
+          },
+          {
+            type: "activity",
+            stage: "writing",
+            code: "answer_generation",
+            status: "complete",
+          },
+          {
+            type: "activity",
+            stage: "finishing",
+            code: "finalization",
+            status: "complete",
+          },
+        ]}
+      />,
+    );
+
+    expect((html.match(/<button/g) ?? []).length).toBe(5);
+    expect(html).not.toContain('disabled=""');
+  });
+
   it("keeps the production fallback compact when no activity detail exists", () => {
     const html = renderToStaticMarkup(<RunActivity status="queued" />);
 

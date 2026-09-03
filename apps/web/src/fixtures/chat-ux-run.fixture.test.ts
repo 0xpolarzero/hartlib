@@ -6,6 +6,7 @@ import { failedChatUxRunFixture, successfulChatUxRunFixture } from "./chat-ux-ru
 
 describe("chat UX captured run fixtures", () => {
   it("contains a completed live answer grounded in one internal and one web source", () => {
+    const activities: readonly AiRunActivityEvent[] = successfulChatUxRunFixture.activities;
     expect(successfulChatUxRunFixture.captureMode).toBe("completed");
     expect(successfulChatUxRunFixture.answer).toContain("25.3 GW");
     expect(successfulChatUxRunFixture.answer).toContain("[1]");
@@ -15,6 +16,16 @@ describe("chat UX captured run fixtures", () => {
       "document",
       "web",
     ]);
+    expect(new Set(activities.map((activity) => activity.stage))).toEqual(
+      new Set(["understanding", "evidence", "preparing", "writing", "finishing"]),
+    );
+    expect(activities.some((activity) => activity.detail?.kind === "internal_queries")).toBe(true);
+    expect(activities.some((activity) => activity.detail?.kind === "web_search")).toBe(true);
+    expect(
+      activities.some(
+        (activity) => activity.code === "finalization" && activity.status === "complete",
+      ),
+    ).toBe(true);
   });
 
   it("contains a terminal live failure with its retry history", () => {

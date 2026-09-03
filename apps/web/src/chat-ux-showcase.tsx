@@ -24,16 +24,16 @@ function stagesForActivities(activities: readonly AiRunActivityEvent[]): RunStag
   for (const activity of activities) stages[activity.stage] = activity.status;
   return stages;
 }
+const successfulActivities: readonly AiRunActivityEvent[] = successfulFixture.activities;
+const successfulRunId = successfulActivities.find(
+  (activity) => activity.runId !== undefined,
+)?.runId;
+if (successfulRunId === undefined)
+  throw new Error("The successful chat fixture requires a recorded run id");
 const successfulRunHistory: RunHistorySnapshot = {
   status: "succeeded",
-  stages: {
-    understanding: "complete",
-    evidence: "complete",
-    preparing: "complete",
-    writing: "complete",
-    finishing: "complete",
-  },
-  activities: [],
+  stages: stagesForActivities(successfulActivities),
+  activities: successfulActivities,
 };
 
 const successfulMessages: readonly ChatTranscriptMessage[] = [
@@ -48,7 +48,7 @@ const successfulMessages: readonly ChatTranscriptMessage[] = [
     content: successfulFixture.answer,
     createdAt: successfulFixture.capturedAt,
     citations: successfulFixture.citations,
-    runId: "chat-ux-success-run",
+    runId: successfulRunId,
     runStatus: "succeeded",
     runHistory: successfulRunHistory,
     sourcesRead: successfulFixture.sourcesRead,
