@@ -91,7 +91,7 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
 
   if (detail.kind === "internal_queries") {
     return (
-      <div className="mt-2 grid gap-1.5">
+      <div className="mt-2 grid min-w-0 max-w-full gap-1.5">
         <p className="font-mono text-[9px] tracking-wide text-ink-3 uppercase">
           {t(
             locale,
@@ -102,7 +102,7 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
         {detail.queries.map((query, index) => (
           <pre
             key={`${query.purpose}-${index}`}
-            className="block max-w-full overflow-x-auto whitespace-pre rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink"
+            className="block min-w-0 max-w-full whitespace-pre-wrap break-words rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink"
           >
             {JSON.stringify(query)}
           </pre>
@@ -113,8 +113,8 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
 
   if (detail.kind === "web_search") {
     return (
-      <div className="mt-2">
-        <code className="block overflow-x-auto rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink">
+      <div className="mt-2 min-w-0 max-w-full">
+        <code className="block min-w-0 max-w-full whitespace-pre-wrap break-words rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink">
           {detail.query}
         </code>
         {(detail.cursor !== undefined || detail.resultCount !== undefined) && (
@@ -135,16 +135,16 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
 
   if (detail.kind === "web_fetch") {
     return (
-      <div className="mt-1.5 min-w-0">
+      <div className="mt-1.5 min-w-0 max-w-full">
         <a
-          className="block truncate text-[11px] font-medium text-ink underline decoration-dotted underline-offset-2"
+          className="block break-words text-[11px] font-medium text-ink underline decoration-dotted underline-offset-2"
           href={detail.url}
           target="_blank"
           rel="noreferrer"
         >
           {detail.title ?? detail.url}
         </a>
-        <p className="truncate font-mono text-[9px] text-ink-3">
+        <p className="break-words font-mono text-[9px] text-ink-3">
           {[detail.domain, detail.capturedAt].filter(Boolean).join(" · ")}
         </p>
       </div>
@@ -153,13 +153,13 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
 
   if (detail.kind === "source_search") {
     return (
-      <div className="mt-1.5 min-w-0">
+      <div className="mt-1.5 min-w-0 max-w-full">
         {detail.query && (
-          <code className="block overflow-x-auto rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink">
+          <code className="block min-w-0 max-w-full whitespace-pre-wrap break-words rounded-tiny border border-line bg-paper-deep px-2.5 py-2 font-mono text-[10px] leading-relaxed text-ink">
             {detail.query}
           </code>
         )}
-        <p className="mt-1 truncate font-mono text-[9px] text-ink-3">
+        <p className="mt-1 break-words font-mono text-[9px] text-ink-3">
           {[
             detail.candidateId,
             detail.resultCount === undefined
@@ -175,7 +175,7 @@ function Detail({ event, locale }: { event: AiRunActivityEvent; locale: string }
   }
 
   return (
-    <p className="mt-1 font-mono text-[9px] text-ink-3">
+    <p className="mt-1 break-words font-mono text-[9px] text-ink-3">
       {detail.candidateId} · {t(locale, "run.activityPassages", { count: detail.passageCount })}
     </p>
   );
@@ -198,7 +198,7 @@ function sourceMeta(source: PublicSourceRecord): string {
 function Sources({ locale, sources }: { locale: string; sources: readonly PublicSourceRecord[] }) {
   if (sources.length === 0) return null;
   return (
-    <li className="relative">
+    <li className="relative min-w-0 max-w-full">
       <span
         aria-hidden="true"
         className="absolute -left-[16.5px] top-1 size-1.5 rounded-full border border-accent bg-accent"
@@ -206,13 +206,13 @@ function Sources({ locale, sources }: { locale: string; sources: readonly Public
       <p className="font-mono text-[10px] font-medium tracking-wide text-ink uppercase">
         {t(locale, "run.activitySourcesRead")}
       </p>
-      <ul className="mt-2 divide-y divide-line border-y border-line">
+      <ul className="mt-2 min-w-0 max-w-full divide-y divide-line border-y border-line">
         {sources.map((source, index) => (
-          <li key={`${source.sourceKey}-${index}`} className="min-w-0 py-2">
-            <p className="truncate text-[12px] font-medium text-ink">
+          <li key={`${source.sourceKey}-${index}`} className="min-w-0 max-w-full py-2">
+            <p className="break-words text-[12px] font-medium text-ink">
               {sourceLabel(locale, source)}
             </p>
-            <p className="truncate font-mono text-[9px] text-ink-3">{sourceMeta(source)}</p>
+            <p className="break-words font-mono text-[9px] text-ink-3">{sourceMeta(source)}</p>
           </li>
         ))}
       </ul>
@@ -294,13 +294,13 @@ export function RunActivity({
           id={`${activityId}-${selectedStage}`}
           role="region"
           aria-label={shortLabels[selectedStage]}
-          className="mt-3 border-t border-line pt-3"
+          className="mt-3 min-w-0 max-w-full border-t border-line pt-3"
         >
-          <ol className="grid gap-3 border-l border-line pl-3">
+          <ol className="grid min-w-0 max-w-full gap-3 border-l border-line pl-3">
             {selectedEvents.map((event) => {
               const meta = eventMeta(locale, event);
               return (
-                <li key={eventKey(event)} className="relative">
+                <li key={eventKey(event)} className="relative min-w-0 max-w-full">
                   <span
                     aria-hidden="true"
                     className={cn(
@@ -317,7 +317,7 @@ export function RunActivity({
                     </p>
                   )}
                   {event.errorMessage && (
-                    <p className="mt-1 text-[11px] leading-relaxed text-warn">
+                    <p className="mt-1 break-words text-[11px] leading-relaxed text-warn">
                       {event.errorMessage}
                     </p>
                   )}

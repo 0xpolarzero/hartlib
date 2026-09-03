@@ -136,7 +136,7 @@ export function RunHistoryDisclosure({
         />
       </button>
       {open && (
-        <div id={disclosureId} className="border-t border-line">
+        <div id={disclosureId} className="min-w-0 max-w-full border-t border-line">
           {loadState === "loading" && (
             <p role="status" className="p-3 font-mono text-[11px] text-ink-2">
               {uiMessage(locale, "debug.loading")}

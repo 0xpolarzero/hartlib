@@ -66,6 +66,8 @@ describe("run activity", () => {
 
     expect(html).toContain("Web research");
     expect(html).toContain("site:ec.europa.eu AI Act timeline");
+    expect(html).toContain("whitespace-pre-wrap break-words");
+    expect(html).toContain("min-w-0 max-w-full");
     expect(html).toContain("European Commission · AI Act");
     expect(html).toContain("2026-05-12T10:00:00.100Z");
     expect(html).toContain("The provider timed out.");
