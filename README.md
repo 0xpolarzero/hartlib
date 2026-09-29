@@ -2,6 +2,9 @@
 
 Hartlib gives you one research conversation across everything you subscribe to — professional briefings, specialist publications, official records. Ask in your own words and get one cited answer you can actually understand, explained with visuals that fit how you think.
 
+> [!WARNING]
+> Heavy WIP
+
 ## What makes it different
 
 1. **One chat, many agents.** Each question puts several agents to work at once: one selects the earlier messages that matter, another your saved memories, the rest search your sources. You see one answer.
